@@ -1,0 +1,51 @@
+@startuml
+' 核心基类
+abstract class Scheduler {
+    - vector<Thread::ptr> m_threads
+    - list<ScheduleTask> m_tasks
+    + void scheduleLock(FiberOrCb, thread)
+    + void start()
+    + void stop()
+    # virtual void run()
+    # virtual void idle()
+}
+
+class TimerManager {
+    - set<Timer::ptr> m_timers
+    - RWMutex m_mutex
+    + addTimer()
+    + getNextTimer()
+}
+
+' 核心实现类
+class IOManager {
+    - int m_epfd
+    - int m_tickleFds[2]
+    + addEvent(fd, event, cb)
+    + delEvent(fd, event)
+    # void idle() override
+    # void tickle() override
+}
+
+' 基础类
+class Fiber {
+    - ucontext_t m_ctx
+    - void* m_stack
+    - State m_state
+    + void swapIn()
+    + void swapOut()
+    + {static} void YieldToHold()
+}
+
+class Thread {
+    - pid_t m_id
+    - pthread_t m_thread
+    + void join()
+}
+
+' 关系描述
+Scheduler <|-- IOManager
+TimerManager <|-- IOManager
+Scheduler *-- Thread : 拥有N个线程
+Scheduler ..> Fiber : 调度M个协程
+@enduml
