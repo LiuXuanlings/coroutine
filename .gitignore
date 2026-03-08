@@ -1,0 +1,19 @@
+# CMake 构建目录
+build/
+bin/
+lib/
+CMakeCache.txt
+CMakeFiles/
+Makefile
+*.cmake
+install_manifest.txt
+
+# VSCode/IDE 配置
+.vscode/
+.idea/
+
+# 编译临时文件
+*.o
+*.a
+*.so
+*.out
