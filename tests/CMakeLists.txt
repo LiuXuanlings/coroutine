@@ -17,7 +17,7 @@ if(TEST_FILES)
             gtest 
             pthread 
             dl
-            # sylar_core # 后续加上
+            sylar_core
         )
         
         # 注册到 ctest

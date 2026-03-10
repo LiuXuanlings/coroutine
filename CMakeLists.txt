@@ -31,11 +31,11 @@ endif()
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 # ---------------------------------------------------------
-# 构建核心库 (目前暂时为空，后续分模块添加源码)
+# 构建核心库 
 # ---------------------------------------------------------
-# file(GLOB_RECURSE SRC_FILES "src/*.cpp")
-# add_library(sylar_core SHARED ${SRC_FILES})
-# target_link_libraries(sylar_core pthread dl)
+file(GLOB_RECURSE SRC_FILES "src/*.cpp")
+add_library(sylar_core SHARED ${SRC_FILES})
+target_link_libraries(sylar_core pthread dl)
 
 # ---------------------------------------------------------
 # 集成 GoogleTest (使用 FetchContent 自动下载)
