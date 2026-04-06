@@ -57,6 +57,10 @@ TEST(FiberTest, SwapSpeed){
         // 切换到子协程
         fiber->resume();
     }
+
+    if(fiber->getState() != sylar::Fiber::TERM){
+        fiber->resume(); // 确保子协程能正常结束
+    }
     
     uint64_t end = gettime_ns_fiber();
 

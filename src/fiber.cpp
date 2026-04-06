@@ -14,6 +14,7 @@ namespace sylar{
 
 sylar::Fiber::Fiber(){//main fiber share stack with thread
     m_is_main = true;
+    m_state = INIT;
 }
 
 sylar::Fiber::~Fiber(){
@@ -51,10 +52,12 @@ sylar::Fiber::ptr sylar::Fiber::GetThis(){
     */
 void sylar::Fiber::mainFunc() {
     sylar::Fiber::ptr cur = GetThis();
+    cur->m_state = EXEC;
     cur->m_cb();
     
     // Clear the callback to break potential circular references in the lambda closure
     cur->m_cb = nullptr; 
+    cur->m_state = TERM;
 
     // Extract raw pointer to call yield later without creating temporary shared_ptrs
     sylar::Fiber* raw_ptr = cur.get();
@@ -71,6 +74,7 @@ void sylar::Fiber::mainFunc() {
 sylar::Fiber::Fiber(std::function<void()> cb, int stack_size){
     m_is_main = false;
     m_cb = cb;
+    m_state = INIT;
     /*
     * Root cause: ucontext_t was not initialized with getcontext()
     * uc_mcontext (register state) is zero → swapcontext crashes on invalid RIP
@@ -81,6 +85,7 @@ sylar::Fiber::Fiber(std::function<void()> cb, int stack_size){
 
 void sylar::Fiber::yield(){
     t_fiber = t_thread_fiber;
+    this->m_state = HOLD;
     if(!m_is_main){
         SwapContext(reinterpret_cast<char**>(&this->m_ctx.sp), reinterpret_cast<char**>(&t_thread_fiber->m_ctx.sp));
     }
@@ -138,6 +143,7 @@ void sylar::Fiber::resume(){
      */
     //t_fiber = static_cast<std::shared_ptr<Fiber>>(this);
     t_fiber = shared_from_this();
+    this->m_state = EXEC;
     if(!m_is_main){
         SwapContext(reinterpret_cast<char**>(&t_thread_fiber->m_ctx.sp), reinterpret_cast<char**>(&m_ctx.sp));
     }

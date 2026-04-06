@@ -13,10 +13,19 @@ namespace sylar
         static thread_local ptr t_fiber;//static means only one shared in this class
         static thread_local ptr t_thread_fiber;//main fiber
 
+        enum state{
+            INIT,
+            EXEC,
+            HOLD,
+            TERM,
+            EXCEPT,
+        };
+
         static ptr GetThis();
         Fiber(std::function<void()> cb, int stack_size=FIBER_STACK_SIZE);
         void yield();
         void resume();
+        state getState() const { return m_state; }  
 
         ~Fiber();
     private:
@@ -28,6 +37,7 @@ namespace sylar
         context m_ctx;//stack variable, don't make it a heap variable
         std::function<void()> m_cb;//RAII
         bool m_is_main;
+        state m_state;
     };
 
 } // namespace sylar
