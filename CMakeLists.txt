@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(sylar_rewrite CXX)
+project(sylar_rewrite CXX C ASM)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -33,7 +33,7 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 # ---------------------------------------------------------
 # 构建核心库 
 # ---------------------------------------------------------
-file(GLOB_RECURSE SRC_FILES "src/*.cpp")
+file(GLOB_RECURSE SRC_FILES "src/*.cpp" "src/*.S")
 add_library(sylar_core SHARED ${SRC_FILES})
 target_link_libraries(sylar_core pthread dl)
 

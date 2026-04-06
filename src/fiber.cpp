@@ -1,4 +1,5 @@
 #include"sylar/fiber.h"
+#include"sylar/context.h"
 #include <new>
 #include<functional>
 #include<iostream>
@@ -13,15 +14,9 @@ namespace sylar{
 
 sylar::Fiber::Fiber(){//main fiber share stack with thread
     m_is_main = true;
-    m_cb = nullptr;
-    m_ctx.uc_link=nullptr;
-    m_ctx.uc_stack.ss_sp = nullptr;//clear garbage stack value;set nullptr to reusethread stack
-    getcontext(&m_ctx);
 }
 
 sylar::Fiber::~Fiber(){
-    if(!m_is_main)
-        operator delete (m_ctx.uc_stack.ss_sp);//with ()
 }
 
 sylar::Fiber::ptr sylar::Fiber::GetThis(){
@@ -81,18 +76,13 @@ sylar::Fiber::Fiber(std::function<void()> cb, int stack_size){
     * uc_mcontext (register state) is zero → swapcontext crashes on invalid RIP
     * Fix: Call getcontext() first to initialize ucontext_t before setting stack/makecontext
     */
-    getcontext(&m_ctx);
-    stack_size = std::min(stack_size, FIBER_STACK_SIZE);
-    m_ctx.uc_stack.ss_sp =operator new(stack_size);
-    m_ctx.uc_stack.ss_size = stack_size;
-    m_ctx.uc_link=nullptr;
-    makecontext(&m_ctx,mainFunc,0);
+    MakeContext(&m_ctx,Fiber::mainFunc);
 }
 
 void sylar::Fiber::yield(){
     t_fiber = t_thread_fiber;
     if(!m_is_main){
-        swapcontext(&this->m_ctx, &t_thread_fiber->m_ctx);
+        SwapContext(reinterpret_cast<char**>(&this->m_ctx.sp), reinterpret_cast<char**>(&t_thread_fiber->m_ctx.sp));
     }
 }
 
@@ -149,6 +139,6 @@ void sylar::Fiber::resume(){
     //t_fiber = static_cast<std::shared_ptr<Fiber>>(this);
     t_fiber = shared_from_this();
     if(!m_is_main){
-        swapcontext(&t_thread_fiber->m_ctx, &m_ctx);
+        SwapContext(reinterpret_cast<char**>(&t_thread_fiber->m_ctx.sp), reinterpret_cast<char**>(&m_ctx.sp));
     }
 }

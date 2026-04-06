@@ -1,11 +1,10 @@
 #ifndef SYLAR_FIBER_H
 #define SYLAR_FIBER_H
 
-#include<ucontext.h>
+#include"sylar/context.h"
 #include<functional>
 #include<memory>
 
-#define FIBER_STACK_SIZE 128*1024//128KB,thread stack size default:8MB(ulimit -s)
 namespace sylar
 {
     class Fiber: public std::enable_shared_from_this<Fiber>{
@@ -26,7 +25,7 @@ namespace sylar
         static void mainFunc();//encapsulate void makecontext(ucontext_t *ucp, void (*func)(), int argc, ...)
 
     private:
-        ucontext_t m_ctx;//stack variable, don't make it a heap variable
+        context m_ctx;//stack variable, don't make it a heap variable
         std::function<void()> m_cb;//RAII
         bool m_is_main;
     };
