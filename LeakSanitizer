@@ -1,0 +1,57 @@
+=================================================================
+==29423==ERROR: LeakSanitizer: detected memory leaks
+
+Indirect leak of 131072 byte(s) in 1 object(s) allocated from:
+    #0 0x7c280c4b61e7 in operator new(unsigned long) ../../../../src/libsanitizer/asan/asan_new_delete.cpp:99
+    #1 0x7c280ce0ff35 in sylar::Fiber::Fiber(std::function<void ()>, int) /home/liuxuanling/my_sylar/src/fiber.cpp:86
+    #2 0x5c722a90dc53 in FiberTest_SwapSpeed_Test::TestBody() /home/liuxuanling/my_sylar/tests/test_fiber.cpp:51
+    #3 0x5c722a9abb84 in void testing::internal::HandleSehExceptionsInMethodIfSupported<testing::Test, void>(testing::Test*, void (testing::Test::*)(), char const*) /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/src/gtest.cc:2599
+    #4 0x5c722a999858 in void testing::internal::HandleExceptionsInMethodIfSupported<testing::Test, void>(testing::Test*, void (testing::Test::*)(), char const*) /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/src/gtest.cc:2635
+    #5 0x5c722a9445d1 in testing::Test::Run() /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/src/gtest.cc:2674
+    #6 0x5c722a945cf8 in testing::TestInfo::Run() /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/src/gtest.cc:2853
+    #7 0x5c722a946f1e in testing::TestSuite::Run() /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/src/gtest.cc:3012
+    #8 0x5c722a96d702 in testing::internal::UnitTestImpl::RunAllTests() /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/src/gtest.cc:5870
+    #9 0x5c722a9ae7df in bool testing::internal::HandleSehExceptionsInMethodIfSupported<testing::internal::UnitTestImpl, bool>(testing::internal::UnitTestImpl*, bool (testing::internal::UnitTestImpl::*)(), char const*) /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/src/gtest.cc:2599
+    #10 0x5c722a99c3c5 in bool testing::internal::HandleExceptionsInMethodIfSupported<testing::internal::UnitTestImpl, bool>(testing::internal::UnitTestImpl*, bool (testing::internal::UnitTestImpl::*)(), char const*) /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/src/gtest.cc:2635
+    #11 0x5c722a969e5c in testing::UnitTest::Run() /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/src/gtest.cc:5444
+    #12 0x5c722a910f3d in RUN_ALL_TESTS() /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/include/gtest/gtest.h:2293
+    #13 0x5c722a910e06 in main /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/src/gtest_main.cc:51
+    #14 0x7c280bc29d8f in __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58
+
+Indirect leak of 1024 byte(s) in 1 object(s) allocated from:
+    #0 0x7c280c4b61e7 in operator new(unsigned long) ../../../../src/libsanitizer/asan/asan_new_delete.cpp:99
+    #1 0x5c722a90dc3c in FiberTest_SwapSpeed_Test::TestBody() /home/liuxuanling/my_sylar/tests/test_fiber.cpp:51
+    #2 0x5c722a9abb84 in void testing::internal::HandleSehExceptionsInMethodIfSupported<testing::Test, void>(testing::Test*, void (testing::Test::*)(), char const*) /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/src/gtest.cc:2599
+    #3 0x5c722a999858 in void testing::internal::HandleExceptionsInMethodIfSupported<testing::Test, void>(testing::Test*, void (testing::Test::*)(), char const*) /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/src/gtest.cc:2635
+    #4 0x5c722a9445d1 in testing::Test::Run() /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/src/gtest.cc:2674
+    #5 0x5c722a945cf8 in testing::TestInfo::Run() /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/src/gtest.cc:2853
+    #6 0x5c722a946f1e in testing::TestSuite::Run() /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/src/gtest.cc:3012
+    #7 0x5c722a96d702 in testing::internal::UnitTestImpl::RunAllTests() /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/src/gtest.cc:5870
+    #8 0x5c722a9ae7df in bool testing::internal::HandleSehExceptionsInMethodIfSupported<testing::internal::UnitTestImpl, bool>(testing::internal::UnitTestImpl*, bool (testing::internal::UnitTestImpl::*)(), char const*) /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/src/gtest.cc:2599
+    #9 0x5c722a99c3c5 in bool testing::internal::HandleExceptionsInMethodIfSupported<testing::internal::UnitTestImpl, bool>(testing::internal::UnitTestImpl*, bool (testing::internal::UnitTestImpl::*)(), char const*) /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/src/gtest.cc:2635
+    #10 0x5c722a969e5c in testing::UnitTest::Run() /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/src/gtest.cc:5444
+    #11 0x5c722a910f3d in RUN_ALL_TESTS() /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/include/gtest/gtest.h:2293
+    #12 0x5c722a910e06 in main /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/src/gtest_main.cc:51
+    #13 0x7c280bc29d8f in __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58
+
+Indirect leak of 24 byte(s) in 1 object(s) allocated from:
+    #0 0x7c280c4b61e7 in operator new(unsigned long) ../../../../src/libsanitizer/asan/asan_new_delete.cpp:99
+    #1 0x5c722a9101a2 in std::__shared_count<(__gnu_cxx::_Lock_policy)2>::__shared_count<sylar::Fiber*>(sylar::Fiber*) (/home/liuxuanling/my_sylar/build/tests/test_fiber+0x1e1a2)
+    #2 0x5c722a90ffb4 in std::__shared_count<(__gnu_cxx::_Lock_policy)2>::__shared_count<sylar::Fiber*>(sylar::Fiber*, std::integral_constant<bool, false>) (/home/liuxuanling/my_sylar/build/tests/test_fiber+0x1dfb4)
+    #3 0x5c722a90fc96 in std::__shared_ptr<sylar::Fiber, (__gnu_cxx::_Lock_policy)2>::__shared_ptr<sylar::Fiber, void>(sylar::Fiber*) (/home/liuxuanling/my_sylar/build/tests/test_fiber+0x1dc96)
+    #4 0x5c722a90f42a in std::shared_ptr<sylar::Fiber>::shared_ptr<sylar::Fiber, void>(sylar::Fiber*) (/home/liuxuanling/my_sylar/build/tests/test_fiber+0x1d42a)
+    #5 0x5c722a90dc66 in FiberTest_SwapSpeed_Test::TestBody() /home/liuxuanling/my_sylar/tests/test_fiber.cpp:51
+    #6 0x5c722a9abb84 in void testing::internal::HandleSehExceptionsInMethodIfSupported<testing::Test, void>(testing::Test*, void (testing::Test::*)(), char const*) /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/src/gtest.cc:2599
+    #7 0x5c722a999858 in void testing::internal::HandleExceptionsInMethodIfSupported<testing::Test, void>(testing::Test*, void (testing::Test::*)(), char const*) /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/src/gtest.cc:2635
+    #8 0x5c722a9445d1 in testing::Test::Run() /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/src/gtest.cc:2674
+    #9 0x5c722a945cf8 in testing::TestInfo::Run() /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/src/gtest.cc:2853
+    #10 0x5c722a946f1e in testing::TestSuite::Run() /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/src/gtest.cc:3012
+    #11 0x5c722a96d702 in testing::internal::UnitTestImpl::RunAllTests() /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/src/gtest.cc:5870
+    #12 0x5c722a9ae7df in bool testing::internal::HandleSehExceptionsInMethodIfSupported<testing::internal::UnitTestImpl, bool>(testing::internal::UnitTestImpl*, bool (testing::internal::UnitTestImpl::*)(), char const*) /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/src/gtest.cc:2599
+    #13 0x5c722a99c3c5 in bool testing::internal::HandleExceptionsInMethodIfSupported<testing::internal::UnitTestImpl, bool>(testing::internal::UnitTestImpl*, bool (testing::internal::UnitTestImpl::*)(), char const*) /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/src/gtest.cc:2635
+    #14 0x5c722a969e5c in testing::UnitTest::Run() /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/src/gtest.cc:5444
+    #15 0x5c722a910f3d in RUN_ALL_TESTS() /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/include/gtest/gtest.h:2293
+    #16 0x5c722a910e06 in main /home/liuxuanling/my_sylar/build/_deps/googletest-src/googletest/src/gtest_main.cc:51
+    #17 0x7c280bc29d8f in __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58
+
+SUMMARY: AddressSanitizer: 132120 byte(s) leaked in 3 allocation(s).
