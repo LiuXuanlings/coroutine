@@ -1,5 +1,6 @@
 #include"sylar/fiber.h"
 #include"sylar/context.h"
+#include <exception>
 #include <new>
 #include<functional>
 #include<iostream>
@@ -53,11 +54,15 @@ sylar::Fiber::ptr sylar::Fiber::GetThis(){
 void sylar::Fiber::mainFunc() {
     sylar::Fiber::ptr cur = GetThis();
     cur->m_state = EXEC;
-    cur->m_cb();
-    
-    // Clear the callback to break potential circular references in the lambda closure
-    cur->m_cb = nullptr; 
-    cur->m_state = TERM;
+
+    try {
+        cur->m_cb();
+        cur->m_cb = nullptr;
+        cur->m_state = TERM;
+    } catch (...) {
+        cur->m_cb = nullptr;
+        cur->m_state = EXCEPT;
+    }
 
     // Extract raw pointer to call yield later without creating temporary shared_ptrs
     sylar::Fiber* raw_ptr = cur.get();
@@ -66,7 +71,7 @@ void sylar::Fiber::mainFunc() {
     // The reference count drops by 1. (The main thread still holds a copy, so it won't die yet).
     cur.reset();
 
-    // Context switch back to the main thread. 
+    // Context switch back to the main thread.
     // This fiber will freeze here forever, but its stack is now clean!
     raw_ptr->yield();
 }
@@ -85,7 +90,9 @@ sylar::Fiber::Fiber(std::function<void()> cb, int stack_size){
 
 void sylar::Fiber::yield(){
     t_fiber = t_thread_fiber;
-    this->m_state = HOLD;
+    if(this->m_state == EXEC){
+        this->m_state = HOLD;
+    }
     if(!m_is_main){
         SwapContext(reinterpret_cast<char**>(&this->m_ctx.sp), reinterpret_cast<char**>(&t_thread_fiber->m_ctx.sp));
     }
