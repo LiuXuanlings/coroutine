@@ -1,35 +1,68 @@
 #ifndef SYLAR_SCHEDULER_H
 #define SYLAR_SCHEDULER_H
 
+#include "sylar/fiber.h"
 #include "sylar/thread.h"
 #include <atomic>
 #include <condition_variable>
 #include <functional>
 #include <mutex>
 #include <queue>
+#include <utility>
 #include <vector>
 
 namespace sylar {
 
 class Scheduler {
 public:
+    // static constexpr:
+    // 1) static: class-level single constant, not per-object field (no repeated storage per Scheduler instance)
+    // 2) constexpr: compile-time constant, can be used directly in loops/constant expressions
+    // 3) hardcoded to 32 as requested in current design stage
     static constexpr size_t THREAD_COUNT = 32;
 
     Scheduler();
     ~Scheduler() = default;
 
+    // static factory/accessor:
+    // GetInstance must be callable before any Scheduler object exists,
+    // so it cannot be a non-static member function.
+    // Constructor only builds an object *after* instance creation has already been decided.
     static Scheduler* GetInstance();
 
     void run();
-    void schedule(std::function<void()> task);
+    void stop();
+
+    // 核心调度接口：直接调度一个 Fiber 实例
+    void schedule(Fiber::ptr fiber);
+
+    // 便捷调度接口：把函数和参数 bind 成 void()，再封装为 Fiber 入队
+    template<class F, class... Args>
+    void schedule(F&& f, Args&&... args) {
+        std::function<void()> cb = std::bind(std::forward<F>(f), std::forward<Args>(args)...);
+        Fiber::ptr fiber(new Fiber(cb));
+        schedule(fiber);
+    }
 
 private:
+    // Thread pool container:
+    // store Thread::ptr(shared_ptr) so thread objects have shared ownership/lifetime management.
+    // In constructor, std::make_shared<Thread>(...) allocates control block + object efficiently.
     std::vector<Thread::ptr> m_threads;
-    std::queue<std::function<void()>> m_queue;
+
+    // FIFO task queue; each element is one Fiber task.
+    std::queue<Fiber::ptr> m_queue;
     std::mutex m_mutex;
     std::condition_variable m_cv;
 
+    // Stop flag: false by default, becomes true when stop() begins shutdown.
+    bool m_is_stopping = false;
+
+    // static members belong to class scope (shared by all Scheduler objects).
+    // t_scheduler is also thread_local, so each thread has its own atomic pointer slot.
     static thread_local std::atomic<Scheduler*> t_scheduler;
+
+    // static global mutex used by GetInstance's double-checked locking critical section.
     static std::mutex s_singleton_mutex;
 };
 
