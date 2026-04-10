@@ -6,14 +6,13 @@ namespace sylar {
 // These static data members are declared inside class Scheduler in scheduler.h,
 // but they must be defined once in a .cpp file to allocate storage.
 // Otherwise linker will report undefined symbol for static members.
-thread_local std::atomic<Scheduler*> Scheduler::t_scheduler{nullptr};
+std::atomic<Scheduler*> Scheduler::t_scheduler{nullptr};
 std::mutex Scheduler::s_singleton_mutex;
 
 Scheduler* Scheduler::GetInstance() {
     // Double-checked locking step 1 (fast path):
     // First read without taking mutex. If already initialized, return directly.
-    // memory_order_acquire pairs with release store below, ensuring visibility
-    // of fully-constructed Scheduler state after pointer is observed non-null.
+    // aquire: 禁止后续访问重排到load前， 确保后续访问能看到最新的对象状态
     Scheduler* scheduler = t_scheduler.load(std::memory_order_acquire);
     if (scheduler == nullptr) {
         // Slow path: possible first initialization, enter critical section.
@@ -25,8 +24,7 @@ Scheduler* Scheduler::GetInstance() {
         scheduler = t_scheduler.load(std::memory_order_acquire);
         if (scheduler == nullptr) {
             scheduler = new Scheduler();
-            // Publish pointer with release semantics so subsequent acquire loads
-            // in other threads observe initialized object state.
+            // release: 禁止构造写操作重排到store后，配合acquire保证可见性
             t_scheduler.store(scheduler, std::memory_order_release);
         }
     }
@@ -46,6 +44,7 @@ Scheduler::Scheduler() {
 }
 
 void Scheduler::run() {
+    // 重点注释：
     // 为当前工作线程初始化主协程，否则后续 fiber->resume() 无法切回该线程主协程。
     Fiber::GetThis();
 
@@ -54,9 +53,13 @@ void Scheduler::run() {
 
         {
             std::unique_lock<std::mutex> lock(m_mutex);
-            while (m_queue.empty() && !m_is_stopping) {
-                m_cv.wait(lock);
-            }
+            // while而不是if的原因：
+            // wait 可能被虚假唤醒（spurious wakeup），操作系统为了简化条件变量的底层实现并提高效率，允许wait在没有收到notify的情况下返回，所以必须使用while循环来重新检查条件。
+            //while (m_queue.empty() && !m_is_stopping) {
+            //    m_cv.wait(lock);
+            //}
+            //推荐写法：带谓词的wait，内部会自动循环检查条件，避免虚假唤醒问题。
+            m_cv.wait(lock, [this] { return !m_queue.empty() || m_is_stopping; });
 
             if (m_is_stopping && m_queue.empty()) {
                 break;
@@ -66,10 +69,9 @@ void Scheduler::run() {
             m_queue.pop();
         }
 
-        // 重点注释1：
+        // 重点注释：
         // 这里必须“先出队并释放锁，再执行 fiber->resume()”。
-        // 原因是 resume() 会真正执行用户任务，可能耗时/阻塞/再次 schedule；
-        // 如果持锁执行，会长时间占用队列锁，导致其他生产者/消费者线程无法访问队列。
+        // 原因是 resume() 会真正执行用户任务 如果持锁执行，会长时间占用队列锁，导致其他生产者/消费者线程无法访问队列。
         if (fiber) {
             fiber->resume();
         }
@@ -97,6 +99,7 @@ void Scheduler::schedule(Fiber::ptr fiber) {
 
 void Scheduler::stop() {
     {
+        // m_is_stopping 的赋值同样需要保护，必须在锁内进行
         std::lock_guard<std::mutex> lock(m_mutex);
         m_is_stopping = true;
     }
@@ -119,6 +122,7 @@ void Scheduler::stop() {
     for (auto& thread : m_threads) {
         thread.reset();
     }
+    // vector::clear(): destroys all elements and sets size to 0, but capacity remains unchanged.
     m_threads.clear();
 }
 

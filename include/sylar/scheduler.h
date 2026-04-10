@@ -16,12 +16,11 @@ namespace sylar {
 class Scheduler {
 public:
     // static constexpr:
-    // 1) static: class-level single constant, not per-object field (no repeated storage per Scheduler instance)
-    // 2) constexpr: compile-time constant, can be used directly in loops/constant expressions
-    // 3) hardcoded to 32 as requested in current design stage
+    // 1) static: class-level single constant, not per-object (no repeated storage per Scheduler instance)
+    // 2) constexpr: compile-time constant
+    // 3) hardcoded to 32 in current design stage
     static constexpr size_t THREAD_COUNT = 32;
 
-    Scheduler();
     ~Scheduler() = default;
 
     // static factory/accessor:
@@ -45,6 +44,9 @@ public:
     }
 
 private:
+    // Private constructor: only GetInstance can create Scheduler objects, enforcing singleton pattern.
+    Scheduler();
+
     // Thread pool container:
     // store Thread::ptr(shared_ptr) so thread objects have shared ownership/lifetime management.
     // In constructor, std::make_shared<Thread>(...) allocates control block + object efficiently.
@@ -59,8 +61,8 @@ private:
     bool m_is_stopping = false;
 
     // static members belong to class scope (shared by all Scheduler objects).
-    // t_scheduler is also thread_local, so each thread has its own atomic pointer slot.
-    static thread_local std::atomic<Scheduler*> t_scheduler;
+    // 不需要线程局部存储（thread_local）因为 Scheduler 是单例的，所有线程共享同一个实例。
+    static std::atomic<Scheduler*> t_scheduler;
 
     // static global mutex used by GetInstance's double-checked locking critical section.
     static std::mutex s_singleton_mutex;
