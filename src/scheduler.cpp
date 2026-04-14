@@ -2,34 +2,6 @@
 
 namespace sylar {
 
-// Declaration vs definition:
-// These static data members are declared inside class Scheduler in scheduler.h,
-// but they must be defined once in a .cpp file to allocate storage.
-// Otherwise linker will report undefined symbol for static members.
-std::atomic<Scheduler*> Scheduler::t_scheduler{nullptr};
-std::mutex Scheduler::s_singleton_mutex;
-
-Scheduler* Scheduler::GetInstance() {
-    // Double-checked locking step 1 (fast path):
-    // First read without taking mutex. If already initialized, return directly.
-    // aquire: 禁止后续访问重排到load前， 确保后续访问能看到最新的对象状态
-    Scheduler* scheduler = t_scheduler.load(std::memory_order_acquire);
-    if (scheduler == nullptr) {
-        // Slow path: possible first initialization, enter critical section.
-        std::lock_guard<std::mutex> lock(s_singleton_mutex);
-
-        // Double-checked locking step 2:
-        // Re-check after acquiring lock because another thread could have
-        // initialized it between step 1 and mutex acquisition.
-        scheduler = t_scheduler.load(std::memory_order_acquire);
-        if (scheduler == nullptr) {
-            scheduler = new Scheduler();
-            // release: 禁止构造写操作重排到store后，配合acquire保证可见性
-            t_scheduler.store(scheduler, std::memory_order_release);
-        }
-    }
-    return scheduler;
-}
 
 Scheduler::Scheduler() {
     for (size_t i = 0; i < THREAD_COUNT; ++i) {

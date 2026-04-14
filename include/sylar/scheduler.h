@@ -15,6 +15,14 @@ namespace sylar {
 
 class Scheduler {
 public:
+
+    //利用局部静态变量实现单例模式，保证线程安全且只创建一个实例
+    //在 C++ 中，类的静态成员函数（如 GetInstance）可以访问私有构造函数。但是必须把 GetInstance 的实现放在类定义内部（内联），或者确保编译器在处理 GetInstance 时能看到构造函数的定义。
+    static Scheduler* GetInstance() {
+        // C++11 保证 static 局部变量只会被初始化一次，且线程安全
+        static Scheduler* s_instance = new Scheduler();
+        return s_instance;
+    }
     // static constexpr:
     // 1) static: class-level single constant, not per-object (no repeated storage per Scheduler instance)
     // 2) constexpr: compile-time constant
@@ -59,13 +67,6 @@ private:
 
     // Stop flag: false by default, becomes true when stop() begins shutdown.
     bool m_is_stopping = false;
-
-    // static members belong to class scope (shared by all Scheduler objects).
-    // 不需要线程局部存储（thread_local）因为 Scheduler 是单例的，所有线程共享同一个实例。
-    static std::atomic<Scheduler*> t_scheduler;
-
-    // static global mutex used by GetInstance's double-checked locking critical section.
-    static std::mutex s_singleton_mutex;
 };
 
 } // namespace sylar
