@@ -43,7 +43,7 @@ target_link_libraries(sylar_core pthread dl)
 include(FetchContent)
 FetchContent_Declare(
   googletest
-  GIT_REPOSITORY https://github.com/google/googletest.git
+  GIT_REPOSITORY https://kkgithub.com/google/googletest.git
   GIT_TAG        release-1.12.1 # 稳定版本
 )
 # 对于Windows，强制使用动态运行库以防冲突，Linux下无影响
