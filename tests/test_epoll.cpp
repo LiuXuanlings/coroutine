@@ -79,3 +79,78 @@ TEST(SchedulerTest, NestedScheduling) {
     close(fds[0]); close(fds[1]);
     delete sc;
 }
+
+// ============================================================================
+// 第二部分：鲁棒性与边缘情况测试 (Robustness & Edge Cases)
+// ============================================================================
+
+/**
+ * @test 无效 FD 测试
+ * 验证：传入 -1 或非法 FD 时，系统调用报错不应导致程序崩溃。
+ */
+TEST(SchedulerTest, InvalidFD) {
+    sylar::Scheduler* sc = new sylar::Scheduler();
+    // epoll_ctl 内部会报错，但 addEvent 应当优雅处理或忽略
+    sc->addEvent(-1, EPOLLIN, []() {});
+    sc->stop();
+    delete sc;
+    SUCCEED(); 
+}
+
+/**
+ * @test 空回调测试
+ * 验证：如果注册了事件但 callback 为空，当事件触发时，run() 应当有判空逻辑，避免执行 Fiber 时崩溃。
+ */
+TEST(SchedulerTest, EmptyCallback) {
+    int fds[2];
+    ASSERT_TRUE(create_socket_pair(fds));
+    sylar::Scheduler* sc = new sylar::Scheduler();
+    
+    // 故意不传回调（假设代码中对 nullptr 有判空）
+    sc->addEvent(fds[0], EPOLLIN, nullptr);
+    write(fds[1], "t", 1);
+
+    usleep(10000); // 留出触发时间，确保不崩溃
+    sc->stop();
+    close(fds[0]); close(fds[1]);
+    delete sc;
+    SUCCEED();
+}
+
+/**
+ * @test 重复注册测试
+ * 验证：同一个 FD 重复调用 addEvent。正常应由 ADD 自动转为 MOD 或处理错误。
+ * 验证：程序不应因为 epoll 报错而中断。
+ */
+TEST(SchedulerTest, DuplicateFD) {
+    int fds[2];
+    ASSERT_TRUE(create_socket_pair(fds));
+    sylar::Scheduler* sc = new sylar::Scheduler();
+
+    sc->addEvent(fds[0], EPOLLIN, []() {});
+    sc->addEvent(fds[0], EPOLLIN, []() {}); // 重复添加
+
+    sc->stop();
+    close(fds[0]); close(fds[1]);
+    delete sc;
+    SUCCEED();
+}
+
+/**
+ * @test 注册已关闭的 FD
+ * 验证：如果 FD 在 addEvent 之前被 close 了，epoll_ctl 会报错 EBADF，
+ * 测试此时 scheduler 的资源清理逻辑是否稳健。
+ */
+TEST(SchedulerTest, PreClosedFD) {
+    int fds[2];
+    ASSERT_TRUE(create_socket_pair(fds));
+    close(fds[0]); // 提前关闭
+
+    sylar::Scheduler* sc = new sylar::Scheduler();
+    sc->addEvent(fds[0], EPOLLIN, []() {});
+
+    sc->stop();
+    close(fds[1]);
+    delete sc;
+    SUCCEED();
+}

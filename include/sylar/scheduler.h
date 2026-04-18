@@ -23,7 +23,9 @@ struct EventContext {
 // FDContext: 从文件描述符到被挂起的 fiber 的映射
 struct FDContext {
     int fd;                                  // 文件描述符本身
-    EventContext event_context;              // 被挂起的 event_context
+    EventContext read_event_context;         // 读事件的 event_context
+    EventContext write_event_context;        // 写事件的 event_context
+    std::mutex mutex;                       // 保护 EventContext 的互斥锁
 };
 
 class Scheduler {

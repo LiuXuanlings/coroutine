@@ -2,6 +2,7 @@
 #include <unistd.h>
 #include <cstring>
 #include <fcntl.h>
+#include <memory>
 
 namespace sylar {
 FDContext* Scheduler::getFdContext(int fd) {
@@ -39,8 +40,8 @@ Scheduler::Scheduler() {
 
     // 封装管道事件上下文，存入epoll的data.ptr，避免指针失效
     FDContext* pipe_ctx = getFdContext(m_pipe_read);
-    pipe_ctx->event_context.events = EPOLLIN;
-    pipe_ctx->event_context.callback = nullptr; // 管道仅用于唤醒，无需回调
+    pipe_ctx->read_event_context.events = EPOLLIN;
+    pipe_ctx->read_event_context.callback = nullptr; // 管道仅用于唤醒，无需回调
 
     // 将管道读端注册为可读事件
     struct epoll_event ev;
@@ -60,18 +61,47 @@ Scheduler::Scheduler() {
 }
 
 void Scheduler::addEvent(int fd, int events, std::function<void()> callback) {
+    // 1. 无效 FD 保护
+    if (fd < 0) return;
+
     // 从 vector 统一管理器中获取
     FDContext* fd_ctx = getFdContext(fd);
-    fd_ctx->event_context.events = events;
-    fd_ctx->event_context.callback = callback;
+    std::lock_guard<std::mutex> lock(fd_ctx->mutex);
+
+    // 如果该 Context 之前没事件，就是 ADD；否则就是 MOD (修改),                                                             
+    // 因为同一个 FD 可能先注册了读事件，后又注册了写事件，或者反过来。                                                      
+    // 或者者用户先注册了读事件，后来又修改了回调函数，这些都属于修改而不是新增。                                            
+    // 如果全部用ADD，当同一个 FD 重复注册时，内核会报错 EEXIST；如果全部用MOD，当第一次注册时内核会报错 ENOENT。  
+    // 计算旧的事件掩码
+    int old_events = fd_ctx->read_event_context.events | fd_ctx->write_event_context.events;
+    int op = (old_events == 0) ? EPOLL_CTL_ADD : EPOLL_CTL_MOD;
+
+    // 计算新的事件掩码（基于当前状态和传入的events参数）
+    int new_read_events = (events & EPOLLIN) ? EPOLLIN : fd_ctx->read_event_context.events;
+    int new_write_events = (events & EPOLLOUT) ? EPOLLOUT : fd_ctx->write_event_context.events;
+    int new_events = new_read_events | new_write_events;
 
     // 创建 epoll_event，把 FDContext 保存在 epoll_event.data.ptr 指针里面
     struct epoll_event ev;
-    ev.events = events;
+    ev.events = new_events;
     ev.data.ptr = fd_ctx;
 
-    // 通过 epoll_ctl ADD 注册到 epoll 实例上
-    epoll_ctl(m_epfd, EPOLL_CTL_ADD, fd, &ev);
+    // 检查内核注册结果
+    if (epoll_ctl(m_epfd, op, fd, &ev) < 0) {
+        // 如果失败了（比如 fd 已经关了），直接退出，不修改 fd_ctx 的状态
+        perror("epoll_ctl failed");
+        return;
+    }
+
+    // 只有内核注册成功，才更新内存中的状态
+    if (events & EPOLLIN) {
+        fd_ctx->read_event_context.events = EPOLLIN;
+        fd_ctx->read_event_context.callback = callback;
+    }
+    if (events & EPOLLOUT) {
+        fd_ctx->write_event_context.events = EPOLLOUT;
+        fd_ctx->write_event_context.callback = callback;
+    }
 }
 
 void Scheduler::run() {
@@ -127,17 +157,52 @@ void Scheduler::run() {
                             continue;
                         }
 
-                        // ==========================================
-                        // 【防御死循环】：触发后立刻将该事件从 epoll 中删除！
-                        // 这样即使数据没被读完，epoll 也不会再报了，直到用户重新 addEvent
-                        // ==========================================
-                        epoll_ctl(m_epfd, EPOLL_CTL_DEL, fd_ctx->fd, nullptr);
-                        // 清理当前上下文的记录
-                        fd_ctx->event_context.events = 0;
-                        
-                        //封装成一个 fiber，然后调用 schedule 函数
-                        Fiber::ptr fiber_from_event(new Fiber(fd_ctx->event_context.callback));
-                        schedule(fiber_from_event);
+                        std::lock_guard<std::mutex> lock(fd_ctx->mutex);
+                        int current_events = fd_ctx->read_event_context.events | fd_ctx->write_event_context.events;
+                        // 使用 vector 收集待调度的 fiber，因为一个 FD 可能同时触发读和写事件
+                        // 例如 socket 缓冲区既有数据可读又有空间可写时，epoll_wait 会同时返回 EPOLLIN | EPOLLOUT
+                        std::vector<Fiber::ptr> fibers_to_schedule;
+
+                        // 处理读事件
+                        if (events[i].events & EPOLLIN) {
+                            if (fd_ctx->read_event_context.callback) {
+                                fibers_to_schedule.push_back(std::make_shared<Fiber>(fd_ctx->read_event_context.callback));
+                            }
+                            fd_ctx->read_event_context.events = 0;
+                        }
+                        // 处理写事件
+                        if (events[i].events & EPOLLOUT) {
+                            if (fd_ctx->write_event_context.callback) {
+                                fibers_to_schedule.push_back(std::make_shared<Fiber>(fd_ctx->write_event_context.callback));
+                            }
+                            fd_ctx->write_event_context.events = 0;
+                        }
+                        // 处理错误和挂起事件（EPOLLERR 和 EPOLLHUP）
+                        if (events[i].events & (EPOLLERR | EPOLLHUP)) {
+                            // 清除读写事件，避免后续重复触发
+                            fd_ctx->read_event_context.events = 0;
+                            fd_ctx->write_event_context.events = 0;
+                            // 这里可以添加错误回调，但当前设计没有单独的错误回调
+                        }
+
+                        int new_events = fd_ctx->read_event_context.events | fd_ctx->write_event_context.events;
+                        if (new_events != current_events) {
+                            if (new_events == 0) {
+                                epoll_ctl(m_epfd, EPOLL_CTL_DEL, fd_ctx->fd, nullptr);
+                            } else {
+                                struct epoll_event ev;
+                                ev.events = new_events;
+                                ev.data.ptr = fd_ctx;
+                                epoll_ctl(m_epfd, EPOLL_CTL_MOD, fd_ctx->fd, &ev);
+                            }
+                        }
+
+                        // 调度所有产生的 fiber
+                        for (const auto& fiber : fibers_to_schedule) {
+                            if(fiber) {
+                                schedule(fiber);
+                            }
+                        }
                     }
                 }
 
