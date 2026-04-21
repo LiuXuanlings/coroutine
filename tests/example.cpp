@@ -1,4 +1,4 @@
-#include "sylar/scheduler.h"
+#include "sylar/iomanager.h"
 #include <atomic>
 #include <chrono>
 #include <fcntl.h>
@@ -44,7 +44,7 @@ int main() {
     int fds[2];
     create_socket_pair(fds);
 
-    sylar::Scheduler* scheduler = sylar::Scheduler::GetInstance();
+    sylar::IOManager io;
     /*
     为什么会陷入死循环？这就是经典的 Epoll 水平触发（Level-Triggered, LT）陷阱。
     场景复现：
@@ -60,14 +60,14 @@ int main() {
     fd=6 收到上次写的 'T'，触发！-> 进入 while 循环读出 'T'。
     不断重复上述过程……你的内存会被无限创建的 Fiber 瞬间撑爆。
     */
-    scheduler->addEvent(fds[0], EPOLLIN, [&callback_count]() {
+    io.addEvent(fds[0], EPOLLIN, [&callback_count]() {
         ++callback_count;
     });
 
     const char* msg = "test";
     write(fds[1], msg, strlen(msg));
 
-    scheduler->stop();
+    io.stop();
 
     close(fds[0]);
     close(fds[1]);
