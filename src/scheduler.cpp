@@ -4,13 +4,19 @@
 namespace sylar {
 
 Scheduler::Scheduler() {
+    // 注意：不在基类构造函数中创建线程！
+    // 原因：派生类构造期间虚函数表指向基类，工作线程会错误调用 Scheduler::run() 而非 IOManager::run()
+    // 线程创建延迟到派生类构造函数完成后，由派生类调用 startThreads()
+}
+
+void Scheduler::startThreads() {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_threads_started) {
+        return;  // 已经启动，避免重复启动
+    }
+    m_threads_started = true;
+
     for (size_t i = 0; i < THREAD_COUNT; ++i) {
-        // &Scheduler::run:
-        // run is a non-static member function, so its type is member-function pointer,
-        // need address-of form "&Class::method".
-        // std::bind(&Scheduler::run, this) binds current object pointer as implicit this,
-        // converting member call into zero-arg callable matching Thread callback signature.
-        // vector stores Thread::ptr, so use make_shared<Thread>(...) for shared ownership.
         m_threads.push_back(std::make_shared<Thread>(
             std::bind(&Scheduler::run, this),
             "scheduler_" + std::to_string(i)
@@ -35,6 +41,10 @@ void Scheduler::schedule(Fiber::ptr fiber) {
         queue_was_empty = m_queue.empty();
         m_queue.push(fiber);
     }
+
+    // 延迟启动线程：第一次调度任务时启动
+    // 这确保派生类构造完成后再启动线程，虚函数表正确指向派生类
+    startThreads();
 
     if (queue_was_empty) {
         tickle();

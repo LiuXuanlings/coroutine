@@ -37,6 +37,9 @@ public:
     // 如果不虚析构，子类的析构函数就不会被调用，可能导致资源泄漏。
     virtual ~Scheduler();
 
+    // 启动工作线程（由派生类构造函数调用，确保虚函数表正确）
+    void startThreads();
+
     // 启动调度循环（在子类线程中运行）
     virtual void run();
 
@@ -72,6 +75,9 @@ protected:
 
     // 是否正在停止
     bool isStopping() const { return m_is_stopping; }
+
+    // 线程是否已启动
+    bool m_threads_started = false;
 
     // Thread pool container:
     // store Thread::ptr(shared_ptr) so thread objects have shared ownership/lifetime management.

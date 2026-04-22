@@ -48,6 +48,9 @@ IOManager::IOManager() : Scheduler() {
     ev.events = EPOLLIN;
     ev.data.ptr = pipe_ctx;
     epoll_ctl(m_epfd, EPOLL_CTL_ADD, m_pipe_read, &ev);
+
+    // 在派生类构造完成后启动线程，确保虚函数表正确指向 IOManager
+    startThreads();
 }
 
 IOManager::~IOManager() {

@@ -27,14 +27,14 @@ TEST(SchedulerTest, ScheduleAndStop) {
     g_print_count.store(0);
     g_sleep_count.store(0);
 
-    sylar::Scheduler* scheduler = sylar::Scheduler::GetInstance();
+    sylar::Scheduler scheduler;
 
     for (int i = 0; i < 100; ++i) {
-        scheduler->schedule(print_task);
-        scheduler->schedule(sleep_print_task);
+        scheduler.schedule(print_task);
+        scheduler.schedule(sleep_print_task);
     }
 
-    scheduler->stop();
+    scheduler.stop();
 
     EXPECT_EQ(g_print_count.load(), 100);
     EXPECT_EQ(g_sleep_count.load(), 100);
