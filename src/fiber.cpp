@@ -1,27 +1,27 @@
-#include"sylar/fiber.h"
-#include"sylar/context.h"
+#include"minicyber/fiber.h"
+#include"minicyber/context.h"
 #include <exception>
 #include <new>
 #include<functional>
 #include<iostream>
 #include<stdio.h>
 
-namespace sylar{
+namespace minicyber{
     // static thread_local: DECLARE in .h, DEFINE in .cpp (no static)
     thread_local Fiber::ptr Fiber::t_fiber=nullptr;//symbol names(Fiber::t_fiber) must match exactly 
     thread_local Fiber::ptr Fiber::t_thread_fiber=nullptr;
 }
 
 
-sylar::Fiber::Fiber(){//main fiber share stack with thread
+minicyber::Fiber::Fiber(){//main fiber share stack with thread
     m_is_main = true;
     m_state = INIT;
 }
 
-sylar::Fiber::~Fiber(){
+minicyber::Fiber::~Fiber(){
 }
 
-sylar::Fiber::ptr sylar::Fiber::GetThis(){
+minicyber::Fiber::ptr minicyber::Fiber::GetThis(){
     if(t_fiber!=nullptr) return t_fiber; 
     ptr fiber(new Fiber());
     t_thread_fiber = fiber;
@@ -51,8 +51,8 @@ sylar::Fiber::ptr sylar::Fiber::GetThis(){
     * By the time this fiber is suspended forever, its stack is 100% clean of self-referencing 
     * smart pointers. When the main thread drops the fiber, it will be safely destroyed.
     */
-void sylar::Fiber::mainFunc() {
-    sylar::Fiber::ptr cur = GetThis();
+void minicyber::Fiber::mainFunc() {
+    minicyber::Fiber::ptr cur = GetThis();
     cur->m_state = EXEC;
 
     try {
@@ -65,7 +65,7 @@ void sylar::Fiber::mainFunc() {
     }
 
     // Extract raw pointer to call yield later without creating temporary shared_ptrs
-    sylar::Fiber* raw_ptr = cur.get();
+    minicyber::Fiber* raw_ptr = cur.get();
 
     // Manually destroy the shared_ptr on this fiber's stack.
     // The reference count drops by 1. (The main thread still holds a copy, so it won't die yet).
@@ -76,7 +76,7 @@ void sylar::Fiber::mainFunc() {
     raw_ptr->yield();
 }
 
-sylar::Fiber::Fiber(std::function<void()> cb, int stack_size){
+minicyber::Fiber::Fiber(std::function<void()> cb, int stack_size){
     m_is_main = false;
     m_cb = cb;
     m_state = INIT;
@@ -88,7 +88,7 @@ sylar::Fiber::Fiber(std::function<void()> cb, int stack_size){
     MakeContext(&m_ctx,Fiber::mainFunc);
 }
 
-void sylar::Fiber::yield(){
+void minicyber::Fiber::yield(){
     t_fiber = t_thread_fiber;
     if(this->m_state == EXEC){
         this->m_state = HOLD;
@@ -98,7 +98,7 @@ void sylar::Fiber::yield(){
     }
 }
 
-void sylar::Fiber::resume(){
+void minicyber::Fiber::resume(){
     /*
      * Root cause:
      * Using `static_cast<shared_ptr>(this)` creates a BRAND NEW Control Block (CB) 

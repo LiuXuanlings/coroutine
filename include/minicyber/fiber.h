@@ -1,11 +1,11 @@
-#ifndef SYLAR_FIBER_H
-#define SYLAR_FIBER_H
+#ifndef MINICYBER_FIBER_H
+#define MINICYBER_FIBER_H
 
-#include"sylar/context.h"
+#include"minicyber/context.h"
 #include<functional>
 #include<memory>
 
-namespace sylar
+namespace minicyber
 {
     class Fiber: public std::enable_shared_from_this<Fiber>{
     public:
@@ -30,7 +30,7 @@ namespace sylar
         ~Fiber();
     private:
         Fiber();
-        //argument of type "void (sylar::Fiber::*)()" is incompatible with parameter of type "void (*)()"
+        //argument of type "void (minicyber::Fiber::*)()" is incompatible with parameter of type "void (*)()"
         static void mainFunc();//encapsulate void makecontext(ucontext_t *ucp, void (*func)(), int argc, ...)
 
     private:
@@ -40,7 +40,7 @@ namespace sylar
         state m_state;
     };
 
-} // namespace sylar
+} // namespace minicyber
 
 
 

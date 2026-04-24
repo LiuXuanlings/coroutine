@@ -1,8 +1,8 @@
-#include "sylar/thread.h"
+#include "minicyber/thread.h"
 #include <unistd.h>
 #include <sys/syscall.h>
 
-namespace sylar {
+namespace minicyber {
 
 // -- 线程局部变量 --
 static thread_local Thread* t_thread = nullptr;
@@ -74,4 +74,4 @@ void* Thread::run(void* arg) {//适配pthread_create接口的中转函数，真�
     return 0;
 }
 
-} // namespace sylar
+} // namespace minicyber

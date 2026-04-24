@@ -1,4 +1,4 @@
-#include "sylar/iomanager.h"
+#include "minicyber/iomanager.h"
 #include <atomic>
 #include <chrono>
 #include <fcntl.h>
@@ -44,7 +44,7 @@ int main() {
     int fds[2];
     create_socket_pair(fds);
 
-    sylar::IOManager io;
+    minicyber::IOManager io;
     /*
     为什么会陷入死循环？这就是经典的 Epoll 水平触发（Level-Triggered, LT）陷阱。
     场景复现：

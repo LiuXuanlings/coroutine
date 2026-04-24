@@ -1,9 +1,9 @@
-#include "sylar/iomanager.h"
+#include "minicyber/iomanager.h"
 #include <cstring>
 #include <fcntl.h>
 #include <unistd.h>
 
-namespace sylar {
+namespace minicyber {
 
 FDContext* IOManager::getFdContext(int fd) {
     std::lock_guard<std::mutex> lock(m_fd_mutex);
@@ -274,4 +274,4 @@ void IOManager::stop() {
     }
 }
 
-} // namespace sylar
+} // namespace minicyber

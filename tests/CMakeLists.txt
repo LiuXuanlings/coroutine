@@ -17,7 +17,7 @@ if(TEST_FILES)
             gtest 
             pthread 
             dl
-            sylar_core
+            minicyber_core
         )
         
         # 注册到 ctest
@@ -30,5 +30,5 @@ endif()
 # 因为 CMake 对相对路径的解析基准是"分裂"的：构建声明 (add_executable) 和源码搜索 (file(GLOB)) 默认基于当前源码目录；而底层文件系统操作 (if(EXISTS), file(READ)) 默认基于当前的执行目录 (即 build 目录)。因此，为了避免去 build 目录找源码导致误判，在使用 if(EXISTS) 时必须强制拼接 ${CMAKE_CURRENT_SOURCE_DIR} 转换为绝对路径。
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/example.cpp")
     add_executable(example example.cpp)
-    target_link_libraries(example sylar_core pthread dl)
+    target_link_libraries(example minicyber_core pthread dl)
 endif()

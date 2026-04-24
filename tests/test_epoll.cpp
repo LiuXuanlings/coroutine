@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "sylar/iomanager.h"
+#include "minicyber/iomanager.h"
 #include <atomic>
 #include <fcntl.h>
 #include <sys/socket.h>
@@ -37,7 +37,7 @@ bool wait_for(Condition cond, int timeout_ms = 500) {
 
 TEST(IOManagerTest, BasicTask) {
     std::atomic<int> count{0};
-    sylar::IOManager* io = new sylar::IOManager();
+    minicyber::IOManager* io = new minicyber::IOManager();
     for (int i = 0; i < 10; ++i) io->schedule([&count]() { ++count; });
     io->stop();
     EXPECT_EQ(count.load(), 10);
@@ -49,7 +49,7 @@ TEST(IOManagerTest, IOReadWrite) {
     int fds[2];
     ASSERT_TRUE(create_socket_pair(fds));
 
-    sylar::IOManager* io = new sylar::IOManager();
+    minicyber::IOManager* io = new minicyber::IOManager();
     io->addEvent(fds[0], EPOLLIN, [&read_ok]() { read_ok = true; });
     io->addEvent(fds[1], EPOLLOUT, [&write_ok]() { write_ok = true; });
 
@@ -67,7 +67,7 @@ TEST(IOManagerTest, NestedScheduling) {
     int fds[2];
     ASSERT_TRUE(create_socket_pair(fds));
 
-    sylar::IOManager* io = new sylar::IOManager();
+    minicyber::IOManager* io = new minicyber::IOManager();
     io->addEvent(fds[0], EPOLLIN, [&]() {
         io->schedule([&nested_done]() { nested_done = true; });
     });
@@ -89,7 +89,7 @@ TEST(IOManagerTest, NestedScheduling) {
  * 验证：传入 -1 或非法 FD 时，系统调用报错不应导致程序崩溃。
  */
 TEST(IOManagerTest, InvalidFD) {
-    sylar::IOManager* io = new sylar::IOManager();
+    minicyber::IOManager* io = new minicyber::IOManager();
     // epoll_ctl 内部会报错，但 addEvent 应当优雅处理或忽略
     io->addEvent(-1, EPOLLIN, []() {});
     io->stop();
@@ -104,7 +104,7 @@ TEST(IOManagerTest, InvalidFD) {
 TEST(IOManagerTest, EmptyCallback) {
     int fds[2];
     ASSERT_TRUE(create_socket_pair(fds));
-    sylar::IOManager* io = new sylar::IOManager();
+    minicyber::IOManager* io = new minicyber::IOManager();
 
     // 故意不传回调（假设代码中对 nullptr 有判空）
     io->addEvent(fds[0], EPOLLIN, nullptr);
@@ -125,7 +125,7 @@ TEST(IOManagerTest, EmptyCallback) {
 TEST(IOManagerTest, DuplicateFD) {
     int fds[2];
     ASSERT_TRUE(create_socket_pair(fds));
-    sylar::IOManager* io = new sylar::IOManager();
+    minicyber::IOManager* io = new minicyber::IOManager();
 
     io->addEvent(fds[0], EPOLLIN, []() {});
     io->addEvent(fds[0], EPOLLIN, []() {}); // 重复添加
@@ -146,7 +146,7 @@ TEST(IOManagerTest, PreClosedFD) {
     ASSERT_TRUE(create_socket_pair(fds));
     close(fds[0]); // 提前关闭
 
-    sylar::IOManager* io = new sylar::IOManager();
+    minicyber::IOManager* io = new minicyber::IOManager();
     io->addEvent(fds[0], EPOLLIN, []() {});
 
     io->stop();

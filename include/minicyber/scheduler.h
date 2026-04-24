@@ -1,8 +1,8 @@
-#ifndef SYLAR_SCHEDULER_H
-#define SYLAR_SCHEDULER_H
+#ifndef MINICYBER_SCHEDULER_H
+#define MINICYBER_SCHEDULER_H
 
-#include "sylar/fiber.h"
-#include "sylar/thread.h"
+#include "minicyber/fiber.h"
+#include "minicyber/thread.h"
 #include <atomic>
 #include <condition_variable>
 #include <functional>
@@ -10,7 +10,7 @@
 #include <queue>
 #include <vector>
 
-namespace sylar {
+namespace minicyber {
 
 /**
  * Scheduler: 纯粹的协程调度引擎
@@ -93,6 +93,6 @@ protected:
     bool m_is_stopping = false;
 };
 
-} // namespace sylar
+} // namespace minicyber
 
 #endif

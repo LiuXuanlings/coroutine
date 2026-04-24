@@ -1,20 +1,20 @@
 #include<gtest/gtest.h>
-#include"sylar/fiber.h"
+#include"minicyber/fiber.h"
 #include<iostream>
 
 void run_in_fiber(){
     std::cout<<"run_in_fiber begin"<< std::endl;
-    sylar::Fiber::GetThis()->sylar::Fiber::yield();
+    minicyber::Fiber::GetThis()->minicyber::Fiber::yield();
     std::cout<<"run_in_fiber end"<< std::endl;
-    sylar::Fiber::GetThis()->sylar::Fiber::yield();
+    minicyber::Fiber::GetThis()->minicyber::Fiber::yield();
 }
 
 
 TEST(FiberTest, BasicSwap){
-    sylar::Fiber::GetThis();
+    minicyber::Fiber::GetThis();
     std::cout<<"main begin"<< std::endl;
 
-    sylar::Fiber::ptr fiber(new sylar::Fiber(run_in_fiber));
+    minicyber::Fiber::ptr fiber(new minicyber::Fiber(run_in_fiber));
 
     fiber->resume();
     std::cout<<"main after resume 1"<< std::endl;
@@ -39,16 +39,16 @@ static inline uint64_t gettime_ns_fiber(){
 void fiber_speed_func(){
     for(int i = 0; i < SWAP_N; i++){
         // 切换回主协程
-        sylar::Fiber::GetThis()->yield();
+        minicyber::Fiber::GetThis()->yield();
     }
 }
 
 TEST(FiberTest, SwapSpeed){
     // 初始化主协程
-    sylar::Fiber::GetThis();
+    minicyber::Fiber::GetThis();
 
     // 创建子协程
-    sylar::Fiber::ptr fiber(new sylar::Fiber(fiber_speed_func));
+    minicyber::Fiber::ptr fiber(new minicyber::Fiber(fiber_speed_func));
 
     uint64_t start = gettime_ns_fiber();
     
@@ -58,7 +58,7 @@ TEST(FiberTest, SwapSpeed){
         fiber->resume();
     }
 
-    if(fiber->getState() != sylar::Fiber::TERM){
+    if(fiber->getState() != minicyber::Fiber::TERM){
         fiber->resume(); // 确保子协程能正常结束
     }
     

@@ -1,7 +1,7 @@
-#include "sylar/scheduler.h"
+#include "minicyber/scheduler.h"
 #include <unistd.h>
 
-namespace sylar {
+namespace minicyber {
 
 Scheduler::Scheduler() {
     // 注意：不在基类构造函数中创建线程！
@@ -124,4 +124,4 @@ void Scheduler::stop() {
     m_threads.clear();
 }
 
-} // namespace sylar
+} // namespace minicyber

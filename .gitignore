@@ -1,5 +1,6 @@
 # CMake 构建目录
-build/
+build*/
+build_*/
 bin/
 lib/
 CMakeCache.txt
@@ -7,6 +8,10 @@ CMakeFiles/
 Makefile
 *.cmake
 install_manifest.txt
+Testing/
+
+# CMake 下载的依赖
+_deps/
 
 # VSCode/IDE 配置
 .vscode/
@@ -17,3 +22,21 @@ install_manifest.txt
 *.a
 *.so
 *.out
+
+# 测试可执行文件
+tests/*.exe
+tests/*.out
+tests/*.app
+
+# 参考代码目录（只读参考）
+cyber_ref/
+
+# 项目计划文档（应该被跟踪，但这里作为注释说明）
+# MINICYBER_ROADMAP.md 应该被跟踪，不忽略
+
+# 其他临时文件
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

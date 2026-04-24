@@ -1,13 +1,13 @@
-#ifndef SYLAR_IOMANAGER_H
-#define SYLAR_IOMANAGER_H
+#ifndef MINICYBER_IOMANAGER_H
+#define MINICYBER_IOMANAGER_H
 
-#include "sylar/scheduler.h"
+#include "minicyber/scheduler.h"
 #include <functional>
 #include <mutex>
 #include <sys/epoll.h>
 #include <vector>
 
-namespace sylar {
+namespace minicyber {
 
 // EventContext: 被挂起的 fiber 的表示方法
 struct EventContext {
@@ -111,6 +111,6 @@ private:
     std::mutex m_fd_mutex;
 };
 
-} // namespace sylar
+} // namespace minicyber
 
 #endif

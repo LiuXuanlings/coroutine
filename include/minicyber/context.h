@@ -1,10 +1,10 @@
-#ifndef CONTEXT_H
-#define CONTEXT_H
+#ifndef MINICYBER_CONTEXT_H
+#define MINICYBER_CONTEXT_H
 #include <cstddef>
 #define FIBER_STACK_SIZE 128*1024//128KB,thread stack size default:8MB(ulimit -s)
 extern "C" void ctx_swap(void **, void **);
 
-namespace sylar
+namespace minicyber
 {
     constexpr size_t REGISTERS_SIZE = 48;
     typedef struct 
@@ -19,4 +19,4 @@ namespace sylar
         ctx_swap(reinterpret_cast<void**>(src_sp), reinterpret_cast<void**>(dest_sp));
     }
 }
-#endif
+#endif // MINICYBER_CONTEXT_H

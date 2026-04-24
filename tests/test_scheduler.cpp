@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "sylar/scheduler.h"
+#include "minicyber/scheduler.h"
 #include <atomic>
 #include <chrono>
 #include <iostream>
@@ -27,7 +27,7 @@ TEST(SchedulerTest, ScheduleAndStop) {
     g_print_count.store(0);
     g_sleep_count.store(0);
 
-    sylar::Scheduler scheduler;
+    minicyber::Scheduler scheduler;
 
     for (int i = 0; i < 100; ++i) {
         scheduler.schedule(print_task);

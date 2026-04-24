@@ -1,5 +1,5 @@
-#ifndef SYLAR_THREAD_H
-#define SYLAR_THREAD_H
+#ifndef MINICYBER_THREAD_H
+#define MINICYBER_THREAD_H
 
 #include <functional>
 #include <memory>
@@ -8,7 +8,7 @@
 #include <mutex>
 #include <condition_variable>
 
-namespace sylar {
+namespace minicyber {
 
 class Semaphore {
 public:
@@ -49,6 +49,6 @@ private:
     Semaphore m_semaphore;
 };
 
-} // namespace sylar
+} // namespace minicyber
 
 #endif
