@@ -31,6 +31,7 @@ class WaitStrategy {
 // =============================================================================
 // 阻塞等待策略：使用 mutex + condition_variable
 // 适用于低CPU占用、高延迟容忍的场景
+// 高延迟相对于自旋等待。条件变量的“通知”是即时的，但“被调度执行”不是。
 // =============================================================================
 class BlockWaitStrategy : public WaitStrategy {
  public:
@@ -58,6 +59,7 @@ class BlockWaitStrategy : public WaitStrategy {
 class SleepWaitStrategy : public WaitStrategy {
  public:
   SleepWaitStrategy() = default;
+  // explicit 就是给编译器贴个标签：这个构造函数做的不是"类型等价转换"，而是"用参数构造出一个新东西"，不许偷偷摸摸隐式转换。
   explicit SleepWaitStrategy(uint64_t sleep_time_us)
       : sleep_time_us_(sleep_time_us) {}
 

@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <atomic>
 #include <chrono>
+#include <iostream>
 #include <thread>
 #include <vector>
 #include "minicyber/base/wait_strategy.h"
@@ -17,8 +18,9 @@ TEST(WaitStrategyTest, YieldWaitStrategy) {
     auto end = std::chrono::steady_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
 
+    std::cerr << "[ACTUAL] YieldWaitStrategy duration_us=" << duration.count() << "\n";
     EXPECT_TRUE(result);
-    EXPECT_LT(duration.count(), 1000);  // Should be much less than 1ms
+    EXPECT_LT(duration.count(), 500); // Should be very fast, but allow some variance
 }
 
 // Test SleepWaitStrategy sleeps for expected duration
@@ -31,6 +33,7 @@ TEST(WaitStrategyTest, SleepWaitStrategy) {
     auto end = std::chrono::steady_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 
+    std::cerr << "[ACTUAL] SleepWaitStrategy(5ms) duration_ms=" << duration.count() << "\n";
     EXPECT_TRUE(result);
     EXPECT_GE(duration.count(), 4);  // At least ~4ms (allow small variance)
     EXPECT_LT(duration.count(), 20); // But not too long
@@ -46,6 +49,7 @@ TEST(WaitStrategyTest, SleepWaitStrategySetTimeout) {
     auto end = std::chrono::steady_clock::now();
 
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    std::cerr << "[ACTUAL] SleepWaitStrategy(1ms) duration_ms=" << duration.count() << "\n";
     EXPECT_LT(duration.count(), 10);  // Should be quick
 }
 
@@ -64,6 +68,7 @@ TEST(WaitStrategyTest, BlockWaitStrategyNotifyOne) {
     strategy.NotifyOne();
 
     waiter.join();
+    std::cerr << "[ACTUAL] BlockWaitStrategy NotifyOne woken=" << woken << "\n";
     EXPECT_TRUE(woken);
 }
 
@@ -91,6 +96,7 @@ TEST(WaitStrategyTest, BlockWaitStrategyBreakAllWait) {
         t.join();
     }
 
+    std::cerr << "[ACTUAL] BlockWaitStrategy BreakAllWait woken_count=" << woken_count << "\n";
     EXPECT_EQ(woken_count, num_waiters);
 }
 
@@ -104,8 +110,9 @@ TEST(WaitStrategyTest, BusySpinWaitStrategy) {
     auto end = std::chrono::steady_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
 
+    std::cerr << "[ACTUAL] BusySpinWaitStrategy duration_us=" << duration.count() << "\n";
     EXPECT_TRUE(result);
-    EXPECT_LT(duration.count(), 100);  // Very fast
+    EXPECT_LT(duration.count(), 50);  // Very fast
 }
 
 // Test TimeoutBlockWaitStrategy returns false on timeout
@@ -118,8 +125,10 @@ TEST(WaitStrategyTest, TimeoutBlockWaitStrategyTimeout) {
 
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 
+    std::cerr << "[ACTUAL] TimeoutBlockWaitStrategy(50ms) duration_ms=" << duration.count()
+              << " result=" << result << "\n";
     EXPECT_FALSE(result);  // Should timeout
-    EXPECT_GE(duration.count(), 40);  // At least ~40ms
+    EXPECT_GE(duration.count(), 45);  // At least ~45ms
 }
 
 // Test TimeoutBlockWaitStrategy returns true when notified
@@ -135,6 +144,7 @@ TEST(WaitStrategyTest, TimeoutBlockWaitStrategyNotify) {
     strategy.NotifyOne();
 
     waiter.join();
+    std::cerr << "[ACTUAL] TimeoutBlockWaitStrategy NotifyOne woken=" << woken << "\n";
     EXPECT_TRUE(woken);
 }
 
@@ -160,6 +170,7 @@ TEST(WaitStrategyTest, TimeoutBlockWaitStrategyBreakAllWait) {
         t.join();
     }
 
+    std::cerr << "[ACTUAL] TimeoutBlockWaitStrategy BreakAllWait woken_count=" << woken_count << "\n";
     EXPECT_EQ(woken_count, num_waiters);
 }
 
@@ -174,5 +185,8 @@ TEST(WaitStrategyTest, TimeoutBlockWaitStrategySetTimeout) {
 
     EXPECT_FALSE(result);  // Should timeout
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    EXPECT_GE(duration.count(), 40);
+    std::cerr << "[ACTUAL] TimeoutBlockWaitStrategy(set 50ms) duration_ms=" << duration.count()
+              << " result=" << result << "\n";
+    EXPECT_FALSE(result);
+    EXPECT_GE(duration.count(), 45);
 }
