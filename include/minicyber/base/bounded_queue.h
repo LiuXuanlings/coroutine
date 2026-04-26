@@ -60,12 +60,12 @@ class BoundedQueue {
   // 中断所有等待
   void BreakAllWait();
 
-  // 非阻塞操作（TODO）
+  // 非阻塞操作
   bool Enqueue(const T& element);
   bool Enqueue(T&& element);
   bool Dequeue(T* element);
 
-  // 阻塞操作（TODO）
+  // 阻塞操作
   bool WaitEnqueue(const T& element);
   bool WaitEnqueue(T&& element);
   bool WaitDequeue(T* element);
@@ -181,6 +181,180 @@ inline void BoundedQueue<T>::BreakAllWait() {
   if (wait_strategy_) {
     wait_strategy_->BreakAllWait();
   }
+}
+
+// =============================================================================
+// 线程安全入队 - CAS 算法
+// 流程：
+//   1. 获取当前 tail，计算 new_tail = old_tail + 1
+//   2. 检查队列是否满：GetIndex(new_tail) == GetIndex(head_)
+//   3. CAS 更新 tail_ 从 old_tail 到 new_tail
+//   4. 写入 pool_[GetIndex(old_tail)]
+//   5. CAS 更新 commit_ 从 old_tail 到 new_tail（标记可见）
+//   6. NotifyOne 唤醒可能的消费者
+// =============================================================================
+template <typename T>
+bool BoundedQueue<T>::Enqueue(const T& element) {
+  uint64_t new_tail = 0;
+  uint64_t old_commit = 0;
+  uint64_t old_tail = tail_.load(std::memory_order_acquire);
+
+  do {
+    new_tail = old_tail + 1;
+    // 检查队列是否满：new_tail 的索引 == head 的索引
+    if (GetIndex(new_tail) == GetIndex(head_.load(std::memory_order_acquire))) {
+      return false;  // 队列已满
+    }
+  } while (!tail_.compare_exchange_weak(old_tail, new_tail,
+                                        std::memory_order_acq_rel,
+                                        std::memory_order_relaxed));
+
+  // 写入数据到预留的位置
+  pool_[GetIndex(old_tail)] = element;
+
+  // 标记写入完成（commit）
+  do {
+    old_commit = old_tail;
+  } while (cyber_unlikely(!commit_.compare_exchange_weak(
+      old_commit, new_tail, std::memory_order_acq_rel,
+      std::memory_order_relaxed)));
+
+  // 唤醒一个等待的消费者
+  if (wait_strategy_) {
+    wait_strategy_->NotifyOne();
+  }
+  return true;
+}
+
+// =============================================================================
+// 线程安全入队（移动语义）
+// =============================================================================
+template <typename T>
+bool BoundedQueue<T>::Enqueue(T&& element) {
+  uint64_t new_tail = 0;
+  uint64_t old_commit = 0;
+  uint64_t old_tail = tail_.load(std::memory_order_acquire);
+
+  do {
+    new_tail = old_tail + 1;
+    if (GetIndex(new_tail) == GetIndex(head_.load(std::memory_order_acquire))) {
+      return false;  // 队列已满
+    }
+  } while (!tail_.compare_exchange_weak(old_tail, new_tail,
+                                        std::memory_order_acq_rel,
+                                        std::memory_order_relaxed));
+
+  // 使用移动语义写入
+  pool_[GetIndex(old_tail)] = std::move(element);
+
+  do {
+    old_commit = old_tail;
+  } while (cyber_unlikely(!commit_.compare_exchange_weak(
+      old_commit, new_tail, std::memory_order_acq_rel,
+      std::memory_order_relaxed)));
+
+  if (wait_strategy_) {
+    wait_strategy_->NotifyOne();
+  }
+  return true;
+}
+
+// =============================================================================
+// 线程安全出队 - CAS 算法
+// 流程：
+//   1. 获取当前 head，计算 new_head = old_head + 1
+//   2. 检查队列是否空：new_head == commit_ 表示没有可读数据
+//   3. 读取 pool_[GetIndex(new_head)] 的数据
+//   4. CAS 更新 head_ 从 old_head 到 new_head
+// =============================================================================
+template <typename T>
+bool BoundedQueue<T>::Dequeue(T* element) {
+  uint64_t new_head = 0;
+  uint64_t old_head = head_.load(std::memory_order_acquire);
+
+  do {
+    new_head = old_head + 1;
+    // 检查队列是否空：new_head 达到了已提交的位置
+    if (new_head == commit_.load(std::memory_order_acquire)) {
+      return false;  // 队列为空
+    }
+    // 先读取数据（已经 commit 保证可见）
+    *element = pool_[GetIndex(new_head)];
+  } while (!head_.compare_exchange_weak(old_head, new_head,
+                                        std::memory_order_acq_rel,
+                                        std::memory_order_relaxed));
+
+  // 唤醒可能正在等待的生产者（队列从满变为非满）
+  if (wait_strategy_) {
+    wait_strategy_->NotifyOne();
+  }
+  return true;
+}
+
+// =============================================================================
+// 阻塞入队 - 循环尝试直到成功或超时/中断
+// =============================================================================
+template <typename T>
+bool BoundedQueue<T>::WaitEnqueue(const T& element) {
+  while (!break_all_wait_) {
+    // 线程安全入队
+    if (Enqueue(element)) {
+      return true;
+    }
+    // 队列满了，等待策略等待
+    if (wait_strategy_) {
+      if (wait_strategy_->EmptyWait()) {
+        continue;
+      }
+      // wait timeout
+      break;
+    }
+    // 没有等待策略，让出 CPU, thread::yield()而非协程
+    std::this_thread::yield();
+  }
+  return false;
+}
+
+// =============================================================================
+// 阻塞入队（移动语义）
+// =============================================================================
+template <typename T>
+bool BoundedQueue<T>::WaitEnqueue(T&& element) {
+  while (!break_all_wait_) {
+    // Enqueue 
+    if (Enqueue(std::move(element))) {
+      return true;
+    }
+    // 队列满了，等待策略等待
+    if (wait_strategy_) {
+      if (wait_strategy_->EmptyWait()) {
+        continue;
+      }
+      break;
+    }
+    std::this_thread::yield();
+  }
+  return false;
+}
+
+// =============================================================================
+// 阻塞出队 - 循环尝试直到成功或超时/中断
+// =============================================================================
+template <typename T>
+bool BoundedQueue<T>::WaitDequeue(T* element) {
+  while (!break_all_wait_) {
+    if (Dequeue(element)) {
+      return true;
+    }
+    if (wait_strategy_) {
+      if (wait_strategy_->EmptyWait()) {
+        continue;
+      }
+      break;
+    }
+    std::this_thread::yield();
+  }
+  return false;
 }
 
 }  // namespace minicyber
