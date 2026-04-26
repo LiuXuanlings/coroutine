@@ -86,7 +86,7 @@ class BoundedQueue {
   uint64_t pool_size_ = 0;           // 实际分配的槽位数（capacity + 2）
   T* pool_ = nullptr;                // 元素存储池
   std::unique_ptr<WaitStrategy> wait_strategy_;
-  volatile bool break_all_wait_ = false;  // 中断标志
+  std::atomic<bool> break_all_wait_{false};  // 中断标志
 };
 
 // =============================================================================
@@ -177,7 +177,7 @@ inline void BoundedQueue<T>::SetWaitStrategy(WaitStrategy* strategy) {
 // =============================================================================
 template <typename T>
 inline void BoundedQueue<T>::BreakAllWait() {
-  break_all_wait_ = true;
+  break_all_wait_.store(true, std::memory_order_release);
   if (wait_strategy_) {
     wait_strategy_->BreakAllWait();
   }
@@ -296,7 +296,7 @@ bool BoundedQueue<T>::Dequeue(T* element) {
 // =============================================================================
 template <typename T>
 bool BoundedQueue<T>::WaitEnqueue(const T& element) {
-  while (!break_all_wait_) {
+  while (!break_all_wait_.load(std::memory_order_acquire)) {
     // 线程安全入队
     if (Enqueue(element)) {
       return true;
@@ -320,7 +320,7 @@ bool BoundedQueue<T>::WaitEnqueue(const T& element) {
 // =============================================================================
 template <typename T>
 bool BoundedQueue<T>::WaitEnqueue(T&& element) {
-  while (!break_all_wait_) {
+  while (!break_all_wait_.load(std::memory_order_acquire)) {
     // Enqueue 
     if (Enqueue(std::move(element))) {
       return true;
@@ -342,7 +342,7 @@ bool BoundedQueue<T>::WaitEnqueue(T&& element) {
 // =============================================================================
 template <typename T>
 bool BoundedQueue<T>::WaitDequeue(T* element) {
-  while (!break_all_wait_) {
+  while (!break_all_wait_.load(std::memory_order_acquire)) {
     if (Dequeue(element)) {
       return true;
     }
