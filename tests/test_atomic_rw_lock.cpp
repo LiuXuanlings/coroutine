@@ -12,6 +12,8 @@ using namespace minicyber;
 TEST(AtomicRWLockTest, Construction) {
   AtomicRWLock lock1;                    // default: write_first = true
   AtomicRWLock lock2(false);             // write_first = false
+  // 显式使用变量，避免编译器报“未使用变量”警告
+  // GTest 编译环境开启了警告转错误，此类警告会直接导致编译失败
   (void)lock1;
   (void)lock2;
   SUCCEED();
@@ -221,7 +223,7 @@ TEST(AtomicRWLockTest, WriteFirstPriority) {
 // Test RAII auto-unlock on exception
 TEST(AtomicRWLockTest, RAIIUnlockOnException) {
   AtomicRWLock lock;
-  std::atomic<bool> writer_blocked{false};
+  std::atomic<bool> writer_blocked{true};
 
   try {
     WriteLockGuard<AtomicRWLock> guard(lock);
