@@ -3,6 +3,9 @@
 
 #include <pthread.h>
 #include <sched.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#include <atomic>
 #include <thread>
 #include <vector>
 
@@ -106,6 +109,50 @@ TEST(PinThreadTest, SetSchedAffinity1to1InvalidCpuId) {
   SetSchedAffinity(&t, cpus, "1to1", 99);
   SetSchedAffinity(&t, cpus, "1to1", -1);
 
+  if (t.joinable()) t.join();
+}
+
+// ----------------------------------------------------------------------
+// SetSchedPolicy 测试
+// ----------------------------------------------------------------------
+// 注意：SCHED_FIFO/SCHED_RR 需要 CAP_SYS_NICE 权限才能设置实时策略。
+// 普通用户调用 pthread_setschedparam 会返回 EPERM，这是预期行为。
+// 测试只验证调用不崩溃、线程能正常 join，不强制要求策略设置成功。
+
+TEST(PinThreadTest, SetSchedPolicyFifo) {
+  std::thread t([]() {});
+  // 实时策略调用，无 root 权限会 EPERM，但不影响线程 join
+  SetSchedPolicy(&t, "SCHED_FIFO", 10);
+  if (t.joinable()) t.join();
+}
+
+TEST(PinThreadTest, SetSchedPolicyRr) {
+  std::thread t([]() {});
+  SetSchedPolicy(&t, "SCHED_RR", 10);
+  if (t.joinable()) t.join();
+}
+
+TEST(PinThreadTest, SetSchedPolicyOther) {
+  // SCHED_OTHER 通过 nice 值调整优先级，普通用户可设置
+  std::atomic<pid_t> tid{-1};
+  std::thread t([&]() {
+    tid = static_cast<pid_t>(syscall(SYS_gettid));
+  });
+  // 等待线程拿到自己的 TID
+  while (tid.load() == -1) {
+    std::this_thread::yield();
+  }
+
+  // 设置 nice 值为 5
+  SetSchedPolicy(&t, "SCHED_OTHER", 5, tid.load());
+
+  if (t.joinable()) t.join();
+}
+
+TEST(PinThreadTest, SetSchedPolicyUnknownNoop) {
+  // 未知策略应直接忽略，不崩溃
+  std::thread t([]() {});
+  SetSchedPolicy(&t, "SCHED_UNKNOWN", 0);
   if (t.joinable()) t.join();
 }
 
