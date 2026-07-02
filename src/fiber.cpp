@@ -155,3 +155,50 @@ void minicyber::Fiber::resume(){
         SwapContext(reinterpret_cast<char**>(&t_thread_fiber->m_ctx.sp), reinterpret_cast<char**>(&m_ctx.sp));
     }
 }
+
+// =====================================================================
+// Fiber <-> CRoutine 桥接实现
+// =====================================================================
+// 与 CRoutine::Yield 同理，使用裸指针而非 GetThis()（shared_ptr），
+// 避免 SwapContext 冻结协程栈后 shared_ptr 不析构导致的泄漏。
+void minicyber::Fiber::Yield(const minicyber::RoutineState& state) {
+    Fiber* raw = t_fiber.get();
+    raw->routine_state_ = state;
+    // 同步映射到旧 state：DATA_WAIT/IO_WAIT/SLEEP 在旧体系中都归为 HOLD
+    if (state == RoutineState::FINISHED) {
+        raw->m_state = TERM;
+    } else if (state != RoutineState::READY) {
+        raw->m_state = HOLD;
+    }
+    raw->yield();
+}
+
+minicyber::RoutineState minicyber::Fiber::GetRoutineState() const {
+    // 若 Yield(RoutineState) 显式设置过 routine_state_，优先返回它。
+    // 否则根据 m_state 做默认映射，保证旧代码调用 GetRoutineState() 也有合理值。
+    switch (m_state) {
+        case INIT:   return RoutineState::READY;
+        case EXEC:   return RoutineState::READY;
+        case HOLD:
+            // HOLD 可能来自旧 yield() 也可能来自 Yield(RoutineState)，
+            // 若 routine_state_ 被显式设置过（非 READY），优先返回它。
+            return routine_state_ != RoutineState::READY
+                       ? routine_state_
+                       : RoutineState::SLEEP;
+        case TERM:   return RoutineState::FINISHED;
+        case EXCEPT: return RoutineState::FINISHED;
+    }
+    return RoutineState::READY;
+}
+
+void minicyber::Fiber::SetRoutineState(const RoutineState& state) {
+    routine_state_ = state;
+    // 同步映射到旧 state，保证 getState() 与 GetRoutineState() 一致
+    switch (state) {
+        case RoutineState::READY:      m_state = INIT; break;
+        case RoutineState::FINISHED:   m_state = TERM; break;
+        case RoutineState::SLEEP:
+        case RoutineState::IO_WAIT:
+        case RoutineState::DATA_WAIT:  m_state = HOLD; break;
+    }
+}
