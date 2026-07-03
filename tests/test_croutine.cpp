@@ -117,3 +117,102 @@ TEST(CRoutineTest, MultipleYieldResumeCycle) {
   EXPECT_EQ(cr->State(), minicyber::RoutineState::FINISHED);
   EXPECT_EQ(counter, 100);
 }
+
+// =====================================================================
+// 工作窃取锁与状态更新测试
+// =====================================================================
+
+// 测试：Acquire/Release 互斥
+TEST(CRoutineTest, AcquireReleaseMutex) {
+  minicyber::CRoutine::GetThis();
+  auto cr = std::make_shared<minicyber::CRoutine>([]() {});
+
+  // 首次 Acquire 应成功
+  EXPECT_TRUE(cr->Acquire());
+  // 再次 Acquire 应失败（锁已被占用）
+  EXPECT_FALSE(cr->Acquire());
+  // Release 后再 Acquire 应成功
+  cr->Release();
+  EXPECT_TRUE(cr->Acquire());
+  cr->Release();
+}
+
+// 测试：UpdateState SLEEP 超时后转为 READY
+TEST(CRoutineTest, UpdateStateSleepTimeout) {
+  minicyber::CRoutine::GetThis();
+  auto cr = std::make_shared<minicyber::CRoutine>([]() {});
+
+  // 设置 SLEEP 状态，唤醒时间为过去 -> 应立即转 READY
+  cr->SetState(minicyber::RoutineState::SLEEP);
+  cr->set_wake_time(std::chrono::steady_clock::now() -
+                    std::chrono::milliseconds(1));
+  EXPECT_EQ(cr->UpdateState(), minicyber::RoutineState::READY);
+}
+
+// 测试：UpdateState SLEEP 未超时保持 SLEEP
+TEST(CRoutineTest, UpdateStateSleepNotTimeout) {
+  minicyber::CRoutine::GetThis();
+  auto cr = std::make_shared<minicyber::CRoutine>([]() {});
+
+  cr->SetState(minicyber::RoutineState::SLEEP);
+  cr->set_wake_time(std::chrono::steady_clock::now() +
+                    std::chrono::seconds(10));
+  EXPECT_EQ(cr->UpdateState(), minicyber::RoutineState::SLEEP);
+}
+
+// 测试：SetUpdateFlag 使 DATA_WAIT 转 READY
+TEST(CRoutineTest, UpdateStateDataWaitWithFlag) {
+  minicyber::CRoutine::GetThis();
+  auto cr = std::make_shared<minicyber::CRoutine>([]() {});
+
+  cr->SetState(minicyber::RoutineState::DATA_WAIT);
+  // 通知数据就绪
+  cr->SetUpdateFlag();
+  EXPECT_EQ(cr->UpdateState(), minicyber::RoutineState::READY);
+}
+
+// 测试：DATA_WAIT 无通知保持 DATA_WAIT
+TEST(CRoutineTest, UpdateStateDataWaitNoFlag) {
+  minicyber::CRoutine::GetThis();
+  auto cr = std::make_shared<minicyber::CRoutine>([]() {});
+
+  cr->SetState(minicyber::RoutineState::DATA_WAIT);
+  // 不调用 SetUpdateFlag，状态应保持
+  EXPECT_EQ(cr->UpdateState(), minicyber::RoutineState::DATA_WAIT);
+}
+
+// 测试：SetUpdateFlag 使 IO_WAIT 转 READY
+TEST(CRoutineTest, UpdateStateIoWaitWithFlag) {
+  minicyber::CRoutine::GetThis();
+  auto cr = std::make_shared<minicyber::CRoutine>([]() {});
+
+  cr->SetState(minicyber::RoutineState::IO_WAIT);
+  cr->SetUpdateFlag();
+  EXPECT_EQ(cr->UpdateState(), minicyber::RoutineState::READY);
+}
+
+// 测试：Stop 设置 FINISHED 状态
+TEST(CRoutineTest, StopSetsFinished) {
+  minicyber::CRoutine::GetThis();
+  auto cr = std::make_shared<minicyber::CRoutine>([]() {});
+
+  EXPECT_NE(cr->State(), minicyber::RoutineState::FINISHED);
+  cr->Stop();
+  EXPECT_EQ(cr->State(), minicyber::RoutineState::FINISHED);
+}
+
+// 测试：元数据 getter/setter
+TEST(CRoutineTest, MetadataGettersSetters) {
+  minicyber::CRoutine::GetThis();
+  auto cr = std::make_shared<minicyber::CRoutine>([]() {});
+
+  cr->set_id(42);
+  cr->set_name("test_routine");
+  cr->set_priority(15);
+  cr->set_group_name("default_grp");
+
+  EXPECT_EQ(cr->id(), 42u);
+  EXPECT_EQ(cr->name(), "test_routine");
+  EXPECT_EQ(cr->priority(), 15u);
+  EXPECT_EQ(cr->group_name(), "default_grp");
+}

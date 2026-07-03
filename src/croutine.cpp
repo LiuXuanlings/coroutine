@@ -60,6 +60,10 @@ CRoutine::CRoutine(const RoutineFunc& cb, int /*stack_size*/) {
   is_main_ = false;
   cb_ = cb;
   state_ = RoutineState::READY;
+  // updated_ 初始化为 set 状态：使首次 UpdateState 的 test_and_set 返回 true
+  // （表示无通知），避免协程刚创建就被误判为收到通知而转 READY。
+  // SetUpdateFlag() 会 clear 它，使下次 test_and_set 返回 false 触发转换。
+  updated_.test_and_set(std::memory_order_release);
   MakeContext(&ctx_, CRoutine::MainFunc);
 }
 
@@ -93,6 +97,59 @@ void CRoutine::Yield(const RoutineState& state) {
   CRoutine* cr = t_croutine.get();
   cr->state_ = state;
   Yield();
+}
+
+// ----------------------------------------------------------------------
+// 工作窃取锁
+// ----------------------------------------------------------------------
+// Acquire: test_and_set 返回 true 表示锁已被占用（返回 false），
+//          返回 false 表示锁原本空闲，我们成功占用（返回 true）。
+// Release: clear 释放锁。
+// ----------------------------------------------------------------------
+bool CRoutine::Acquire() {
+  return !lock_.test_and_set(std::memory_order_acquire);
+}
+
+void CRoutine::Release() {
+  lock_.clear(std::memory_order_release);
+}
+
+// ----------------------------------------------------------------------
+// UpdateState: 状态机更新
+// ----------------------------------------------------------------------
+// 1. SLEEP + 当前时间超过 wake_time_ -> READY（同步事件：超时唤醒）
+// 2. updated_ 标志被 clear 过（SetUpdateFlag 被调用过）+ 状态为
+//    DATA_WAIT 或 IO_WAIT -> READY（异步事件：数据/IO 就绪）
+// ----------------------------------------------------------------------
+// test_and_set 返回 false 表示之前是 clear 状态（即收到过通知），
+// 返回 true 表示之前已是 set 状态（无新通知）。
+// ----------------------------------------------------------------------
+RoutineState CRoutine::UpdateState() {
+  // 同步事件：SLEEP 超时
+  if (state_ == RoutineState::SLEEP &&
+      std::chrono::steady_clock::now() > wake_time_) {
+    state_ = RoutineState::READY;
+    return state_;
+  }
+
+  // 异步事件：检查 updated_ 标志
+  // test_and_set 返回 false 表示之前是 clear（收到过通知）
+  if (!updated_.test_and_set(std::memory_order_release)) {
+    if (state_ == RoutineState::DATA_WAIT || state_ == RoutineState::IO_WAIT) {
+      state_ = RoutineState::READY;
+    }
+  }
+  return state_;
+}
+
+void CRoutine::SetUpdateFlag() {
+  // clear 使下次 UpdateState 中的 test_and_set 返回 false，触发状态转换
+  updated_.clear(std::memory_order_release);
+}
+
+void CRoutine::Stop() {
+  force_stop_ = true;
+  state_ = RoutineState::FINISHED;
 }
 
 }  // namespace minicyber
