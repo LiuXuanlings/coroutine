@@ -48,7 +48,10 @@ void Processor::Run() {
         snap_shot_->execute_start_time.store(
             std::chrono::steady_clock::now().time_since_epoch().count());
         croutine->Resume();
-        // TODO(Step 10): croutine->Release() 释放 work-stealing 锁
+        // 释放工作窃取锁：NextRoutine() 中 Acquire 获取，Resume() 返回后
+        // （协程 Yield 或执行完毕）必须 Release，否则下次 NextRoutine 无法
+        // 再次 Acquire 该协程，导致 DATA_WAIT 协程被永久卡住。
+        croutine->Release();
       } else {
         snap_shot_->execute_start_time.store(0);
         context_->Wait();
