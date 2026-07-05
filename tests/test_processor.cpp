@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "minicyber/scheduler/processor.h"
+#include "minicyber/scheduler/policy/classic_context.h"
 #include "minicyber/croutine/croutine.h"
 
 #include <atomic>
@@ -146,6 +147,83 @@ TEST(ProcessorTest, SnapshotProcessorIdMatchesTid) {
 
   pid_t tid = proc.Tid().load();
   EXPECT_EQ(proc.ProcSnapshot()->processor_id.load(), tid);
+
+  proc.Stop();
+}
+
+// =====================================================================
+// Processor + ClassicContext 集成测试
+// 验证真实调度上下文下协程按优先级执行
+// =====================================================================
+
+// 测试 7：Processor 绑定 ClassicContext 后执行入队协程
+TEST(ProcessorTest, WithClassicContextRunsRoutines) {
+  // 使用独立 group 避免与其他测试干扰
+  std::string grp = "test_proc_classic";
+  auto ctx = std::make_shared<ClassicContext>(grp);
+  Processor proc;
+  proc.BindContext(ctx);
+
+  std::atomic<int> counter{0};
+  auto cr = std::make_shared<CRoutine>([&]() { counter.fetch_add(1); });
+  cr->set_id(1);
+  cr->set_priority(5);
+  cr->set_group_name(grp);
+  cr->SetState(RoutineState::READY);
+  ClassicContext::Enqueue(cr);
+
+  // 等待协程执行
+  while (counter.load() < 1) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_EQ(counter.load(), 1);
+
+  proc.Stop();
+}
+
+// 测试 8：高优先级协程先于低优先级协程执行
+TEST(ProcessorTest, WithClassicContextPriorityOrder) {
+  std::string grp = "test_proc_classic_prio";
+  auto ctx = std::make_shared<ClassicContext>(grp);
+  Processor proc;
+  proc.BindContext(ctx);
+
+  // 记录执行顺序
+  std::vector<uint64_t> exec_order;
+  std::mutex order_mtx;
+
+  auto make_cr = [&](uint64_t id, uint32_t prio) {
+    auto cr = std::make_shared<CRoutine>([&, id]() {
+      std::lock_guard<std::mutex> lk(order_mtx);
+      exec_order.push_back(id);
+    });
+    cr->set_id(id);
+    cr->set_priority(prio);
+    cr->set_group_name(grp);
+    cr->SetState(RoutineState::READY);
+    return cr;
+  };
+
+  // 入队低优先级先，高优先级后
+  // 由于 NextRoutine 从高到低扫描，高优先级应先执行
+  auto cr_low = make_cr(100, 1);
+  auto cr_high = make_cr(200, 10);
+  ClassicContext::Enqueue(cr_low);
+  ClassicContext::Enqueue(cr_high);
+
+  // 等待两个协程都执行完
+  while (true) {
+    {
+      std::lock_guard<std::mutex> lk(order_mtx);
+      if (exec_order.size() >= 2) break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+
+  // 验证高优先级先执行
+  ASSERT_EQ(exec_order.size(), 2u);
+  EXPECT_EQ(exec_order[0], 200u);  // 高优先级
+  EXPECT_EQ(exec_order[1], 100u);  // 低优先级
 
   proc.Stop();
 }
