@@ -10,6 +10,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "minicyber/croutine/croutine.h"
 #include "minicyber/scheduler/processor_context.h"
@@ -53,7 +54,8 @@ class ClassicContext : public ProcessorContext {
   ClassicContext();
   explicit ClassicContext(const std::string& group_name);
 
-  // 从高优先级到低优先级扫描，返回首个就绪协程
+  // 从高优先级到低优先级扫描本地队列，返回首个就绪协程。
+  // 本地空时尝试从其他 group 窃取任务（Work-Stealing）。
   std::shared_ptr<CRoutine> NextRoutine() override;
 
   // 队列空时阻塞等待，直到 Notify 或 Shutdown
@@ -71,6 +73,10 @@ class ClassicContext : public ProcessorContext {
   // 按 id 从队列中移除协程
   static bool RemoveCRoutine(const std::shared_ptr<CRoutine>& cr);
 
+  // 从 target_grp 的队列尾部窃取一个就绪协程（Work-Stealing）
+  // owner 从 front 取，stealer 从 back 取，减少争用。
+  static std::shared_ptr<CRoutine> Steal(const std::string& target_grp);
+
  private:
   void InitGroup(const std::string& group_name);
 
@@ -87,6 +93,9 @@ class ClassicContext : public ProcessorContext {
   static std::unordered_map<std::string, std::mutex> mtx_wq_;
   static std::unordered_map<std::string, std::condition_variable> cv_wq_;
   static std::unordered_map<std::string, int> notify_grp_;
+  // 所有已注册的 group 名列表，用于 Work-Stealing 时遍历其他 group
+  static std::vector<std::string> all_groups_;
+  static std::mutex all_groups_mtx_;
 
   // ---------------------------------------------------------------------------
   // cr_group_    : cr = CRoutine(协程对象) + group(分组) → 按分组管理的多级就绪协程队列集合

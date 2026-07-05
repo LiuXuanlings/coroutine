@@ -15,6 +15,8 @@ std::unordered_map<std::string, LOCK_QUEUE> ClassicContext::rq_locks_;
 std::unordered_map<std::string, std::mutex> ClassicContext::mtx_wq_;
 std::unordered_map<std::string, std::condition_variable> ClassicContext::cv_wq_;
 std::unordered_map<std::string, int> ClassicContext::notify_grp_;
+std::vector<std::string> ClassicContext::all_groups_;
+std::mutex ClassicContext::all_groups_mtx_;
 
 ClassicContext::ClassicContext() {
   InitGroup(DEFAULT_GROUP_NAME);
@@ -30,26 +32,37 @@ void ClassicContext::InitGroup(const std::string& group_name) {
   rq_locks_[group_name];       // 默认构造 LOCK_QUEUE
   notify_grp_[group_name] = 0;
 
+  // 注册 group 名，供 Work-Stealing 遍历
+  {
+    std::lock_guard<std::mutex> lk(all_groups_mtx_);
+    if (std::find(all_groups_.begin(), all_groups_.end(), group_name) ==
+        all_groups_.end()) {
+      all_groups_.push_back(group_name);
+    }
+  }
+
   multi_pri_rq_ = &cr_group_[group_name];
   lq_ = &rq_locks_[group_name];
   current_grp_ = group_name;
 }
 
 // ----------------------------------------------------------------------
-// NextRoutine: 从高优先级到低优先级扫描，返回首个就绪协程
+// NextRoutine: 从高优先级到低优先级扫描本地队列，返回首个就绪协程
 // ----------------------------------------------------------------------
 // 1. 若 stop_ 为 true，直接返回 nullptr
-// 2. 从 MAX_PRIO-1 到 0 扫描每级队列：
+// 2. 从 MAX_PRIO-1 到 0 扫描本地每级队列：
 //    a. 加锁访问该级队列
 //    b. 遍历协程，尝试 Acquire（防止多 Processor 同时执行同一协程）
 //    c. Acquire 成功后 UpdateState，若为 READY 则返回该协程
 //    d. 若非 READY，Release 锁继续找下一个
+// 3. 本地全空时，遍历其他 group 尝试 Steal（Work-Stealing）
 // ----------------------------------------------------------------------
 std::shared_ptr<CRoutine> ClassicContext::NextRoutine() {
   if (cyber_unlikely(stop_.load())) {
     return nullptr;
   }
 
+  // 1. 扫描本地队列
   for (int i = MAX_PRIO - 1; i >= 0; --i) {
     std::lock_guard<std::mutex> lk(lq_->at(i));
     for (auto& cr : multi_pri_rq_->at(i)) {
@@ -65,6 +78,54 @@ std::shared_ptr<CRoutine> ClassicContext::NextRoutine() {
     }
   }
 
+  // 2. 本地空，尝试从其他 group 窃取（Work-Stealing）
+  std::vector<std::string> groups;
+  {
+    std::lock_guard<std::mutex> lk(all_groups_mtx_);
+    groups = all_groups_;
+  }
+  for (const auto& grp : groups) {
+    if (grp == current_grp_) continue;  // 跳过自己
+    auto stolen = Steal(grp);
+    if (stolen) return stolen;
+  }
+
+  return nullptr;
+}
+
+// ----------------------------------------------------------------------
+// Steal: 从 target_grp 的队列尾部窃取一个就绪协程
+// ----------------------------------------------------------------------
+// Work-Stealing 经典设计：
+//   - Owner 从队列 front 取任务（LIFO 语义，缓存友好）
+//   - Stealer 从队列 back 取任务（减少与 Owner 的锁争用）
+//   - 按优先级从高到低扫描，每级从 back 取首个 Acquire 成功且 READY 的
+// ----------------------------------------------------------------------
+std::shared_ptr<CRoutine> ClassicContext::Steal(const std::string& target_grp) {
+  auto grp_it = cr_group_.find(target_grp);
+  auto lock_it = rq_locks_.find(target_grp);
+  if (grp_it == cr_group_.end() || lock_it == rq_locks_.end()) {
+    return nullptr;
+  }
+
+  MULTI_PRIO_QUEUE& rq = grp_it->second;
+  LOCK_QUEUE& lq = lock_it->second;
+
+  for (int i = MAX_PRIO - 1; i >= 0; --i) {
+    std::lock_guard<std::mutex> lk(lq.at(i));
+    auto& queue = rq.at(i);
+    // 从尾部向前扫描（stealer 取 back）
+    for (auto it = queue.rbegin(); it != queue.rend(); ++it) {
+      auto& cr = *it;
+      if (!cr->Acquire()) {
+        continue;
+      }
+      if (cr->UpdateState() == RoutineState::READY) {
+        return cr;
+      }
+      cr->Release();
+    }
+  }
   return nullptr;
 }
 
