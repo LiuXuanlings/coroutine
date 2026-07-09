@@ -1,16 +1,139 @@
 #include "minicyber/transport/shm/posix_segment.h"
 
 #include <fcntl.h>
+#include <signal.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <cerrno>
 #include <cstring>
+#include <mutex>
 #include <new>
 
 namespace minicyber {
 namespace transport {
+
+// =============================================================================
+// 进程内 SHM 名字注册表 + 信号处理器
+//
+// 设计要点（async-signal-safety）：
+//   - 信号处理器中只能调用 async-signal-safe 函数（shm_unlink、write、
+//     signal、raise 等），不能调用 malloc/new、std::string、mutex 等。
+//   - 因此注册表使用固定容量数组 + 原子计数，名字以 C 字符串存储。
+//     注册/注销走 std::mutex（正常流程，非信号路径），但信号路径只读。
+//   - 安装处理器使用 std::call_once 保证只装一次。
+// =============================================================================
+
+namespace {
+constexpr size_t kMaxShmNames = 64;
+constexpr size_t kMaxNameLen = 64;  // "minicyber_" + 20 位数字 + 余量
+
+struct ShmNameRegistry {
+  char names[kMaxShmNames][kMaxNameLen];
+  std::atomic<int> count{0};
+  std::mutex mutex;
+};
+
+ShmNameRegistry& Registry() {
+  static ShmNameRegistry r;
+  return r;
+}
+
+std::atomic<bool>& HandlerInstalled() {
+  static std::atomic<bool> v{false};
+  return v;
+}
+
+void CrashHandler(int sig) {
+  ShmNameRegistry& r = Registry();
+  int n = r.count.load(std::memory_order_relaxed);
+  for (int i = 0; i < n; ++i) {
+    // shm_unlink 是 async-signal-safe（POSIX.1-2008）
+    ::shm_unlink(r.names[i]);
+  }
+  // 恢复默认处置并重新抛出，便于外层观察退出码
+  ::signal(sig, SIG_DFL);
+  ::raise(sig);
+}
+
+bool InstallOnce() {
+  if (HandlerInstalled().load(std::memory_order_acquire)) return false;
+  static std::once_flag once;
+  bool first = false;
+  std::call_once(once, [&] {
+    struct sigaction sa;
+    std::memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = CrashHandler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;
+    ::sigaction(SIGINT, &sa, nullptr);
+    ::sigaction(SIGTERM, &sa, nullptr);
+    ::sigaction(SIGSEGV, &sa, nullptr);
+    HandlerInstalled().store(true, std::memory_order_release);
+    first = true;
+  });
+  return first;
+}
+}  // namespace
+
+void PosixSegment::RegisterShmName(const std::string& name) {
+  ShmNameRegistry& r = Registry();
+  std::lock_guard<std::mutex> lg(r.mutex);
+  int n = r.count.load(std::memory_order_relaxed);
+  for (int i = 0; i < n; ++i) {
+    if (std::strncmp(r.names[i], name.c_str(), kMaxNameLen) == 0) return;
+  }
+  if (n >= static_cast<int>(kMaxShmNames)) return;
+  std::strncpy(r.names[n], name.c_str(), kMaxNameLen - 1);
+  r.names[n][kMaxNameLen - 1] = '\0';
+  r.count.store(n + 1, std::memory_order_release);
+}
+
+void PosixSegment::UnregisterShmName(const std::string& name) {
+  ShmNameRegistry& r = Registry();
+  std::lock_guard<std::mutex> lg(r.mutex);
+  int n = r.count.load(std::memory_order_relaxed);
+  for (int i = 0; i < n; ++i) {
+    if (std::strncmp(r.names[i], name.c_str(), kMaxNameLen) == 0) {
+      // 用最后一个填当前位置，count--
+      std::memmove(r.names[i], r.names[n - 1], kMaxNameLen);
+      r.count.store(n - 1, std::memory_order_release);
+      return;
+    }
+  }
+}
+
+bool PosixSegment::InstallSignalHandler() { return InstallOnce(); }
+
+std::vector<std::string> PosixSegment::RegisteredShmNames() {
+  ShmNameRegistry& r = Registry();
+  std::lock_guard<std::mutex> lg(r.mutex);
+  std::vector<std::string> out;
+  int n = r.count.load(std::memory_order_relaxed);
+  out.reserve(n);
+  for (int i = 0; i < n; ++i) out.emplace_back(r.names[i]);
+  return out;
+}
+
+void PosixSegment::ClearRegistryForTest() {
+  ShmNameRegistry& r = Registry();
+  std::lock_guard<std::mutex> lg(r.mutex);
+  r.count.store(0, std::memory_order_release);
+}
+
+int PosixSegment::CleanupAllForTest() {
+  ShmNameRegistry& r = Registry();
+  std::lock_guard<std::mutex> lg(r.mutex);
+  int n = r.count.load(std::memory_order_relaxed);
+  int unlinked = 0;
+  for (int i = 0; i < n; ++i) {
+    if (::shm_unlink(r.names[i]) == 0) ++unlinked;
+  }
+  r.count.store(0, std::memory_order_release);
+  return unlinked;
+}
 
 PosixSegment::PosixSegment(uint64_t channel_id, uint64_t ceiling_msg_size,
                            uint32_t block_num)
@@ -86,6 +209,9 @@ bool PosixSegment::OpenOrCreate() {
   }
 
   state_->IncreaseReferenceCounts();
+  // 本进程是创建者：注册名字并安装信号处理器
+  InstallSignalHandler();
+  RegisterShmName(shm_name_);
   opened_ = true;
   return true;
 }
@@ -153,6 +279,7 @@ void PosixSegment::Close() {
 void PosixSegment::Destroy() {
   Close();
   if (!shm_name_.empty()) {
+    UnregisterShmName(shm_name_);
     shm_unlink(shm_name_.c_str());
   }
 }
