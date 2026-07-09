@@ -35,7 +35,7 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 # ---------------------------------------------------------
 file(GLOB_RECURSE SRC_FILES "src/*.cpp" "src/*.S")
 add_library(minicyber_core SHARED ${SRC_FILES})
-target_link_libraries(minicyber_core pthread dl)
+target_link_libraries(minicyber_core pthread dl rt)
 
 # ---------------------------------------------------------
 # 集成 GoogleTest (使用 FetchContent 自动下载)
