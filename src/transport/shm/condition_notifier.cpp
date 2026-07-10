@@ -1,88 +1,148 @@
 #include "minicyber/transport/shm/condition_notifier.h"
 
-#include <sys/epoll.h>
-#include <sys/eventfd.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
 #include <unistd.h>
 
-#include <cerrno>
-#include <cstdint>
+#include <chrono>
 #include <cstring>
+#include <thread>
 
 namespace minicyber {
 namespace transport {
 
+namespace {
+// 与 CyberRT 一致：用一个固定字符串的 hash 作为 SHM key
+// 这里用简单 hash 复刻 std::hash<std::string> 的效果（CyberRT 用 common::Hash）
+key_t MakeKey() {
+  const char* p = "/minicyber/transport/shm/notifier";
+  uint64_t h = 0;
+  for (const char* c = p; *c; ++c) {
+    h = h * 131u + static_cast<uint64_t>(*c);
+  }
+  return static_cast<key_t>(h & 0x7fffffff);  // key_t 需正数
+}
+}  // namespace
+
+ConditionNotifier::ConditionNotifier() {
+  key_ = MakeKey();
+  shm_size_ = sizeof(Indicator);
+}
+
 ConditionNotifier::~ConditionNotifier() { Shutdown(); }
 
 bool ConditionNotifier::Init() {
-  if (shutdown_) return false;
-  if (event_fd_ >= 0) return true;  // 已初始化
-
-  // 创建 eventfd：初值 0，CLOEXEC 防止泄漏到子进程（除非 fork 继承）
-  // 不使用 EFD_NONBLOCK：Listen 通过 epoll_wait 阻塞，读时已就绪
-  // 不使用 EFD_SEMAPHORE：默认计数模式，一次 read 清空计数，适合"有数据到达"语义
-  event_fd_ = ::eventfd(0, EFD_CLOEXEC);
-  if (event_fd_ < 0) return false;
-
-  epoll_fd_ = ::epoll_create1(EPOLL_CLOEXEC);
-  if (epoll_fd_ < 0) {
-    ::close(event_fd_);
-    event_fd_ = -1;
+  if (shutdown_.load()) return false;
+  if (indicator_ != nullptr) return true;  // 已初始化
+  if (!OpenOrCreate()) {
+    shutdown_.store(true);
     return false;
   }
-
-  struct epoll_event ev;
-  std::memset(&ev, 0, sizeof(ev));
-  ev.events = EPOLLIN;
-  ev.data.fd = event_fd_;
-  if (::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, event_fd_, &ev) < 0) {
-    ::close(event_fd_);
-    ::close(epoll_fd_);
-    event_fd_ = -1;
-    epoll_fd_ = -1;
-    return false;
-  }
+  next_seq_ = indicator_->next_seq.load();
   return true;
 }
 
-bool ConditionNotifier::Notify() {
-  if (shutdown_ || event_fd_ < 0) return false;
-  uint64_t val = 1;
-  ssize_t n = ::write(event_fd_, &val, sizeof(val));
-  return n == static_cast<ssize_t>(sizeof(val));
-}
+bool ConditionNotifier::OpenOrCreate() {
+  int retry = 0;
+  int shmid = 0;
+  while (retry < 2) {
+    shmid = ::shmget(key_, shm_size_, 0644 | IPC_CREAT | IPC_EXCL);
+    if (shmid != -1) break;
 
-bool ConditionNotifier::Listen(int timeout_ms) {
-  if (shutdown_ || event_fd_ < 0 || epoll_fd_ < 0) return false;
+    if (EINVAL == errno) {
+      // 大小不匹配，重建
+      Reset();
+      Remove();
+      ++retry;
+    } else if (EEXIST == errno) {
+      return OpenOnly();
+    } else {
+      return false;
+    }
+  }
+  if (shmid == -1) return false;
 
-  struct epoll_event events[1];
-  int n = ::epoll_wait(epoll_fd_, events, 1, timeout_ms);
-  if (n <= 0) {
-    // n == 0 : 超时
-    // n < 0 : 错误（EINTR 由调用者决定是否重试）
+  managed_shm_ = ::shmat(shmid, nullptr, 0);
+  if (managed_shm_ == reinterpret_cast<void*>(-1)) {
+    ::shmctl(shmid, IPC_RMID, 0);
+    managed_shm_ = nullptr;
     return false;
   }
-  // events[0].data.fd 应为 event_fd_，且 events & EPOLLIN
-  if (events[0].data.fd == event_fd_ && (events[0].events & EPOLLIN)) {
-    // 读出计数清零，避免后续重复唤醒
-    uint64_t val = 0;
-    ssize_t r = ::read(event_fd_, &val, sizeof(val));
-    (void)r;
-    return true;
+
+  // placement-new 构造 Indicator（含原子初值 0）
+  indicator_ = new (managed_shm_) Indicator();
+  return true;
+}
+
+bool ConditionNotifier::OpenOnly() {
+  int shmid = ::shmget(key_, 0, 0644);
+  if (shmid == -1) return false;
+
+  managed_shm_ = ::shmat(shmid, nullptr, 0);
+  if (managed_shm_ == reinterpret_cast<void*>(-1)) {
+    managed_shm_ = nullptr;
+    return false;
+  }
+  indicator_ = reinterpret_cast<Indicator*>(managed_shm_);
+  return indicator_ != nullptr;
+}
+
+bool ConditionNotifier::Remove() {
+  int shmid = ::shmget(key_, 0, 0644);
+  if (shmid == -1) return false;
+  return ::shmctl(shmid, IPC_RMID, 0) == 0; // Remove identifier
+}
+
+void ConditionNotifier::Reset() {
+  indicator_ = nullptr;
+  if (managed_shm_ != nullptr) {
+    ::shmdt(managed_shm_);
+    managed_shm_ = nullptr;
+  }
+}
+
+bool ConditionNotifier::Notify(const ReadableInfo& info) {
+  if (shutdown_.load() || indicator_ == nullptr) return false;
+  uint64_t seq = indicator_->next_seq.fetch_add(1);
+  uint64_t idx = seq % kBufLength;
+  indicator_->infos[idx] = info;
+  indicator_->seqs[idx] = seq;
+  return true;
+}
+
+bool ConditionNotifier::Listen(int timeout_ms, ReadableInfo* info) {
+  if (info == nullptr || shutdown_.load() || indicator_ == nullptr) return false;
+
+  // timeout_ms = -1 视为永久；这里用一个很大的 int 上限近似
+  int64_t remaining_us = (timeout_ms < 0) ? INT64_MAX : (int64_t)timeout_ms * 1000;
+
+  while (!shutdown_.load()) {
+    uint64_t seq = indicator_->next_seq.load();
+    if (seq != next_seq_) {
+      auto idx = next_seq_ % kBufLength;
+      uint64_t actual_seq = indicator_->seqs[idx];
+      if (actual_seq >= next_seq_) {
+        next_seq_ = actual_seq;
+        *info = indicator_->infos[idx];
+        ++next_seq_;
+        return true;
+      }
+      // 槽位正在被写，跳过本次，继续轮询
+    }
+
+    if (remaining_us <= 0) return false;
+    int64_t sleep_us = (remaining_us < 50) ? remaining_us : 50;
+    std::this_thread::sleep_for(std::chrono::microseconds(sleep_us));
+    remaining_us -= sleep_us;
   }
   return false;
 }
 
 void ConditionNotifier::Shutdown() {
-  if (shutdown_) return;
-  shutdown_ = true;
-  if (event_fd_ >= 0) {
-    ::close(event_fd_);
-    event_fd_ = -1;
-  }
-  if (epoll_fd_ >= 0) {
-    ::close(epoll_fd_);
-    epoll_fd_ = -1;
-  }
+  if (shutdown_.exchange(true)) return;
+  // 与 CyberRT 一致：留一点时间让对端最后读一次
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  Reset();
 }
 
 }  // namespace transport

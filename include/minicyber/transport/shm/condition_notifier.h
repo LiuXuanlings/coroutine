@@ -1,67 +1,98 @@
 #ifndef MINICYBER_TRANSPORT_SHM_CONDITION_NOTIFIER_H_
 #define MINICYBER_TRANSPORT_SHM_CONDITION_NOTIFIER_H_
 
+#include <atomic>
 #include <cstdint>
+#include <sys/ipc.h>
+#include <sys/types.h>
 
 namespace minicyber {
 namespace transport {
 
 // =============================================================================
-// ConditionNotifier：跨进程事件通知器（eventfd + epoll 简化版）
+// ConditionNotifier（CyberRT 原生移植版：System V SHM + 轮询）
 //
-// 替代 CyberRT 的 System V SHM + 轮询方案，改用 Linux eventfd：
-//   - eventfd 是 Linux 2.6.22+ 提供的轻量 IPC，一次 write 让对端 read 醒来
-//   - 默认计数模式：write 的值累加，read 一次读出全部并清零
-//   - 可被 fork 继承（子进程拿到同一个底层对象），适合跨进程唤醒
+// 本文件是 eventfd+epoll 版本的同接口替代实现，用于性能对比。
+// 主线（master）保留 eventfd+epoll 版本作为简历亮点；
+// 本分支（feature/cyber-native-notifier）移植 CyberRT 原生方案，
+// 在 Phase 5 benchmark 中作为基线进行对比。
 //
-// 关键设计（与 IOManager 的融合点）：
-//   Fd() 暴露 eventfd 文件描述符，Step 21 的 ShmReceiver 会把它注册进
-//   底层 IOManager 的 epoll 树。当对端进程 Notify 时，本进程的
-//   epoll_wait 醒来，直接唤醒关联协程，把 SHM 数据注入 DataDispatcher。
+// 机制：
+//   - 使用 System V 共享内存（shmget/shmat）承载一个 Indicator 结构
+//   - Indicator 是一个环形缓冲：next_seq 单调递增，infos/seqs 按 next_seq % kBufLength 索引
+//   - Notify()：把 ReadableInfo 写入环形，原子累加 next_seq
+//   - Listen()：轮询 next_seq 是否变化，变化则读出对应槽位的 info
+//     —— 这是 CyberRT 的原生做法，50µs 粒度 sleep 规避忙等
 //
-// 接口：
-//   - Init()      : 创建 eventfd 与 epoll，并把 eventfd 加入 epoll
-//   - Notify()    : 向 eventfd 写 1，唤醒所有监听者
-//   - Listen(ms)  : epoll_wait 阻塞等待，timeout_ms=-1 表示永久等待
-//                   返回 true 表示收到通知，false 表示超时或已 shutdown
-//   - Fd()        : 返回 eventfd，供 IOManager 注册进 epoll
-//   - Shutdown()  : 关闭两个 fd，幂等
+// 与 eventfd 版本的架构差异：
+//   - Fd() 返回 -1：本方案没有可注册进 epoll 的文件描述符
+//   - 唤醒路径：必须由后台线程/协程主动调用 Listen() 轮询，
+//     而非由 epoll_wait 优雅唤醒挂起协程
+//   - 这是本分支与主线在简历叙事上的核心差异点
+//
+// ReadableInfo 简化：CyberRT 的 ReadableInfo 含 host_id/block_index/channel_id
+// 并支持序列化；本移植保留三字段但简化为 POD 结构，不做序列化（跨进程
+// 通过同一段 SHM 直接共享，无需序列化）。
 // =============================================================================
 
+constexpr uint32_t kBufLength = 4096;
+
+struct ReadableInfo {
+  uint64_t host_id = 0;
+  uint32_t block_index = 0;
+  uint64_t channel_id = 0;
+};
+
 class ConditionNotifier {
+  struct Indicator {
+    std::atomic<uint64_t> next_seq{0};
+    ReadableInfo infos[kBufLength];
+    uint64_t seqs[kBufLength] = {0};
+  };
+
  public:
-  ConditionNotifier() = default;
+  ConditionNotifier();
   ~ConditionNotifier();
 
   ConditionNotifier(const ConditionNotifier&) = delete;
   ConditionNotifier& operator=(const ConditionNotifier&) = delete;
 
-  // 初始化：创建 eventfd 与 epoll，并把 eventfd 注册进 epoll
+  // 初始化：创建或打开 System V 共享内存
   bool Init();
 
-  // 发出一次通知（向 eventfd 写 1）
-  bool Notify();
+  // 发出一次通知：写一条 ReadableInfo 到环形，next_seq++
+  bool Notify(const ReadableInfo& info);
 
-  // 阻塞等待通知：
-  //   timeout_ms = -1 : 永久等待
-  //   timeout_ms = 0  : 非阻塞轮询
-  //   timeout_ms > 0  : 等待至多 timeout_ms 毫秒
+  // 轮询等待通知：
+  //   timeout_ms = -1 : 永久等待（循环 50µs 轮询）
+  //   timeout_ms = 0  : 非阻塞轮询一次
+  //   timeout_ms > 0  : 至多等待 timeout_ms 毫秒
   // 返回 true 表示收到通知，false 表示超时或已 shutdown
-  bool Listen(int timeout_ms = -1);
+  bool Listen(int timeout_ms, ReadableInfo* info);
 
-  // 供 IOManager 注册进 epoll 的关键接口
-  int Fd() const { return event_fd_; }
-  int EpollFd() const { return epoll_fd_; }
+  // 本方案无可注册进 epoll 的 fd，始终返回 -1
+  // 保留接口以便与 eventfd 版本同接口替换
+  int Fd() const { return -1; }
+  int EpollFd() const { return -1; }
 
-  // 关闭资源，幂等
   void Shutdown();
+  bool IsShutdown() const { return shutdown_.load(); }
 
-  bool IsShutdown() const { return shutdown_; }
+  // 测试辅助
+  key_t key() const { return key_; }
 
  private:
-  int event_fd_ = -1;
-  int epoll_fd_ = -1;
-  bool shutdown_ = false;
+  bool OpenOrCreate();
+  bool OpenOnly();
+  bool Remove();
+  void Reset();
+
+  key_t key_ = 0;
+  void* managed_shm_ = nullptr;
+  size_t shm_size_ = 0;
+  Indicator* indicator_ = nullptr;
+  uint64_t next_seq_ = 0;
+  std::atomic<bool> shutdown_{false};
 };
 
 }  // namespace transport
