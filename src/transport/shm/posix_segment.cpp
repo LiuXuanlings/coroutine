@@ -288,5 +288,51 @@ void* PosixSegment::GetMemPtr() { return mem_; }
 
 size_t PosixSegment::GetSize() { return total_size_; }
 
+// 计算第 index 个 block 的 payload 起始地址
+uint8_t* PosixSegment::BlockBufAddr(uint32_t index) {
+  if (mem_ == nullptr || blocks_ == nullptr) return nullptr;
+  char* base = static_cast<char*>(mem_);
+  return reinterpret_cast<uint8_t*>(base + sizeof(State) +
+                                    block_num_ * sizeof(Block) +
+                                    index * ceiling_msg_size_);
+}
+
+bool PosixSegment::AcquireBlockToWrite(size_t msg_size, ShmWritableBlock* wb) {
+  if (!opened_ || wb == nullptr || msg_size > ceiling_msg_size_) return false;
+
+  // 简单策略：用 State 的 seq 取模决定下一个写块索引
+  // 这样多个写者通过原子 seq 自然错开；同进程内单写者时直接递增。
+  uint32_t index = 0;
+  if (state_ != nullptr) {
+    index = state_->FetchAddSeq(1) % block_num_;
+  }
+  Block* blk = &blocks_[index];
+  if (!blk->TryLockForWrite()) return false;
+  wb->index = index;
+  wb->block = blk;
+  wb->buf = BlockBufAddr(index);
+  return true;
+}
+
+void PosixSegment::ReleaseWrittenBlock(const ShmWritableBlock& wb) {
+  if (wb.block == nullptr) return;
+  wb.block->ReleaseWriteLock();
+}
+
+bool PosixSegment::AcquireBlockToRead(uint32_t index, ShmReadableBlock* rb) {
+  if (!opened_ || rb == nullptr || index >= block_num_) return false;
+  Block* blk = &blocks_[index];
+  if (!blk->TryLockForRead()) return false;
+  rb->index = index;
+  rb->block = blk;
+  rb->buf = BlockBufAddr(index);
+  return true;
+}
+
+void PosixSegment::ReleaseReadBlock(const ShmReadableBlock& rb) {
+  if (rb.block == nullptr) return;
+  rb.block->ReleaseReadLock();
+}
+
 }  // namespace transport
 }  // namespace minicyber

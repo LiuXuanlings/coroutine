@@ -29,6 +29,7 @@ class Segment;
 
 class Block {
   friend class Segment;
+  friend class PosixSegment;
   friend class ShmBlockTest;
 
  public:

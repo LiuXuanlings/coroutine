@@ -13,6 +13,14 @@
 namespace minicyber {
 namespace transport {
 
+// 前置：一个待写入/待读取的块上下文
+struct ShmWritableBlock {
+  uint32_t index = 0;
+  Block* block = nullptr;
+  uint8_t* buf = nullptr;
+};
+using ShmReadableBlock = ShmWritableBlock;
+
 // =============================================================================
 // PosixSegment：基于 shm_open + mmap 的共享内存段
 //
@@ -47,6 +55,18 @@ class PosixSegment : public Segment {
   void* GetMemPtr() override;
   size_t GetSize() override;
 
+  // ---- 块级读写接口（供 ShmDispatcher / ShmTransmitter 使用） ----
+  // 申请一个可写块：找到下一个空闲块，加写锁，填入 wb。
+  // msg_size 为本次消息字节数，必须 <= block_buf_size()。
+  // 成功返回 true，wb->buf 指向 payload 缓冲，写完须调用 ReleaseWrittenBlock。
+  bool AcquireBlockToWrite(size_t msg_size, ShmWritableBlock* wb);
+  // 释放已写块：设置 block 的 msg_size，释放写锁，使数据对读者可见。
+  void ReleaseWrittenBlock(const ShmWritableBlock& wb);
+  // 读取指定索引的块：加读锁，填入 rb。失败（块未就绪/锁失败）返回 false。
+  bool AcquireBlockToRead(uint32_t index, ShmReadableBlock* rb);
+  // 释放已读块：释放读锁。
+  void ReleaseReadBlock(const ShmReadableBlock& rb);
+
   // 调试/测试辅助
   const std::string& shm_name() const { return shm_name_; }
   State* state() const { return state_; }
@@ -75,6 +95,8 @@ class PosixSegment : public Segment {
 
   // 计算段总大小
   size_t TotalSize() const;
+  // 计算第 index 个 block 的 payload 起始地址
+  uint8_t* BlockBufAddr(uint32_t index);
 
   std::string shm_name_;
   uint64_t ceiling_msg_size_;
