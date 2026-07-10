@@ -42,23 +42,23 @@ This is the master plan for refactoring Sylar into MiniCyber. When you lose cont
 ---
 
 ### Phase 3：零拷贝 IPC 与跨进程网络 (约 800 行)
-**目标**：打破进程壁垒，将独立的计算进程融合成一张网，并利用 `eventfd` 将跨进程通信纳入本进程的协程调度系统。
+**目标**：打破进程壁垒，将独立的计算进程融合成一张网，对齐 CyberRT 原生的 System V 共享内存 + 轮询通知方案。
 
 **要写的文件**：
 *   `transport/shm/state.h`, `block.h`, `segment.h`
 *   `transport/shm/posix_segment.h / .cpp`
-*   `transport/shm/condition_notifier.h / .cpp` (eventfd封装)
+*   `transport/shm/condition_notifier.h / .cpp` (System V SHM + Indicator 轮询)
 *   `transport/dispatcher/intra_dispatcher.h / .cpp`
 *   `transport/dispatcher/shm_dispatcher.h / .cpp`
 *   `transport/transmitter/...`, `transport/receiver/...`
 
 **核心改动**：
-1. **物理内存映射**：通过 `shm_open` + `mmap` 分配共享内存（Segment），并处理 SIGINT 信号防止 `/dev/shm` 泄漏。
-2. **跨进程唤醒桥接**：**这是最精妙的一步**。使用 `eventfd` 传递跨进程到达通知，并**将该 `eventfd` 注册进底层的 `epoll` 树中**。当数据写入共享内存时，触发 `eventfd`，本进程的 epoll_wait 醒来，读取 SHM 并直接唤醒关联协程。
+1. **物理内存映射**：通过 `shm_open` + `mmap` 分配 POSIX 共享内存（Segment），并处理 SIGINT 信号防止 `/dev/shm` 泄漏。
+2. **跨进程唤醒桥接（CyberRT 原生方案）**：使用 System V 共享内存（`shmget/shmat`）承载一个 `Indicator` 环形缓冲。写者 `Notify()` 把 `ReadableInfo{host_id, block_index, channel_id}` 写入环形并原子累加 `next_seq`；读者后台线程 `Listen(timeout, &info)` 轮询 `next_seq` 变化，命中后直接拿到目标 channel 与 block_index。通知本身携带路由信息，无需扫描所有 segment。
 3. **混合收发器**：封装 `IntraTransmitter` (同进程) 和 `ShmTransmitter` (跨进程)。
 
-**Phase 3 产出**：具备跨进程零拷贝能力的底层传输链路，协程跨进程唤醒延迟压进微秒级。
-**对应简历句**：针对跨进程通信瓶颈，实现基于 `shm_open + mmap` 的共享内存映射；抛弃传统 IPC 锁，采用**原子序号（Indicator）+ `eventfd` 跨进程唤醒**方案；并将 `eventfd` 优雅融入底层的 `epoll` 监听树，实现跨进程消息的微秒级协程调度。
+**Phase 3 产出**：具备跨进程零拷贝能力的底层传输链路，对齐 CyberRT 原生基线。
+**对应简历句**：针对跨进程通信瓶颈，实现基于 `shm_open + mmap` 的共享内存映射；抛弃传统 IPC 锁，采用 CyberRT 原生的 **System V SHM + Indicator 环形缓冲**方案，通知本身携带 `{channel_id, block_index}` 路由信息，后台线程 50µs 粒度轮询唤醒，实现跨进程消息的微秒级协程调度。
 
 ---
 
@@ -140,8 +140,8 @@ minicyber/
    > “但解决调度只是第一步，传统协程只能阻塞在 Socket 等网络 IO 上。为了支撑高性能计算（如机器人/自动驾驶），我设计了 **DataDispatcher（数据分发中枢）**。协程不再绑定套接字，而是绑定业务 Channel。如果数据没准备好，协程主动挂起进入 `DATA_WAIT` 状态；当上游写入数据时，`DataNotifier` 会无锁地、瞬间唤醒对应的协程，实现了纯正的**数据流驱动计算**。”
 
 3. **第三层：跨越边界（Transport / SHM）**
-   > “为了解决多进程架构下的通信瓶颈，我实现了跨进程的零拷贝链路。底层用 `shm_open+mmap` 分配共享内存，但**没有使用传统的进程间锁**，而是用原子的 Indicator 维护读写位点。
-   > **最巧妙的地方在于：** 我利用了 Linux 的 `eventfd` 来做跨进程提醒，**并把这个 `eventfd` 注册进了我底层协程框架的 `epoll` 树中**。这样，共享内存的数据到达，就像普通的网络包到达一样，直接在微秒级唤醒了挂起在 `epoll_wait` 上的协程。”
+   > “为了解决多进程架构下的通信瓶颈，我实现了跨进程的零拷贝链路。底层用 `shm_open+mmap` 分配共享内存，但**没有使用传统的进程间锁**，而是对齐 Apollo CyberRT 原生方案，用 System V 共享内存承载一个 `Indicator` 环形缓冲。
+   > **最巧妙的地方在于：** 通知本身携带路由信息——写者把 `{channel_id, block_index}` 写入环形并原子累加 `next_seq`，读者后台线程 50µs 粒度轮询 `next_seq` 变化，命中后直接拿到目标 channel 和 block 索引，无需扫描所有 segment。这样共享内存的数据到达，就像数据流事件一样，直接唤醒挂起在 `DATA_WAIT` 的协程。”
 
 4. **第四层：架构抽象（Topology & API）**
    > “底层搞定后，为了好用，我在顶层抽象了有向图（Graph）作为计算图的拓扑管理。业务代码只需要写 `CreateWriter` 和 `CreateReader`，框架会自动根据 Topology 判断目标是在本进程还是其他进程，**如果是同进程就路由给 INTRA（指针直接投递），跨进程就路由给 SHM，对开发者完全透明**。”
@@ -981,11 +981,11 @@ feat(transport): 实现 PosixSegment 与生命周期管理
 
 ---
 
-### Step 19: feat(transport): 移植 ConditionNotifier（eventfd + epoll 简化版）
+### Step 19: feat(transport): 移植 ConditionNotifier（System V SHM + Indicator 轮询）
 
-**目标**：实现跨进程事件通知，将 eventfd 注册进 IOManager 的 epoll。
+**目标**：对齐 CyberRT 原生跨进程通知方案，使用 System V 共享内存承载 Indicator 环形缓冲，通知本身携带路由信息。
 
-**参考源码**：`cyber/transport/shm/condition_notifier.cc`（简化）
+**参考源码**：`cyber/transport/shm/condition_notifier.cc`
 
 **文件列表**：
 - `include/minicyber/transport/shm/condition_notifier.h`（新增）
@@ -994,37 +994,56 @@ feat(transport): 实现 PosixSegment 与生命周期管理
 
 **具体实现要点**：
 
-1. **简化设计**：用 `eventfd` 替代 CyberRT 复杂的 UDP 组播。
+1. **Indicator 环形缓冲**（对齐 CyberRT 原生）：
    ```cpp
+   constexpr uint32_t kBufLength = 4096;
+   struct ReadableInfo {
+     uint64_t host_id = 0;
+     uint32_t block_index = 0;
+     uint64_t channel_id = 0;
+   };
    class ConditionNotifier {
-   public:
+     struct Indicator {
+       std::atomic<uint64_t> next_seq{0};
+       ReadableInfo infos[kBufLength];
+       uint64_t seqs[kBufLength] = {0};
+     };
+    public:
      bool Init();
-     void Notify();        // write eventfd
-     bool Listen(int timeout_ms = -1); // epoll_wait
-     int Fd() const;
-   private:
-     int event_fd_ = -1;
-     int epoll_fd_ = -1;
+     bool Notify(const ReadableInfo& info);
+     bool Listen(int timeout_ms, ReadableInfo* info);
+     int Fd() const { return -1; }  // 无 epoll 桥接
+     void Shutdown();
    };
    ```
 
-2. **关键融合点（坑点三）**：`ShmReceiver` 中将 `ConditionNotifier::Fd()` 注册进 Sylar 的 `IOManager` epoll。当 eventfd 可读时，IOManager 回调读取 SHM 数据，再注入 `DataDispatcher`。
+2. **机制**：
+   - `Init()`：`shmget` + `shmat` 创建/打开同 `key_t` 的 SysV SHM 段，placement-new 构造 Indicator。
+   - `Notify(info)`：`next_seq.fetch_add(1)` 取序号，写入 `infos[idx]` 与 `seqs[idx]`。
+   - `Listen(timeout, &info)`：50µs 粒度轮询 `next_seq` 变化，命中后快进 `next_seq_` 到槽位实际序号，读出 `ReadableInfo`。
+   - `key_t` 由固定路径字符串 `/minicyber/transport/shm/notifier` 的 hash 得到，任意进程独立 `Init()` 即可共享同一段。
+
+3. **与 eventfd 方案的核心差异**：
+   - 无可注册进 epoll 的 fd，唤醒路径必须由后台线程主动 `Listen()` 轮询。
+   - 通知本身携带 `{channel_id, block_index}` 路由信息，读者无需扫描所有 segment。
+   - 唤醒粒度受 `sleep_for(50µs)` 实际调度精度限制（Linux 上约 1ms）。
 
 **提交信息**：
 ```
-feat(transport): 移植 ConditionNotifier（eventfd + epoll 简化版）
+feat(transport): 移植 ConditionNotifier（System V SHM + Indicator 轮询）
 
-- 用 eventfd 替代复杂组播，Notify 写 8 字节，Listen 通过 epoll 阻塞
-- 关键设计：eventfd 注册进底层 IOManager 的 epoll
-- 数据到达时 epoll_wait 唤醒，将 SHM 数据注入 DataDispatcher
-- 添加跨进程事件通知测试
+- 对齐 CyberRT 原生方案：shmget/shmat 承载 Indicator 环形缓冲
+- Notify 写 ReadableInfo 到环形，next_seq 原子累加
+- Listen 50µs 粒度轮询 next_seq，命中后快进并读出路由信息
+- 通知本身携带 {channel_id, block_index}，无需扫描 segment
+- 添加跨进程通知与环形回绕测试
 ```
 
 ---
 
 ### Step 20: feat(transport): 移植 IntraDispatcher 与 ShmDispatcher
 
-**目标**：实现同进程和跨进程两种分发后端。
+**目标**：实现同进程和跨进程两种分发后端，ShmDispatcher 对齐 CyberRT 原生基线（后台线程轮询 ConditionNotifier）。
 
 **参考源码**：`cyber/transport/dispatcher/intra_dispatcher.h`, `shm_dispatcher.h`
 
@@ -1032,30 +1051,41 @@ feat(transport): 移植 ConditionNotifier（eventfd + epoll 简化版）
 - `include/minicyber/transport/dispatcher/intra_dispatcher.h`（新增）
 - `include/minicyber/transport/dispatcher/shm_dispatcher.h`（新增）
 - `src/transport/dispatcher/shm_dispatcher.cpp`（新增）
-- `tests/test_dispatcher.cpp`（新增）
+- `tests/test_intra_dispatcher.cpp`（新增）
+- `tests/test_shm_dispatcher.cpp`（新增）
 
 **具体实现要点**：
 
-1. **新增 `IntraDispatcher`**：直接转发给 `DataDispatcher<T>::Instance()->Dispatch()`。
+1. **新增 `IntraDispatcher<T>`**：模板单例，直接转发给 `DataDispatcher<T>::Instance()->Dispatch()`，指针级零拷贝。
 
-2. **新增 `ShmDispatcher`**：
-   - 持有 `PosixSegment` + `ConditionNotifier`。
-   - 后台协程（或线程）`epoll_wait` eventfd。
-   - 收到通知后读取 Segment，反序列化（先支持 `std::string`），调用 `DataDispatcher::Dispatch` 注入进程内。
+2. **新增 `ShmDispatcher`**（单例，对齐 CyberRT 原生）：
+   - 持有 `ConditionNotifier` + `unordered_map<channel_id, shared_ptr<PosixSegment>>`。
+   - 后台线程 `ThreadFunc` 循环调用 `notifier_->Listen(100, &info)`。
+   - 命中后由 `info.channel_id` 直接定位 segment，`info.block_index` 定位 block，无需扫描。
+   - `AcquireBlockToRead(block_index)` → memcpy payload 成 `std::string` → `DataDispatcher<std::string>::Instance()->Dispatch(channel_id, msg)`。
+   - `AddSegment(channel_id)` 幂等：已存在则不替换（避免旧 PosixSegment 析构 `shm_unlink`）。
+
+3. **与 eventfd 版本的核心差异**：
+   - 原生 `Listen` 返回 `ReadableInfo`，直接给出目标 channel 与 block_index。
+   - 无需 `last_read_seq_` 映射或 segment 扫描。
+   - 唤醒延迟受轮询粒度限制（约 1ms），但换得真正的跨进程支持与 CyberRT 保真度。
 
 **提交信息**：
 ```
 feat(transport): 移植 IntraDispatcher 与 ShmDispatcher
 
-- IntraDispatcher：直接调用 DataDispatcher，指针级零拷贝
-- ShmDispatcher：组合 PosixSegment + ConditionNotifier
-- 后台协程 epoll_wait eventfd，收到信号后读 SHM 并注入 DataDispatcher
-- 添加同进程与跨进程分发测试
+- IntraDispatcher：模板单例，直接调 DataDispatcher，指针级零拷贝
+- ShmDispatcher：后台线程轮询 ConditionNotifier，对齐 CyberRT 原生
+- Listen 返回 ReadableInfo 直接定位 channel + block_index，无需扫描
+- AddSegment 幂等，避免旧 segment 析构导致 shm_unlink
+- 添加同进程与 fork 跨进程分发测试
 ```
 
 ---
 
-### Step 21: feat(transport): 移植 Transmitter 与 Receiver 接口
+### Step 21: feat(transport): 移植 Transmitter 与 Receiver 接口（待后续阶段处理）
+
+**状态**：**本步骤暂缓实施**。用户明确要求在 Step 19/20 原生方案稳定后再单独处理 Step 21。
 
 **目标**：封装底层 Dispatcher，提供统一的发布/订阅接口。
 
@@ -1069,24 +1099,26 @@ feat(transport): 移植 IntraDispatcher 与 ShmDispatcher
 - `include/minicyber/transport/receiver/shm_receiver.h`（新增）
 - `tests/test_transceiver.cpp`（新增）
 
-**具体实现要点**：
+**具体实现要点（待 Step 21 阶段细化）**：
 
 1. **Transmitter 体系**：
    - `IntraTransmitter`：直接调用 `IntraDispatcher::Dispatch`。
-   - `ShmTransmitter`：序列化到 Segment，更新 Indicator，Notify eventfd。
+   - `ShmTransmitter`：`AcquireBlockToWrite` → memcpy payload → `ReleaseWrittenBlock` → `ConditionNotifier::Notify(ReadableInfo{...})`。对齐 CyberRT 原生写入路径。
 
 2. **Receiver 体系**：
-   - `ShmReceiver`：监听 eventfd（通过 IOManager），读取 Segment，回调给用户。
+   - `ShmReceiver`：依赖 `ShmDispatcher` 后台线程轮询 `ConditionNotifier::Listen`，收到 `ReadableInfo` 后读取对应 block，回调给用户。不再依赖 `IOManager` 的 epoll 桥接。
 
 3. **序列化简化**：先支持 `std::string`，通过 `memcpy` 拷贝到 Segment。面试口径："预留了二进制序列化接口，当前用 string 做演示"。
 
-**提交信息**：
+**注意**：Step 21 的设计需与 Step 19/20 的原生 ConditionNotifier 方案保持一致，不再使用 eventfd+epoll 桥接。具体实施计划待用户后续确认。
+
+**提交信息**（待实施时确认）：
 ```
 feat(transport): 移植 Transmitter 与 Receiver 接口
 
 - IntraTransmitter：直接调 IntraDispatcher
-- ShmTransmitter：拷贝到 Segment + 唤醒 eventfd
-- ShmReceiver：通过 IOManager 监听 eventfd，读取后回调
+- ShmTransmitter：AcquireBlockToWrite + Notify(ReadableInfo)，对齐 CyberRT 原生
+- ShmReceiver：依赖 ShmDispatcher 后台线程轮询，无需 epoll 桥接
 - 先支持 std::string 传输，预留二进制序列化接口
 - 添加跨进程收发测试
 ```
@@ -1336,9 +1368,9 @@ docs: 补充 README 与压测数据
 | | 16 | DataFusion（新增亮点） |
 | **P4 传输层** | 17 | SHM State/Block/Segment |
 | | 18 | PosixSegment + 生命周期 |
-| | 19 | ConditionNotifier（eventfd） |
-| | 20 | Intra/Shm Dispatcher |
-| | 21 | Transmitter/Receiver |
+| | 19 | ConditionNotifier（SysV SHM + Indicator 轮询） |
+| | 20 | Intra/Shm Dispatcher（原生基线） |
+| | 21 | Transmitter/Receiver（待后续阶段处理） |
 | **P5 高层与收尾** | 22 | TopologyManager |
 | | 23 | Transport 自动路由 |
 | | 24 | Node/Reader/Writer |
