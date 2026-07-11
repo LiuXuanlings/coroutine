@@ -279,8 +279,8 @@ void PosixSegment::Close() {
 void PosixSegment::Destroy() {
   Close();
   if (!shm_name_.empty()) {
-    UnregisterShmName(shm_name_);
     shm_unlink(shm_name_.c_str());
+    UnregisterShmName(shm_name_);
   }
 }
 
