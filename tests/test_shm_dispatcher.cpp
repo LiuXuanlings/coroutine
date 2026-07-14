@@ -56,6 +56,9 @@ void WriteAndNotify(PosixSegment& seg, ConditionNotifier& n,
 }  // namespace
 
 // 全局测试环境：在所有测试开始前清理可能残留的 notifier SHM。
+// ::testing::Environment 是 Google Test 框架的**全局测试环境基类**
+// :: 是全局命名空间作用域符，显式访问 gtest 的 testing 命名空间下的 Environment 类
+// 继承该类可自定义全局钩子：SetUp 在所有测试用例启动前执行1次，TearDown 在所有测试结束后执行1次
 // 注意：不能在单个测试中清理——ShmDispatcher 是单例，其 ConditionNotifier
 // 在第一次访问时初始化并 shmat 到 SHM 段。如果在测试中调用 IPC_RMID，
 // 写者的 Init() 会创建新段，而单例仍挂在旧段上，两者断联导致测试失败。

@@ -21,6 +21,7 @@ void ShmDispatcher::Init() {
 
 void ShmDispatcher::AddSegment(uint64_t channel_id) {
   // 幂等：已存在则不重复添加（避免替换导致旧 PosixSegment 析构 shm_unlink）
+  // 同 channel_id 仅保证内核共享内存同一块，每个 PosixSegment 是独立实例，覆盖会触发旧对象析构执行 shm_unlink
   if (segments_.count(channel_id) > 0) return;
   auto seg = std::make_shared<PosixSegment>(channel_id);
   if (!seg->Open()) {

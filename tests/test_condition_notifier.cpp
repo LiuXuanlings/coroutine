@@ -74,6 +74,7 @@ TEST(ConditionNotifierTest, ListenNonBlockingNoNotify) {
 // 无通知时 Listen(100) 最终返回 false。
 // 注意：50µs 粒度 sleep 受 OS 调度器影响（最小调度粒度常 ~1ms），
 // 实际耗时可能数倍于 100ms，这里只验证"超时返回 false"语义与下界。
+// 兜底极端繁忙的场景，不代表常态就是这样。
 TEST(ConditionNotifierTest, ListenTimeout) {
   ConditionNotifier n;
   CleanupShm(n.key());
@@ -126,7 +127,7 @@ TEST(ConditionNotifierTest, RingWraparound) {
   ReadableInfo got;
   for (uint32_t k = 0; k < 10; ++k) {
     uint32_t expected_bi = minicyber::transport::kBufLength + k;
-    ASSERT_TRUE(n.Listen(100, &got)) << "k=" << k;
+    ASSERT_TRUE(n.Listen(100, &got)) << "k=" << k;//追加的自定义调试信息。当断言失败时，除了默认报错，还会额外输出
     EXPECT_EQ(got.block_index, expected_bi) << "k=" << k;
   }
   // 再 Listen 应超时（已追上 next_seq）

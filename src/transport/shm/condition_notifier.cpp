@@ -63,7 +63,7 @@ bool ConditionNotifier::OpenOrCreate() {
   if (shmid == -1) return false;
 
   managed_shm_ = ::shmat(shmid, nullptr, 0);
-  if (managed_shm_ == reinterpret_cast<void*>(-1)) {
+  if (managed_shm_ == reinterpret_cast<void*>(-1)) {// when shmat fails, it returns (void*)-1
     ::shmctl(shmid, IPC_RMID, 0);
     managed_shm_ = nullptr;
     return false;
@@ -75,10 +75,10 @@ bool ConditionNotifier::OpenOrCreate() {
 }
 
 bool ConditionNotifier::OpenOnly() {
-  int shmid = ::shmget(key_, 0, 0644);
+  int shmid = ::shmget(key_, 0, 0644);// when size=0, it will return the existing segment id if it exists, otherwise it will return -1 and set errno to ENOENT
   if (shmid == -1) return false;
 
-  managed_shm_ = ::shmat(shmid, nullptr, 0);
+  managed_shm_ = ::shmat(shmid, nullptr, 0);// attach the shared memory segment to the process's address space
   if (managed_shm_ == reinterpret_cast<void*>(-1)) {
     managed_shm_ = nullptr;
     return false;
@@ -87,6 +87,9 @@ bool ConditionNotifier::OpenOnly() {
   return indicator_ != nullptr;
 }
 
+//difference between Remove() and Reset():
+// Remove() removes the shared memory segment from the system, 
+// while Reset() only detaches the shared memory segment from the process's address space. 
 bool ConditionNotifier::Remove() {
   int shmid = ::shmget(key_, 0, 0644);
   if (shmid == -1) return false;
@@ -118,7 +121,15 @@ bool ConditionNotifier::Listen(int timeout_ms, ReadableInfo* info) {
 
   while (!shutdown_.load()) {
     uint64_t seq = indicator_->next_seq.load();
-    if (seq != next_seq_) {
+        if (seq != next_seq_) {
+      // 计算当前期望序列号对应的环形槽位，通过槽内真实序列号校验数据有效性
+      // 分三种场景处理：
+      // 1. actual_seq == next_seq_：正常顺序消费，读取数据后消费进度+1
+      // 2. actual_seq >  next_seq_：消费者落后过多，历史数据已被新消息覆盖
+      //    触发 fast-forward 快进：直接对齐到槽位当前有效序列号，跳过全部丢失的历史消息
+      // 3. actual_seq <  next_seq_：槽位处于半写状态
+      //    生产者写入顺序为「先更新全局 next_seq，再填充槽位数据和seq」
+      //    此时槽内仍是旧数据，跳过本轮轮询，等待下一次检查
       auto idx = next_seq_ % kBufLength;
       uint64_t actual_seq = indicator_->seqs[idx];
       if (actual_seq >= next_seq_) {
@@ -127,7 +138,7 @@ bool ConditionNotifier::Listen(int timeout_ms, ReadableInfo* info) {
         ++next_seq_;
         return true;
       }
-      // 槽位正在被写，跳过本次，继续轮询
+      // 半写状态跳过，继续下一轮轮询
     }
 
     if (remaining_us <= 0) return false;
