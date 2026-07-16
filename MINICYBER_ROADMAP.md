@@ -1083,11 +1083,9 @@ feat(transport): 移植 IntraDispatcher 与 ShmDispatcher
 
 ---
 
-### Step 21: feat(transport): 移植 Transmitter 与 Receiver 接口（待后续阶段处理）
+### Step 21: feat(transport): 移植 Transmitter 与 Receiver 接口
 
-**状态**：**本步骤暂缓实施**。用户明确要求在 Step 19/20 原生方案稳定后再单独处理 Step 21。
-
-**目标**：封装底层 Dispatcher，提供统一的发布/订阅接口。
+**目标**：封装底层 Dispatcher，提供统一的发布/订阅接口，对齐 CyberRT 原生写入/读取路径。
 
 **参考源码**：`cyber/transport/transmitter/*`, `cyber/transport/receiver/*`
 
@@ -1096,31 +1094,61 @@ feat(transport): 移植 IntraDispatcher 与 ShmDispatcher
 - `include/minicyber/transport/transmitter/intra_transmitter.h`（新增）
 - `include/minicyber/transport/transmitter/shm_transmitter.h`（新增）
 - `include/minicyber/transport/receiver/receiver.h`（新增）
+- `include/minicyber/transport/receiver/intra_receiver.h`（新增）
 - `include/minicyber/transport/receiver/shm_receiver.h`（新增）
-- `tests/test_transceiver.cpp`（新增）
+- `tests/test_intra_transmitter.cpp`（新增）
+- `tests/test_shm_transmitter.cpp`（新增）
+- `tests/test_intra_receiver.cpp`（新增）
+- `tests/test_shm_receiver.cpp`（新增）
 
-**具体实现要点（待 Step 21 阶段细化）**：
+**具体实现要点**：
 
-1. **Transmitter 体系**：
-   - `IntraTransmitter`：直接调用 `IntraDispatcher::Dispatch`。
-   - `ShmTransmitter`：`AcquireBlockToWrite` → memcpy payload → `ReleaseWrittenBlock` → `ConditionNotifier::Notify(ReadableInfo{...})`。对齐 CyberRT 原生写入路径。
+1. **Transmitter 基类**（`transmitter.h`）：
+   - 模板 `Transmitter<M>`，纯虚 `Enable()/Disable()/Transmit(msg)`。
+   - 维护 `seq_num_`（单调递增）、`channel_id_`、`enabled_`。
 
-2. **Receiver 体系**：
-   - `ShmReceiver`：依赖 `ShmDispatcher` 后台线程轮询 `ConditionNotifier::Listen`，收到 `ReadableInfo` 后读取对应 block，回调给用户。不再依赖 `IOManager` 的 epoll 桥接。
+2. **IntraTransmitter<M>**：
+   - `Transmit` → `IntraDispatcher<M>::Instance()->Dispatch(channel_id_, msg)`，零拷贝。
+   - 发布语义对齐 CyberRT：Enable 后发布即成功（返回 true），无论是否有订阅者。
 
-3. **序列化简化**：先支持 `std::string`，通过 `memcpy` 拷贝到 Segment。面试口径："预留了二进制序列化接口，当前用 string 做演示"。
+3. **ShmTransmitter**（继承 `Transmitter<std::string>`）：
+   - 持有 `shared_ptr<PosixSegment>` + `unique_ptr<ConditionNotifier>`。
+   - `Enable()`：Open segment + Init notifier。
+   - `Transmit`：`AcquireBlockToWrite` → `memcpy` → `set_msg_size` → `ReleaseWrittenBlock` → `Notify(ReadableInfo{0, block_index, channel_id})`。对齐 CyberRT 原生写入路径。
+   - `Disable()`：Shutdown notifier + Destroy segment。
 
-**注意**：Step 21 的设计需与 Step 19/20 的原生 ConditionNotifier 方案保持一致，不再使用 eventfd+epoll 桥接。具体实施计划待用户后续确认。
+4. **Receiver 基类**（`receiver.h`）：
+   - 模板 `Receiver<M>`，`MessageListener = function<void(const shared_ptr<M>&)>`。
+   - 纯虚 `Enable()/Disable()`，protected `OnNewMessage(msg)` 触发上层回调。
 
-**提交信息**（待实施时确认）：
+5. **IntraReceiver<M>**：
+   - `Enable()`：创建 `ChannelBuffer<M>` 注册到 `DataDispatcher<M>` + 注册 `DataNotifier` 回调。
+   - 回调路径：DataNotifier 触发 → `ChannelBuffer::Latest` → `OnNewMessage`。
+   - `Disable()`：重置回调 + 销毁 ChannelBuffer（weak_ptr 自动失效）。
+
+6. **ShmReceiver**（继承 `Receiver<std::string>`）：
+   - `Enable()`：`ShmDispatcher::AddSegment(channel_id)` + 注册 `ChannelBuffer` + `DataNotifier` 回调。
+   - 数据路径：ShmDispatcher 后台线程 Listen → ReadableInfo → 读 SHM → `DataDispatcher::Dispatch` → `DataNotifier` → ShmReceiver 回调 → `OnNewMessage`。
+   - `Disable()`：重置回调 + 销毁 ChannelBuffer。
+
+7. **序列化简化**：先支持 `std::string`，通过 `memcpy` 拷贝到 Segment。面试口径："预留了二进制序列化接口，当前用 string 做演示"。
+
+**与 CyberRT 的核心差异**：
+   - 去掉 `RoleAttributes`/`MessageInfo`/`Endpoint`/`History` 基类，直接用 `channel_id`。
+   - `ShmReceiver` 不直接注册回调到 `ShmDispatcher`，而是通过 `DataDispatcher + DataNotifier` 间接挂接——这与 MiniCyber 的数据驱动中枢设计一致，复用了 Step 14/13 的已有链路。
+
+**提交信息**：
 ```
 feat(transport): 移植 Transmitter 与 Receiver 接口
 
-- IntraTransmitter：直接调 IntraDispatcher
-- ShmTransmitter：AcquireBlockToWrite + Notify(ReadableInfo)，对齐 CyberRT 原生
-- ShmReceiver：依赖 ShmDispatcher 后台线程轮询，无需 epoll 桥接
-- 先支持 std::string 传输，预留二进制序列化接口
-- 添加跨进程收发测试
+- Transmitter<M> 模板基类：Enable/Disable/Transmit 纯虚，seq_num 递增
+- IntraTransmitter<M>：零拷贝转发 IntraDispatcher::Dispatch
+- ShmTransmitter：AcquireBlockToWrite -> memcpy -> Notify(ReadableInfo)，对齐原生
+- Receiver<M> 模板基类：MessageListener 回调，Enable/Disable 纯虚
+- IntraReceiver<M>：ChannelBuffer + DataNotifier 回调挂接数据到达
+- ShmReceiver：ShmDispatcher::AddSegment + DataNotifier 回调
+- 先支持 std::string，预留二进制序列化接口
+- 添加同进程端到端与 fork 跨进程收发测试
 ```
 
 ---
@@ -1370,7 +1398,7 @@ docs: 补充 README 与压测数据
 | | 18 | PosixSegment + 生命周期 |
 | | 19 | ConditionNotifier（SysV SHM + Indicator 轮询） |
 | | 20 | Intra/Shm Dispatcher（原生基线） |
-| | 21 | Transmitter/Receiver（待后续阶段处理） |
+| | 21 | Transmitter/Receiver |
 | **P5 高层与收尾** | 22 | TopologyManager |
 | | 23 | Transport 自动路由 |
 | | 24 | Node/Reader/Writer |
