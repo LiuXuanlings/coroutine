@@ -56,3 +56,13 @@ FetchContent_MakeAvailable(googletest)
 enable_testing()
 add_subdirectory(tests)
 
+# ---------------------------------------------------------
+# 示例程序 (examples/)
+# ---------------------------------------------------------
+file(GLOB EXAMPLE_FILES "examples/*.cpp")
+foreach(EXAMPLE_SRC ${EXAMPLE_FILES})
+    get_filename_component(EXAMPLE_NAME ${EXAMPLE_SRC} NAME_WE)
+    add_executable(${EXAMPLE_NAME} ${EXAMPLE_SRC})
+    target_link_libraries(${EXAMPLE_NAME} minicyber_core pthread dl)
+endforeach()
+

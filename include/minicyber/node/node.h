@@ -5,6 +5,8 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unistd.h>
+#include <vector>
 
 #include "minicyber/node/reader.h"
 #include "minicyber/node/writer.h"
