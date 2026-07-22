@@ -1,0 +1,34 @@
+syntax = "proto2";
+
+package minicyber.proto;
+
+/// 消息历史缓存策略枚举
+enum QosHistoryPolicy {
+  HISTORY_SYSTEM_DEFAULT = 0;  // 使用系统默认策略
+  HISTORY_KEEP_LAST = 1;       // 保留最新 depth 条消息，超出旧消息丢弃
+  HISTORY_KEEP_ALL = 2;        // 保留所有收到的消息，不主动丢弃
+};
+
+/// 消息传输可靠性策略枚举
+enum QosReliabilityPolicy {
+  RELIABILITY_SYSTEM_DEFAULT = 0;    // 使用系统默认策略
+  RELIABILITY_RELIABLE = 1;          // 可靠传输：丢包重传，保证订阅者收到消息
+  RELIABILITY_BEST_EFFORT = 2;       // 尽力传输：无重传，追求低延迟，允许丢包
+};
+
+/// 消息持久策略枚举（新接入订阅者能否获取历史消息）
+enum QosDurabilityPolicy {
+  DURABILITY_SYSTEM_DEFAULT = 0;      // 使用系统默认策略
+  DURABILITY_TRANSIENT_LOCAL = 1;     // 临时本地持久：新上线订阅者可收到缓存的历史消息
+  DURABILITY_VOLATILE = 2;            // 易失模式：只发送给当前在线订阅者，新人看不到历史消息
+};
+
+/// QoS 完整配置档案，用于话题通信的传输规则定义
+message QosProfile {
+  optional QosHistoryPolicy history = 1 [default = HISTORY_KEEP_LAST];  // 消息缓存策略
+  optional uint32 depth = 2 [default = 1];  // 缓存队列最大容量（history=KEEP_LAST时生效）
+  optional uint32 mps = 3 [default = 0];    // 限速：每秒最大消息数量，0代表不限速
+  optional QosReliabilityPolicy reliability = 4
+      [default = RELIABILITY_RELIABLE];     // 传输可靠性策略
+  optional QosDurabilityPolicy durability = 5 [default = DURABILITY_VOLATILE]; // 持久化策略
+};

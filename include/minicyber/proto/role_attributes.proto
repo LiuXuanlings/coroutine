@@ -1,0 +1,35 @@
+syntax = "proto2";
+
+package minicyber.proto;
+
+import "minicyber/proto/qos_profile.proto";
+
+/// 网络套接字地址：IP + 端口号
+message SocketAddr {
+  optional string ip = 1;    // IPv4字符串，点分十进制格式，例如 "127.0.0.1"
+  optional uint32 port = 2;  // 端口号
+};
+
+/**
+ * RoleAttributes：角色属性元数据
+ * 作用：节点上发布者/订阅者/RPC服务端/客户端对外广播的「身份名片」
+ * 用于分布式框架拓扑发现、话题匹配、建立网络连接
+ */
+message RoleAttributes {
+  optional string host_name = 1;        // 主机名称
+  optional string host_ip = 2;          // 本机IP地址
+  optional int32 process_id = 3;        // 当前进程PID
+  optional string node_name = 4;         // 节点名称
+  optional uint64 node_id = 5;          // node_name 哈希值，用于快速比对节点
+  // ========== 话题通信 WRITER（发布者）/ READER（订阅者）使用 ==========
+  optional string channel_name = 6;     // 话题名称（channel即话题）
+  optional uint64 channel_id = 7;       // channel_name 哈希值，话题唯一标识
+  optional string message_type = 8;      // 该话题传输的消息类型名称
+  optional bytes proto_desc = 9;         // 消息protobuf描述信息，支持动态解析消息
+  optional uint64 id = 10;              // 当前发布者/订阅者实例唯一ID
+  optional QosProfile qos_profile = 11;  // 该话题使用的QoS通信策略
+  optional SocketAddr socket_addr = 12;  // 预留：本机监听网络地址，用于socket通信
+  // ========== RPC通信 SERVER服务端 / CLIENT客户端（后续Phase6使用） ==========
+  optional string service_name = 13;     // RPC服务名称
+  optional uint64 service_id = 14;       // service_name 哈希值
+};
