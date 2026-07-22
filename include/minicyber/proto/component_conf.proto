@@ -1,0 +1,37 @@
+syntax = "proto2";
+
+package minicyber.proto;
+
+import "minicyber/proto/qos_profile.proto";
+
+/**
+ * ReaderOption：组件单个订阅话题的配置项
+ * 一个组件可以订阅多个话题，每一个话题对应一条ReaderOption
+ */
+message ReaderOption {
+  optional string channel = 1;                  // 【字段编号1】需要订阅的话题名称
+  optional QosProfile qos_profile = 2;          // 【字段编号2】该话题采用的QoS通信策略
+  optional uint32 pending_queue_size = 3 [default = 1]; // 【字段编号3】组件内消息等待队列长度，默认1
+}
+
+/**
+ * ComponentConfig：事件驱动组件配置
+ * 触发逻辑：订阅的话题收到消息后，执行组件业务逻辑
+ */
+message ComponentConfig {
+  optional string name = 1;                     // 【字段编号1】组件名称
+  optional string config_file_path = 2;         // 【字段编号2】组件业务私有配置文件路径
+  optional string flag_file_path = 3;           // 【字段编号3】组件启动参数/标志文件路径
+  repeated ReaderOption readers = 4;            // 【字段编号4】订阅列表，repeated代表数组，可订阅多个话题
+}
+
+/**
+ * TimerComponentConfig：定时器驱动组件配置
+ * 触发逻辑：不依赖话题消息，按照固定周期自动执行
+ */
+message TimerComponentConfig {
+  optional string name = 1;                     // 【字段编号1】定时器组件名称
+  optional string config_file_path = 2;         // 【字段编号2】组件业务私有配置文件路径
+  optional string flag_file_path = 3;           // 【字段编号3】组件启动参数/标志文件路径
+  optional uint32 interval = 4;                 // 【字段编号4】定时执行周期，单位：毫秒
+}
