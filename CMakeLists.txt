@@ -31,11 +31,67 @@ endif()
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 # ---------------------------------------------------------
-# 构建核心库 
+# Protobuf 支持
+# ---------------------------------------------------------
+# 查找系统安装的Protobuf库，找不到则直接报错（REQUIRED）
+find_package(Protobuf REQUIRED)
+# 将protobuf头文件路径加入全局头文件搜索路径
+include_directories(${Protobuf_INCLUDE_DIRS})
+
+# Proto 文件编译产物输出目录
+# CMAKE_CURRENT_BINARY_DIR = build构建目录
+set(PROTO_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/proto_gen)
+
+# 递归搜集所有proto文件：include/minicyber/proto/下全部*.proto
+file(GLOB_RECURSE PROTO_FILES "include/minicyber/proto/*.proto")
+
+# 循环遍历每一个proto文件
+foreach(PROTO_FILE ${PROTO_FILES})
+    # 计算相对路径
+    file(RELATIVE_PATH PROTO_REL ${CMAKE_CURRENT_SOURCE_DIR}/include ${PROTO_FILE})
+    get_filename_component(PROTO_DIR ${PROTO_REL} DIRECTORY)
+    # 获取文件名（不带后缀）：qos_profile
+    get_filename_component(PROTO_NAME ${PROTO_REL} NAME_WE)
+
+    # 拼接生成的 .pb.cc 文件完整路径，存入PROTO_SRCS列表
+    list(APPEND PROTO_SRCS ${PROTO_BINARY_DIR}/${PROTO_DIR}/${PROTO_NAME}.pb.cc)
+
+    # 自定义命令：调用protoc工具把proto翻译成C++代码
+    add_custom_command(
+        # 命令输出产物：生成的头文件+源文件
+        OUTPUT ${PROTO_BINARY_DIR}/${PROTO_DIR}/${PROTO_NAME}.pb.cc
+               ${PROTO_BINARY_DIR}/${PROTO_DIR}/${PROTO_NAME}.pb.h
+        # 先创建输出文件夹
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${PROTO_BINARY_DIR}
+        # 执行protoc编译器
+        COMMAND ${Protobuf_PROTOC_EXECUTABLE}
+            --cpp_out=${PROTO_BINARY_DIR}    # C++代码输出根目录
+            -I ${CMAKE_CURRENT_SOURCE_DIR}/include  # proto import搜索根目录
+            ${PROTO_FILE}
+        DEPENDS ${PROTO_FILE}  # 依赖proto源码，proto修改后自动重新编译
+        COMMENT "Compiling ${PROTO_REL}"
+    )
+endforeach()
+
+# 将proto代码生成目录加入头文件搜索路径
+include_directories(${PROTO_BINARY_DIR})
+
+# 将所有生成的pb.cc编译为【静态库 minicyber_proto】
+add_library(minicyber_proto STATIC ${PROTO_SRCS})
+# 链接protobuf运行时库
+target_link_libraries(minicyber_proto ${Protobuf_LIBRARIES})
+# 对外暴露头文件路径，其他target链接minicyber_proto时自动继承
+target_include_directories(minicyber_proto
+    PUBLIC ${PROTO_BINARY_DIR}
+    PUBLIC ${Protobuf_INCLUDE_DIRS}
+)
+
+# ---------------------------------------------------------
+# 构建核心库
 # ---------------------------------------------------------
 file(GLOB_RECURSE SRC_FILES "src/*.cpp" "src/*.S")
 add_library(minicyber_core SHARED ${SRC_FILES})
-target_link_libraries(minicyber_core pthread dl rt)
+target_link_libraries(minicyber_core minicyber_proto ${Protobuf_LIBRARIES} pthread dl rt)
 
 # ---------------------------------------------------------
 # 集成 GoogleTest (使用 FetchContent 自动下载)
