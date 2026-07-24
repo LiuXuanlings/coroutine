@@ -144,14 +144,16 @@ TEST(TransportRoutingTest, NonStringAlwaysIntra) {
   EXPECT_EQ(typeid(*tx).name(), typeid(IntraTransmitter<int>).name());
 }
 
-// 空拓扑（无 writer/reader 注册）-> IsSameProc false -> string 走 Shm
-TEST(TransportRoutingTest, EmptyTopologyDefaultsToShm) {
+// 空拓扑（无 writer/reader 注册）-> 默认走 INTRA
+// 注意：旧版行为是走 SHM（IsSameProc 因 writer/reader 不全返回 false），
+// 但新版用 GetRelation 后，无 Reader 时 NO_RELATION → 走 INTRA。
+// 这个新行为对 Phase 6 Component 框架更友好（Writer 先于 Reader 创建）。
+TEST(TransportRoutingTest, EmptyTopologyDefaultsToIntra) {
   const std::string CH = "/tr/empty";
-  UnlinkShm("minicyber_" + std::to_string(Transport::ChannelNameToId(CH)));
 
   auto tx = Transport::CreateTransmitter<std::string>(CH);
   ASSERT_NE(tx, nullptr);
-  EXPECT_EQ(typeid(*tx).name(), typeid(ShmTransmitter).name());
+  EXPECT_EQ(typeid(*tx).name(), typeid(IntraTransmitter<std::string>).name());
 }
 
 // ChannelNameToId 对相同字符串产生相同 id

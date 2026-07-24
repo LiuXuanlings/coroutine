@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <type_traits>
+#include <unistd.h>
 
 #include "minicyber/topology/topology_manager.h"
 #include "minicyber/transport/receiver/intra_receiver.h"
@@ -54,9 +55,28 @@ class Transport {
     return h;
   }
 
-  // 是否走 SHM：拓扑未注册或跨进程时返回 true
+
+  // The root cause is the UseShm check in Transport::CreateTransmitter: 
+  // when the Writer is created before the Reader, IsSameProc returns false (no reader yet),
+  // so the transmitter is created as SHM while the receiver is INTRA — completely different buses. 
+  //The message is written to shared memory but no one reads it.
+  // The fix: Transport should always use INTRA for auto-routed communication. SHM is for explicit direct usage. 
+  // 是否走 SHM：仅当拓扑中确认有跨进程 Reader 时返回 true。
+  //
+  // 策略：
+  //   1. 若 IsSameProc 为 true（所有参与者共 pid）→ INTRA
+  //   2. 若 GetRelation 发现跨进程 Reader → SHM
+  //   3. 否则（无 Reader 或同进程）→ INTRA
   static bool UseShm(const std::string& channel) {
-    return !topology::TopologyManager::Instance()->IsSameProc(channel);
+    // 所有参与者（含本方）同 pid → 必然同进程 → INTRA
+    if (topology::TopologyManager::Instance()->IsSameProc(channel)) {
+      return false;
+    }
+    // 检查是否存在跨进程 Reader
+    pid_t this_pid = ::getpid();
+    auto rel =
+        topology::TopologyManager::Instance()->GetRelation(channel, this_pid);
+    return rel == Relation::DIFF_PROC;
   }
 
   // 创建发布端：根据拓扑自动选 Intra 或 Shm
