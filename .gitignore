@@ -1,7 +1,6 @@
 # CMake 构建目录
 build*/
 build_*/
-bin/
 lib/
 CMakeCache.txt
 CMakeFiles/

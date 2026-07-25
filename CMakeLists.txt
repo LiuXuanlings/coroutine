@@ -77,7 +77,12 @@ endforeach()
 include_directories(${PROTO_BINARY_DIR})
 
 # 将所有生成的pb.cc编译为【静态库 minicyber_proto】
+# POSITION_INDEPENDENT_CODE ON: 因为 minicyber_proto 是静态库，会被链接进
+# libminicyber_core.so (SHARED)。静态库目标必须开启 -fPIC，否则在链接为
+# 共享库时会出现 "relocation R_X86_64_PC32 can not be used when making a
+# shared object; recompile with -fPIC" 错误。
 add_library(minicyber_proto STATIC ${PROTO_SRCS})
+set_target_properties(minicyber_proto PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # 链接protobuf运行时库
 target_link_libraries(minicyber_proto ${Protobuf_LIBRARIES})
 # 对外暴露头文件路径，其他target链接minicyber_proto时自动继承
@@ -121,4 +126,18 @@ foreach(EXAMPLE_SRC ${EXAMPLE_FILES})
     add_executable(${EXAMPLE_NAME} ${EXAMPLE_SRC})
     target_link_libraries(${EXAMPLE_NAME} minicyber_core pthread dl)
 endforeach()
+
+# ---------------------------------------------------------
+# mainboard 启动入口 (bin/)
+# ---------------------------------------------------------
+# mainboard 是 MiniCyber 的标准化启动程序，读取 DAG 配置并通过 dlopen 加载
+# 业务组件 .so。链接 minicyber_proto 是因为 bin/mainboard.cpp 直接包含了
+# module_controller.h，后者依赖 dag_conf.pb.h。
+# 输出到 build/bin/ 下，便于与 examples 分离。
+# ---------------------------------------------------------
+add_executable(mainboard bin/mainboard.cpp)
+target_link_libraries(mainboard minicyber_core minicyber_proto
+                      ${Protobuf_LIBRARIES} pthread dl)
+set_target_properties(mainboard PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
