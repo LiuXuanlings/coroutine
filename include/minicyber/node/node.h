@@ -10,6 +10,8 @@
 
 #include "minicyber/node/reader.h"
 #include "minicyber/node/writer.h"
+#include "minicyber/service/client.h"
+#include "minicyber/service/service.h"
 #include "minicyber/topology/topology_manager.h"
 
 namespace minicyber {
@@ -103,11 +105,41 @@ class Node {
     return holder->reader;
   }
 
+  // 创建 Service（RPC 服务端）
+  // 自动注册拓扑 + Init。Service 生命周期由 Node 持有。
+  template <typename Req, typename Rsp>
+  std::shared_ptr<service::Service<Req, Rsp>> CreateService(
+      const std::string& service_name,
+      const typename service::Service<Req, Rsp>::ServiceCallback& callback) {
+    auto s = std::make_shared<service::Service<Req, Rsp>>(node_name_,
+                                                           service_name, callback);
+    if (!s->Init()) return nullptr;
+    std::lock_guard<std::mutex> lg(readers_mutex_);
+    services_.push_back(std::shared_ptr<void>(static_cast<void*>(nullptr),
+        [s](void*) { (void)s; }));
+    return s;
+  }
+
+  // 创建 Client（RPC 客户端）
+  // 自动注册拓扑 + Init。Client 生命周期由 Node 持有。
+  template <typename Req, typename Rsp>
+  std::shared_ptr<service::Client<Req, Rsp>> CreateClient(
+      const std::string& service_name) {
+    auto c = std::make_shared<service::Client<Req, Rsp>>(node_name_, service_name);
+    if (!c->Init()) return nullptr;
+    std::lock_guard<std::mutex> lg(readers_mutex_);
+    clients_.push_back(std::shared_ptr<void>(static_cast<void*>(nullptr),
+        [c](void*) { (void)c; }));
+    return c;
+  }
+
  private:
   std::string node_name_;
   std::mutex readers_mutex_;
   std::map<std::string, std::shared_ptr<ReaderBaseHolder>> readers_;
   std::vector<std::shared_ptr<void>> writers_;
+  std::vector<std::shared_ptr<void>> services_;
+  std::vector<std::shared_ptr<void>> clients_;
 };
 
 }  // namespace node

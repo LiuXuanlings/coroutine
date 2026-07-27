@@ -39,6 +39,9 @@ void Scheduler::CreateProcessors(const SchedulerConf& conf) {
     std::string group = "proc_" + std::to_string(i);
     auto ctx = std::make_shared<ClassicContext>(group);
     auto proc = std::make_shared<Processor>();
+    // 让 Processor 工作线程能通过 Scheduler::GetThis() 访问到本实例，
+    // 使协程内回调（如 RPC Client::HandleResponse -> NotifyTask）可见。
+    proc->SetScheduler(this);
     proc->BindContext(ctx);
 
     ApplyThreadPolicy(conf, i, proc.get());

@@ -44,6 +44,13 @@ class Scheduler {
   // GetThis 返回当前线程最近创建的 Scheduler 实例。
   static Scheduler* GetThis();
 
+  // 为当前线程设置可见的 Scheduler 指针。用于让 Processor 工作线程
+  // 能通过 GetThis() 访问到所属 Scheduler（构造线程之外的线程）。
+  // 由 Processor::Run() 在工作线程启动时调用。
+  static void SetThisForCurrentThread(Scheduler* sched) {
+    t_scheduler_ = sched;
+  }
+
   // 创建任务并分发到 Processor 队列
   //   func:  协程入口函数
   //   name:  任务名（用于 id 生成与调试）

@@ -7,6 +7,7 @@
 
 #include "minicyber/base/macros.h"
 #include "minicyber/croutine/croutine.h"
+#include "minicyber/scheduler/scheduler.h"
 
 namespace minicyber {
 namespace scheduler {
@@ -40,6 +41,14 @@ void Processor::Run() {
   // 否则 croutine->Resume() 会解引用 nullptr 的 t_thread_croutine 而崩溃。
   // 这与 Scheduler::run() 中调用 Fiber::GetThis() 的作用完全一致。
   CRoutine::GetThis();
+
+  // 让本工作线程可见 Scheduler 实例，使协程内回调用到
+  // Scheduler::GetThis() 时能拿到正确的指针（如 RPC Client::HandleResponse
+  // -> NotifyTask）。Scheduler::GetThis() 是 thread_local，原本只在
+  // 构造 Scheduler 的线程可见。
+  if (scheduler_ != nullptr) {
+    Scheduler::SetThisForCurrentThread(scheduler_);
+  }
 
   while (cyber_likely(running_.load())) {
     if (cyber_likely(context_ != nullptr)) {

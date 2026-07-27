@@ -12,6 +12,8 @@
 namespace minicyber {
 namespace scheduler {
 
+class Scheduler;  // 前置声明，避免与 processor.h 的循环依赖
+
 // ----------------------------------------------------------------------
 // Snapshot: Processor 运行时快照（供监控/调试用）
 // ----------------------------------------------------------------------
@@ -47,6 +49,10 @@ class Processor {
   // 绑定上下文并延迟启动线程（call_once 保证只启动一次）
   void BindContext(const std::shared_ptr<ProcessorContext>& context);
 
+  // 设置本 Processor 线程可见的 Scheduler 指针（用于 Scheduler::GetThis()
+  // 在工作线程中能被回调用到，如 RPC Client::HandleResponse -> NotifyTask）
+  void SetScheduler(Scheduler* sched) { scheduler_ = sched; }
+
   // 获取底层线程句柄（供 SetSchedAffinity/SetSchedPolicy 使用）
   std::thread* Thread() { return &thread_; }
 
@@ -58,6 +64,7 @@ class Processor {
 
  private:
   std::shared_ptr<ProcessorContext> context_;
+  Scheduler* scheduler_ = nullptr;
 
   // context_ 未绑定时的等待机制
   std::condition_variable cv_ctx_;
