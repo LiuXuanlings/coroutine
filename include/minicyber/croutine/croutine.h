@@ -4,7 +4,9 @@
 #include "minicyber/context.h"
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <string>
 
@@ -91,6 +93,16 @@ class CRoutine : public std::enable_shared_from_this<CRoutine> {
   const std::string& group_name() const { return group_name_; }
   void set_group_name(const std::string& group) { group_name_ = group; }
 
+  // ----------------------------------------------------------------------
+  // processor_id：协程绑定的 Processor 索引
+  // ----------------------------------------------------------------------
+  // 用于 Choreography 调度策略：Scheduler::NotifyTask 根据 processor_id
+  // 决定将协程定向 Enqueue 到哪个 ChoreographyContext。
+  // 默认值 UINT32_MAX 表示"未绑定"，由 Scheduler 轮询分配（Classic 路径）。
+  // ----------------------------------------------------------------------
+  uint32_t processor_id() const { return processor_id_; }
+  void set_processor_id(uint32_t pid) { processor_id_ = pid; }
+
   // SLEEP 状态的唤醒时间点（用于 UpdateState 判断是否超时）
   std::chrono::steady_clock::time_point wake_time() const { return wake_time_; }
   void set_wake_time(std::chrono::steady_clock::time_point t) { wake_time_ = t; }
@@ -115,6 +127,8 @@ class CRoutine : public std::enable_shared_from_this<CRoutine> {
   std::string name_;
   uint32_t priority_ = 0;
   std::string group_name_;
+  // 绑定的 Processor 索引（Choreography 路由用），UINT32_MAX = 未绑定
+  uint32_t processor_id_ = std::numeric_limits<uint32_t>::max();
 
   // SLEEP 唤醒时间点
   std::chrono::steady_clock::time_point wake_time_ =

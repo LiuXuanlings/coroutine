@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <iostream>
+#include <limits>
 
 namespace {
 // 测试辅助：记录协程走过的状态轨迹
@@ -215,4 +216,22 @@ TEST(CRoutineTest, MetadataGettersSetters) {
   EXPECT_EQ(cr->name(), "test_routine");
   EXPECT_EQ(cr->priority(), 15u);
   EXPECT_EQ(cr->group_name(), "default_grp");
+}
+
+// 测试：processor_id 默认值与 set/get
+// 默认 UINT32_MAX 表示"未绑定"，set 后 get 返回 set 的值。
+TEST(CRoutineTest, ProcessorIdDefaultAndSet) {
+  minicyber::CRoutine::GetThis();
+  auto cr = std::make_shared<minicyber::CRoutine>([]() {});
+
+  // 默认值应为 UINT32_MAX（未绑定）
+  EXPECT_EQ(cr->processor_id(),
+            std::numeric_limits<uint32_t>::max());
+
+  // set 后 get 返回 set 的值
+  cr->set_processor_id(0);
+  EXPECT_EQ(cr->processor_id(), 0u);
+
+  cr->set_processor_id(7);
+  EXPECT_EQ(cr->processor_id(), 7u);
 }
