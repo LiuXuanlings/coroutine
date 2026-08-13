@@ -22,8 +22,8 @@ namespace scheduler {
 //     所有优先级队列、并从其他 group 窃取任务。复杂 DAG 中大量协程处于
 //     DATA_WAIT 时，扫描开销随队列长度线性增长。
 //   - ChoreographyContext：单一就绪队列，任务由上游"点对点"显式 Enqueue。
-//     NextRoutine() O(1) 取最高优先级就绪协程，不扫描 DATA_WAIT 协程，
-//     不窃取。专为自动驾驶 DAG 依赖触发场景设计。
+//     NextRoutine() 从最高优先级扫描本地队列，不窃取其他 Context 的任务。
+//     专为点对点 DAG 依赖触发场景设计。
 //
 // 实例本地状态（无静态成员）：
 //   - cr_queue_：multimap<prio, CRoutine, greater>，begin() 即最高优先级。

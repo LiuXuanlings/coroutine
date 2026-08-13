@@ -193,6 +193,24 @@ TEST(ChoreographyContextTest, RemoveCRoutineNotFound) {
   EXPECT_FALSE(ctx.RemoveCRoutine(999));
 }
 
+TEST(ChoreographyContextTest, RemoveWaitsForAcquiredRoutine) {
+  ChoreographyContext ctx;
+  auto cr = MakeReadyCRoutine(5, 300);
+  ASSERT_TRUE(ctx.Enqueue(cr));
+
+  auto acquired = ctx.NextRoutine();
+  ASSERT_NE(acquired, nullptr);
+  std::atomic<bool> removed{false};
+  std::thread remover([&]() { removed.store(ctx.RemoveCRoutine(300)); });
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  EXPECT_FALSE(removed.load());
+  acquired->Release();
+  remover.join();
+  EXPECT_TRUE(removed.load());
+  EXPECT_EQ(ctx.NextRoutine(), nullptr);
+}
+
 // ----------------------------------------------------------------------
 // 测试 10：实例隔离——不同 ChoreographyContext 互不干扰
 // ----------------------------------------------------------------------
