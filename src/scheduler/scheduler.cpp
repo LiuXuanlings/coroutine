@@ -25,7 +25,13 @@ Scheduler::~Scheduler() { Shutdown(); }
 Scheduler* Scheduler::GetThis() { return t_scheduler_; }
 
 pid_t Scheduler::ProcessorTid(size_t index) const {
+  std::lock_guard<std::mutex> lk(lifecycle_mtx_);
   return index < processors_.size() ? processors_[index]->Tid().load() : -1;
+}
+
+size_t Scheduler::ProcessorCount() const {
+  std::lock_guard<std::mutex> lk(lifecycle_mtx_);
+  return processors_.size();
 }
 
 // ----------------------------------------------------------------------
@@ -99,9 +105,12 @@ uint64_t Scheduler::CreateTask(const std::function<void()>& func,
   cr->set_name(name);
   cr->set_priority(prio);
 
-  if (processors_.empty()) {
+  std::lock_guard<std::mutex> lifecycle_lk(lifecycle_mtx_);
+  // Shutdown may have started after the optimistic fast-path above.
+  if (stop_.load() || processors_.empty()) {
     return 0;
   }
+
   uint32_t target = 0;
   if (policy_ == "choreography" && processor_id >= 0 &&
       static_cast<size_t>(processor_id) < processors_.size()) {
@@ -148,6 +157,11 @@ bool Scheduler::NotifyTask(uint64_t crid) {
     return false;
   }
 
+  std::lock_guard<std::mutex> lifecycle_lk(lifecycle_mtx_);
+  if (stop_.load()) {
+    return false;
+  }
+
   std::shared_ptr<CRoutine> cr;
   {
     std::lock_guard<std::mutex> lk(id_cr_mtx_);
@@ -182,13 +196,21 @@ void Scheduler::Shutdown() {
     return;
   }
 
-  // 停止所有 Processor（会 join 线程）
-  for (auto& proc : processors_) {
-    if (proc) proc->Stop();
+  std::vector<std::shared_ptr<Processor>> processors;
+  std::vector<std::shared_ptr<ProcessorContext>> contexts;
+  {
+    std::lock_guard<std::mutex> lifecycle_lk(lifecycle_mtx_);
+    processors.swap(processors_);
+    contexts.swap(contexts_);
   }
 
-  processors_.clear();
-  contexts_.clear();
+  // Stop contexts before joining processors so every Wait() is released.
+  for (auto& context : contexts) {
+    if (context) context->Shutdown();
+  }
+  for (auto& proc : processors) {
+    if (proc) proc->Stop();
+  }
 
   {
     std::lock_guard<std::mutex> lk(id_cr_mtx_);

@@ -56,5 +56,55 @@ TEST(SchedulerChoreographyTest, NotifyWakesTargetedDataWaitRoutine) {
   sched->Shutdown();
 }
 
+TEST(SchedulerChoreographyStabilityTest, ConcurrentSubmissionDuringShutdown) {
+  SchedulerConf conf;
+  conf.policy = "choreography";
+  conf.choreography_processor_num = 2;
+
+  for (int round = 0; round < 8; ++round) {
+    auto sched = SchedulerFactory::Create(conf);
+    std::atomic<bool> start{false};
+    std::vector<std::thread> submitters;
+    for (int thread = 0; thread < 4; ++thread) {
+      submitters.emplace_back([&]() {
+        while (!start.load(std::memory_order_acquire)) {
+          std::this_thread::yield();
+        }
+        for (int i = 0; i < 64; ++i) {
+          sched->CreateTask([]() {}, "concurrent", 5, i % 2);
+        }
+      });
+    }
+    start.store(true, std::memory_order_release);
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    sched->Shutdown();
+    for (auto& submitter : submitters) {
+      submitter.join();
+    }
+    EXPECT_EQ(sched->ProcessorCount(), 0u);
+    EXPECT_EQ(sched->CreateTask([]() {}, "after_shutdown"), 0u);
+  }
+}
+
+TEST(SchedulerChoreographyStabilityTest, PoliciesCanBeRecreatedInSequence) {
+  for (const char* policy : {"classic", "choreography", "classic",
+                             "choreography"}) {
+    SchedulerConf conf;
+    conf.policy = policy;
+    conf.thread_num = 1;
+    conf.choreography_processor_num = 1;
+    auto sched = SchedulerFactory::Create(conf);
+    EXPECT_EQ(sched->IsChoreography(),
+              std::string(policy) == "choreography");
+    std::atomic<bool> ran{false};
+    ASSERT_NE(sched->CreateTask([&]() { ran.store(true); }, "policy", 5), 0u);
+    for (int i = 0; i < 100 && !ran.load(); ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_TRUE(ran.load());
+    sched->Shutdown();
+  }
+}
+
 }  // namespace scheduler
 }  // namespace minicyber

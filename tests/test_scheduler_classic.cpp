@@ -222,5 +222,35 @@ TEST(SchedulerTest, WorkStealingBalancesLoad) {
   }
 }
 
+TEST(SchedulerStabilityTest, ConcurrentSubmissionDuringShutdown) {
+  SchedulerConf conf;
+  conf.thread_num = 2;
+
+  for (int round = 0; round < 8; ++round) {
+    Scheduler sched(conf);
+    std::atomic<bool> start{false};
+    std::vector<std::thread> submitters;
+    for (int thread = 0; thread < 4; ++thread) {
+      submitters.emplace_back([&]() {
+        while (!start.load(std::memory_order_acquire)) {
+          std::this_thread::yield();
+        }
+        for (int i = 0; i < 64; ++i) {
+          sched.CreateTask([]() {}, "concurrent", 5);
+        }
+      });
+    }
+    start.store(true, std::memory_order_release);
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    sched.Shutdown();
+    for (auto& submitter : submitters) {
+      submitter.join();
+    }
+    EXPECT_TRUE(sched.IsStopped());
+    EXPECT_EQ(sched.ProcessorCount(), 0u);
+    EXPECT_EQ(sched.CreateTask([]() {}, "after_shutdown"), 0u);
+  }
+}
+
 }  // namespace scheduler
 }  // namespace minicyber

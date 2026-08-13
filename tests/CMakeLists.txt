@@ -22,5 +22,17 @@ if(TEST_FILES)
         
         # 注册到 ctest
         add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
+        if(TEST_NAME MATCHES "^test_scheduler_")
+            set_tests_properties(${TEST_NAME} PROPERTIES
+                LABELS "scheduler;stability;tsan")
+        endif()
     endforeach()
 endif()
+
+# Focused entry for a TSAN-configured build:
+# cmake -S . -B build-tsan -DUSE_SANITIZER=TSAN
+# cmake --build build-tsan --target check_scheduler_tsan
+add_custom_target(check_scheduler_tsan
+    COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L tsan
+    DEPENDS test_scheduler_classic test_scheduler_choreography
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})

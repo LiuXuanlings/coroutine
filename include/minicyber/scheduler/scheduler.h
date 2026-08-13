@@ -68,7 +68,7 @@ class Scheduler {
   void Shutdown();
 
   // 获取 Processor 数量
-  size_t ProcessorCount() const { return processors_.size(); }
+  size_t ProcessorCount() const;
   pid_t ProcessorTid(size_t index) const;
   bool IsStopped() const { return stop_.load(); }
   bool IsChoreography() const { return policy_ == "choreography"; }
@@ -82,6 +82,9 @@ class Scheduler {
   void ApplyThreadPolicy(const SchedulerConf& conf, size_t proc_idx,
                          Processor* proc);
 
+  // Serializes public operations that touch processor/context ownership.
+  // Shutdown first marks stop_, then detaches these vectors under this lock.
+  mutable std::mutex lifecycle_mtx_;
   std::vector<std::shared_ptr<Processor>> processors_;
   std::vector<std::shared_ptr<ProcessorContext>> contexts_;
 
