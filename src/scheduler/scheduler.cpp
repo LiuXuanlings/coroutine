@@ -13,6 +13,9 @@ thread_local Scheduler* Scheduler::t_scheduler_ = nullptr;
 
 Scheduler::Scheduler(const SchedulerConf& conf) {
   stop_.store(false);
+  if (conf.policy == "choreography") {
+    policy_ = conf.policy;
+  }
   CreateProcessors(conf);
   t_scheduler_ = this;
 }
@@ -21,6 +24,10 @@ Scheduler::~Scheduler() { Shutdown(); }
 
 Scheduler* Scheduler::GetThis() { return t_scheduler_; }
 
+pid_t Scheduler::ProcessorTid(size_t index) const {
+  return index < processors_.size() ? processors_[index]->Tid().load() : -1;
+}
+
 // ----------------------------------------------------------------------
 // CreateProcessors: 创建 N 个 Processor，每个绑定独立 ClassicContext
 // ----------------------------------------------------------------------
@@ -28,7 +35,10 @@ Scheduler* Scheduler::GetThis() { return t_scheduler_; }
 // 本地优先级队列。group 名唯一，避免 ClassicContext 静态 map 冲突。
 // ----------------------------------------------------------------------
 void Scheduler::CreateProcessors(const SchedulerConf& conf) {
-  uint32_t proc_num = conf.thread_num;
+  uint32_t proc_num = policy_ == "choreography" &&
+                              conf.choreography_processor_num != 0
+                          ? conf.choreography_processor_num
+                          : conf.thread_num;
   if (proc_num == 0) {
     // 默认按 CPU 核数
     proc_num = static_cast<uint32_t>(sysconf(_SC_NPROCESSORS_ONLN));
@@ -36,8 +46,12 @@ void Scheduler::CreateProcessors(const SchedulerConf& conf) {
   }
 
   for (uint32_t i = 0; i < proc_num; ++i) {
-    std::string group = "proc_" + std::to_string(i);
-    auto ctx = std::make_shared<ClassicContext>(group);
+    std::shared_ptr<ProcessorContext> ctx;
+    if (policy_ == "choreography") {
+      ctx = std::make_shared<ChoreographyContext>();
+    } else {
+      ctx = std::make_shared<ClassicContext>("proc_" + std::to_string(i));
+    }
     auto proc = std::make_shared<Processor>();
     // 让 Processor 工作线程能通过 Scheduler::GetThis() 访问到本实例，
     // 使协程内回调（如 RPC Client::HandleResponse -> NotifyTask）可见。
@@ -73,7 +87,8 @@ void Scheduler::ApplyThreadPolicy(const SchedulerConf& conf, size_t proc_idx,
   // 4. 记录到 id_cr_ 映射供 NotifyTask 查找
 // ----------------------------------------------------------------------
 uint64_t Scheduler::CreateTask(const std::function<void()>& func,
-                                const std::string& name, uint32_t prio) {
+                                const std::string& name, uint32_t prio,
+                                int processor_id) {
   if (cyber_unlikely(stop_.load())) {
     return 0;
   }
@@ -84,10 +99,19 @@ uint64_t Scheduler::CreateTask(const std::function<void()>& func,
   cr->set_name(name);
   cr->set_priority(prio);
 
-  // 轮询选择目标 Processor
-  uint32_t target = next_proc_.fetch_add(1) % processors_.size();
-  std::string group = "proc_" + std::to_string(target);
-  cr->set_group_name(group);
+  if (processors_.empty()) {
+    return 0;
+  }
+  uint32_t target = 0;
+  if (policy_ == "choreography" && processor_id >= 0 &&
+      static_cast<size_t>(processor_id) < processors_.size()) {
+    target = static_cast<uint32_t>(processor_id);
+  } else {
+    target = next_proc_.fetch_add(1) % processors_.size();
+  }
+  cr->set_processor_id(policy_ == "choreography" ? static_cast<int>(target)
+                                                     : -1);
+  cr->set_group_name("proc_" + std::to_string(target));
 
   // 记录到 id_cr_ 映射
   {
@@ -95,9 +119,21 @@ uint64_t Scheduler::CreateTask(const std::function<void()>& func,
     id_cr_[task_id] = cr;
   }
 
-  // 入队到目标 Processor 的本地队列
-  ClassicContext::Enqueue(cr);
+  if (!Enqueue(cr, target)) {
+    std::lock_guard<std::mutex> lk(id_cr_mtx_);
+    id_cr_.erase(task_id);
+    return 0;
+  }
   return task_id;
+}
+
+bool Scheduler::Enqueue(const std::shared_ptr<CRoutine>& cr, uint32_t target) {
+  if (policy_ == "choreography") {
+    return std::static_pointer_cast<ChoreographyContext>(contexts_.at(target))
+        ->Enqueue(cr);
+  }
+  ClassicContext::Enqueue(cr);
+  return true;
 }
 
 // ----------------------------------------------------------------------
@@ -127,7 +163,14 @@ bool Scheduler::NotifyTask(uint64_t crid) {
     cr->SetUpdateFlag();
   }
 
-  ClassicContext::Notify(cr->group_name());
+  if (policy_ == "choreography" && cr->processor_id() >= 0 &&
+      static_cast<size_t>(cr->processor_id()) < contexts_.size()) {
+    std::static_pointer_cast<ChoreographyContext>(
+        contexts_.at(static_cast<size_t>(cr->processor_id())))
+        ->Notify();
+  } else {
+    ClassicContext::Notify(cr->group_name());
+  }
   return true;
 }
 
