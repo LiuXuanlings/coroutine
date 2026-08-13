@@ -12,9 +12,12 @@
 #include <thread>
 #include <vector>
 
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "minicyber/node/node.h"
+#include "minicyber/transport/receiver/shm_receiver.h"
+#include "minicyber/transport/transmitter/shm_transmitter.h"
 
 namespace {
 
@@ -153,6 +156,143 @@ Result RunPipe(const Options& options) {
   return {"pipe", std::move(latencies), elapsed_ns};
 }
 
+Result RunShm(const Options& options) {
+  int producer_ready[2];
+  int consumer_ready[2];
+  int producer_start[2];
+  int acknowledgements[2];
+  int results[2];
+  int elapsed[2];
+  if (::pipe(producer_ready) != 0 || ::pipe(consumer_ready) != 0 ||
+      ::pipe(producer_start) != 0 || ::pipe(acknowledgements) != 0 ||
+      ::pipe(results) != 0 || ::pipe(elapsed) != 0) {
+    std::exit(1);
+  }
+
+  const uint64_t channel_id =
+      (static_cast<uint64_t>(::getpid()) << 32) ^ NowNs();
+  const size_t frame_size = sizeof(Sample) + options.payload_bytes;
+  const uint64_t ceiling_msg_size = static_cast<uint64_t>(frame_size);
+  pid_t producer = ::fork();
+  if (producer < 0) std::exit(1);
+  if (producer == 0) {
+    ::close(producer_ready[0]);
+    ::close(consumer_ready[0]);
+    ::close(consumer_ready[1]);
+    ::close(producer_start[1]);
+    ::close(acknowledgements[1]);
+    ::close(results[0]);
+    ::close(results[1]);
+    ::close(elapsed[0]);
+
+    minicyber::transport::ShmTransmitter transmitter(channel_id,
+                                                       ceiling_msg_size);
+    transmitter.Enable();
+    const char ready = transmitter.enabled() ? 'r' : 'e';
+    if (!WriteAll(producer_ready[1], &ready, sizeof(ready)) || ready != 'r') {
+      _exit(1);
+    }
+    char start;
+    if (!ReadAll(producer_start[0], &start, sizeof(start))) _exit(1);
+
+    auto frame = std::make_shared<std::string>(frame_size, 's');
+    uint64_t start_ns = 0;
+    for (size_t index = 0; index < options.warmup + options.samples; ++index) {
+      if (index == options.warmup) start_ns = NowNs();
+      const Sample sample{NowNs(), index};
+      std::memcpy(frame->data(), &sample, sizeof(sample));
+      if (!transmitter.Transmit(frame)) _exit(1);
+      char acknowledgement;
+      if (!ReadAll(acknowledgements[0], &acknowledgement,
+                   sizeof(acknowledgement))) {
+        _exit(1);
+      }
+    }
+    const uint64_t elapsed_ns = NowNs() - start_ns;
+    transmitter.Disable();
+    if (!WriteAll(elapsed[1], &elapsed_ns, sizeof(elapsed_ns))) _exit(1);
+    _exit(0);
+  }
+
+  ::close(producer_ready[1]);
+  char ready;
+  if (!ReadAll(producer_ready[0], &ready, sizeof(ready)) || ready != 'r') {
+    std::exit(1);
+  }
+
+  pid_t consumer = ::fork();
+  if (consumer < 0) std::exit(1);
+  if (consumer == 0) {
+    ::close(producer_ready[0]);
+    ::close(consumer_ready[0]);
+    ::close(producer_start[0]);
+    ::close(producer_start[1]);
+    ::close(acknowledgements[0]);
+    ::close(results[0]);
+    ::close(elapsed[0]);
+    ::close(elapsed[1]);
+
+    std::vector<uint64_t> latencies;
+    latencies.reserve(options.samples);
+    minicyber::transport::ShmReceiver receiver(
+        channel_id, [&](const std::shared_ptr<std::string>& frame) {
+          Sample sample;
+          std::memcpy(&sample, frame->data(), sizeof(sample));
+          if (sample.sequence >= options.warmup) {
+            latencies.push_back(NowNs() - sample.sent_ns);
+          }
+          const char acknowledgement = 'a';
+          WriteAll(acknowledgements[1], &acknowledgement,
+                   sizeof(acknowledgement));
+        });
+    receiver.Enable();
+    const char receiver_ready = receiver.enabled() ? 'r' : 'e';
+    if (!WriteAll(consumer_ready[1], &receiver_ready, sizeof(receiver_ready)) ||
+        receiver_ready != 'r') {
+      _exit(1);
+    }
+
+    while (latencies.size() < options.samples) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    receiver.Disable();
+    if (!WriteAll(results[1], latencies.data(),
+                  latencies.size() * sizeof(latencies.front()))) {
+      _exit(1);
+    }
+    _exit(0);
+  }
+
+  ::close(consumer_ready[1]);
+  ::close(producer_start[0]);
+  ::close(acknowledgements[0]);
+  ::close(acknowledgements[1]);
+  ::close(results[1]);
+  ::close(elapsed[1]);
+  if (!ReadAll(consumer_ready[0], &ready, sizeof(ready)) || ready != 'r') {
+    std::exit(1);
+  }
+  const char start = 's';
+  if (!WriteAll(producer_start[1], &start, sizeof(start))) std::exit(1);
+
+  std::vector<uint64_t> latencies(options.samples);
+  if (!ReadAll(results[0], latencies.data(),
+               latencies.size() * sizeof(latencies.front()))) {
+    std::exit(1);
+  }
+  uint64_t elapsed_ns = 0;
+  if (!ReadAll(elapsed[0], &elapsed_ns, sizeof(elapsed_ns))) std::exit(1);
+  int producer_status = 0;
+  int consumer_status = 0;
+  ::waitpid(producer, &producer_status, 0);
+  ::waitpid(consumer, &consumer_status, 0);
+  if (!WIFEXITED(producer_status) || WEXITSTATUS(producer_status) != 0 ||
+      !WIFEXITED(consumer_status) || WEXITSTATUS(consumer_status) != 0) {
+    std::exit(1);
+  }
+  return {"shm", std::move(latencies), elapsed_ns};
+}
+
 void PrintResult(const Result& result, const Options& options) {
   auto values = result.latencies_ns;
   std::sort(values.begin(), values.end());
@@ -199,5 +339,6 @@ int main(int argc, char** argv) {
                "p99_ns,max_ns,total_ns,throughput_msg_s\n";
   PrintResult(RunIntra(options), options);
   PrintResult(RunPipe(options), options);
+  PrintResult(RunShm(options), options);
   return 0;
 }
