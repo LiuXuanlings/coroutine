@@ -55,7 +55,7 @@ void CRoutine::MainFunc() {
   raw_ptr->Yield();
 }
 
-CRoutine::CRoutine(const RoutineFunc& cb, int /*stack_size*/) {
+CRoutine::CRoutine(const RoutineFunc& cb) {
   is_main_ = false;
   cb_ = cb;
   state_ = RoutineState::READY;
@@ -66,16 +66,25 @@ CRoutine::CRoutine(const RoutineFunc& cb, int /*stack_size*/) {
   croutine::MakeContext(&ctx_, CRoutine::MainFunc);
 }
 
-void CRoutine::Resume() {
+RoutineState CRoutine::Resume() {
+  if (force_stop_) {
+    state_ = RoutineState::FINISHED;
+    return state_;
+  }
+
+  if (state_ != RoutineState::READY) {
+    return state_;
+  }
+
   // 复用 Fiber::resume 的 shared_from_this 修复：
   // 不能用 static_cast<shared_ptr<CRoutine>>(this)，那会创建新的控制块，
   // 导致双重释放。shared_from_this() 复用原始控制块，引用计数正确。
   t_croutine = shared_from_this();
-  state_ = RoutineState::READY;
   if (!is_main_) {
     croutine::SwapContext(reinterpret_cast<char**>(&t_thread_croutine->ctx_.sp),
                           reinterpret_cast<char**>(&ctx_.sp));
   }
+  return state_;
 }
 
 void CRoutine::Yield() {
@@ -148,7 +157,15 @@ void CRoutine::SetUpdateFlag() {
 
 void CRoutine::Stop() {
   force_stop_ = true;
-  state_ = RoutineState::FINISHED;
+}
+
+void CRoutine::Wake() { state_ = RoutineState::READY; }
+
+void CRoutine::HangUp() { Yield(RoutineState::DATA_WAIT); }
+
+void CRoutine::Sleep(const Duration& sleep_duration) {
+  wake_time_ = std::chrono::steady_clock::now() + sleep_duration;
+  Yield(RoutineState::SLEEP);
 }
 
 }  // namespace minicyber

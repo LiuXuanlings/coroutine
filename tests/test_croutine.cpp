@@ -197,9 +197,26 @@ TEST(CRoutineTest, StopSetsFinished) {
   minicyber::CRoutine::GetThis();
   auto cr = std::make_shared<minicyber::CRoutine>([]() {});
 
-  EXPECT_NE(cr->State(), minicyber::RoutineState::FINISHED);
+  EXPECT_EQ(cr->State(), minicyber::RoutineState::READY);
   cr->Stop();
+  EXPECT_EQ(cr->State(), minicyber::RoutineState::READY);
+  EXPECT_EQ(cr->Resume(), minicyber::RoutineState::FINISHED);
   EXPECT_EQ(cr->State(), minicyber::RoutineState::FINISHED);
+}
+
+TEST(CRoutineTest, ResumeRejectsNonReadyState) {
+  minicyber::CRoutine::GetThis();
+  int runs = 0;
+  auto cr = std::make_shared<minicyber::CRoutine>([&]() { ++runs; });
+
+  cr->SetState(minicyber::RoutineState::DATA_WAIT);
+  EXPECT_EQ(cr->Resume(), minicyber::RoutineState::DATA_WAIT);
+  EXPECT_EQ(runs, 0);
+
+  cr->Wake();
+  EXPECT_EQ(cr->Resume(), minicyber::RoutineState::FINISHED);
+  EXPECT_EQ(runs, 1);
+  EXPECT_EQ(cr->Resume(), minicyber::RoutineState::FINISHED);
 }
 
 // 测试：元数据 getter/setter
@@ -219,19 +236,17 @@ TEST(CRoutineTest, MetadataGettersSetters) {
 }
 
 // 测试：processor_id 默认值与 set/get
-// 默认 UINT32_MAX 表示"未绑定"，set 后 get 返回 set 的值。
+// 默认 -1 表示"未绑定"，set 后 get 返回 set 的值。
 TEST(CRoutineTest, ProcessorIdDefaultAndSet) {
   minicyber::CRoutine::GetThis();
   auto cr = std::make_shared<minicyber::CRoutine>([]() {});
 
-  // 默认值应为 UINT32_MAX（未绑定）
-  EXPECT_EQ(cr->processor_id(),
-            std::numeric_limits<uint32_t>::max());
+  EXPECT_EQ(cr->processor_id(), -1);
 
   // set 后 get 返回 set 的值
   cr->set_processor_id(0);
-  EXPECT_EQ(cr->processor_id(), 0u);
+  EXPECT_EQ(cr->processor_id(), 0);
 
   cr->set_processor_id(7);
-  EXPECT_EQ(cr->processor_id(), 7u);
+  EXPECT_EQ(cr->processor_id(), 7);
 }
