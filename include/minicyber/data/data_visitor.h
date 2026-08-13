@@ -23,8 +23,7 @@ struct VisitorConfig {
 // DataVisitor：协程侧的数据访问器。
 //
 // 模板形参对齐 CyberRT：M0 为主通道（驱动轴），M1/M2/M3 为副通道。
-// 通过偏特化提供 1/2/3/4 通道版本。MiniCyber 当前实现 1 通道与 2 通道版本；
-// 3/4 通道保持未定义（调用会触发编译期 static_assert 或链接错误，按需扩展）。
+// 通过偏特化提供 1/2/3/4 通道版本。
 //
 // 单通道版本：直接从 ChannelBuffer 取数据。
 // 双通道版本：组合 AllLatest 融合引擎，仅当主通道数据到达且副通道有最新值时
@@ -36,6 +35,95 @@ struct VisitorConfig {
 template <typename M0, typename M1 = NullType, typename M2 = NullType,
           typename M3 = NullType>
 class DataVisitor;  // primary, intentionally undefined for the general case
+
+template <typename M0, typename M1, typename M2, typename M3>
+class DataVisitor : public DataVisitorBase {
+ public:
+  using BufferType0 = CacheBuffer<std::shared_ptr<M0>>;
+  using BufferType1 = CacheBuffer<std::shared_ptr<M1>>;
+  using BufferType2 = CacheBuffer<std::shared_ptr<M2>>;
+  using BufferType3 = CacheBuffer<std::shared_ptr<M3>>;
+
+  DataVisitor(const VisitorConfig& cfg0, const VisitorConfig& cfg1,
+              const VisitorConfig& cfg2, const VisitorConfig& cfg3)
+      : buffer_m0_(cfg0.channel_id, std::make_shared<BufferType0>(cfg0.queue_size)),
+        buffer_m1_(cfg1.channel_id, std::make_shared<BufferType1>(cfg1.queue_size)),
+        buffer_m2_(cfg2.channel_id, std::make_shared<BufferType2>(cfg2.queue_size)),
+        buffer_m3_(cfg3.channel_id, std::make_shared<BufferType3>(cfg3.queue_size)) {
+    DataDispatcher<M0>::Instance()->AddBuffer(buffer_m0_);
+    DataDispatcher<M1>::Instance()->AddBuffer(buffer_m1_);
+    DataDispatcher<M2>::Instance()->AddBuffer(buffer_m2_);
+    DataDispatcher<M3>::Instance()->AddBuffer(buffer_m3_);
+    data_fusion_ = new fusion::AllLatest<M0, M1, M2, M3>(
+        buffer_m0_, buffer_m1_, buffer_m2_, buffer_m3_);
+    data_notifier_->AddNotifier(buffer_m0_.channel_id(), notifier_);
+  }
+
+  ~DataVisitor() {
+    data_notifier_->RemoveNotifier(buffer_m0_.channel_id(), notifier_);
+    delete data_fusion_;
+    DataDispatcher<M0>::Instance()->RemoveBuffer(buffer_m0_);
+    DataDispatcher<M1>::Instance()->RemoveBuffer(buffer_m1_);
+    DataDispatcher<M2>::Instance()->RemoveBuffer(buffer_m2_);
+    DataDispatcher<M3>::Instance()->RemoveBuffer(buffer_m3_);
+  }
+
+  bool TryFetch(std::shared_ptr<M0>& m0, std::shared_ptr<M1>& m1,
+                std::shared_ptr<M2>& m2, std::shared_ptr<M3>& m3) {
+    if (!data_fusion_->Fusion(&next_msg_index_, m0, m1, m2, m3)) return false;
+    ++next_msg_index_;
+    return true;
+  }
+
+ private:
+  ChannelBuffer<M0> buffer_m0_;
+  ChannelBuffer<M1> buffer_m1_;
+  ChannelBuffer<M2> buffer_m2_;
+  ChannelBuffer<M3> buffer_m3_;
+  fusion::AllLatest<M0, M1, M2, M3>* data_fusion_ = nullptr;
+};
+
+template <typename M0, typename M1, typename M2>
+class DataVisitor<M0, M1, M2, NullType> : public DataVisitorBase {
+ public:
+  using BufferType0 = CacheBuffer<std::shared_ptr<M0>>;
+  using BufferType1 = CacheBuffer<std::shared_ptr<M1>>;
+  using BufferType2 = CacheBuffer<std::shared_ptr<M2>>;
+
+  DataVisitor(const VisitorConfig& cfg0, const VisitorConfig& cfg1,
+              const VisitorConfig& cfg2)
+      : buffer_m0_(cfg0.channel_id, std::make_shared<BufferType0>(cfg0.queue_size)),
+        buffer_m1_(cfg1.channel_id, std::make_shared<BufferType1>(cfg1.queue_size)),
+        buffer_m2_(cfg2.channel_id, std::make_shared<BufferType2>(cfg2.queue_size)) {
+    DataDispatcher<M0>::Instance()->AddBuffer(buffer_m0_);
+    DataDispatcher<M1>::Instance()->AddBuffer(buffer_m1_);
+    DataDispatcher<M2>::Instance()->AddBuffer(buffer_m2_);
+    data_fusion_ = new fusion::AllLatest<M0, M1, M2>(
+        buffer_m0_, buffer_m1_, buffer_m2_);
+    data_notifier_->AddNotifier(buffer_m0_.channel_id(), notifier_);
+  }
+
+  ~DataVisitor() {
+    data_notifier_->RemoveNotifier(buffer_m0_.channel_id(), notifier_);
+    delete data_fusion_;
+    DataDispatcher<M0>::Instance()->RemoveBuffer(buffer_m0_);
+    DataDispatcher<M1>::Instance()->RemoveBuffer(buffer_m1_);
+    DataDispatcher<M2>::Instance()->RemoveBuffer(buffer_m2_);
+  }
+
+  bool TryFetch(std::shared_ptr<M0>& m0, std::shared_ptr<M1>& m1,
+                std::shared_ptr<M2>& m2) {
+    if (!data_fusion_->Fusion(&next_msg_index_, m0, m1, m2)) return false;
+    ++next_msg_index_;
+    return true;
+  }
+
+ private:
+  ChannelBuffer<M0> buffer_m0_;
+  ChannelBuffer<M1> buffer_m1_;
+  ChannelBuffer<M2> buffer_m2_;
+  fusion::AllLatest<M0, M1, M2>* data_fusion_ = nullptr;
+};
 
 // -----------------------------------------------------------------------------
 // Single-channel specialization: DataVisitor<M0, NullType, NullType, NullType>
@@ -137,7 +225,11 @@ class DataVisitor<M0, M1, NullType, NullType> : public DataVisitorBase {
   // internally), so unlike the single-channel TryFetch we do NOT bump
   // next_msg_index_ here — that would double-advance and read past Tail.
   bool TryFetch(std::shared_ptr<M0>& m0, std::shared_ptr<M1>& m1) {
-    return data_fusion_->Fusion(&next_msg_index_, m0, m1);
+    if (!data_fusion_->Fusion(&next_msg_index_, m0, m1)) {
+      return false;
+    }
+    ++next_msg_index_;
+    return true;
   }
 
   // Blocking fusion fetch for use inside a CRoutine. Parks in DATA_WAIT until

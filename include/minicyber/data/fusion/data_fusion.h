@@ -22,9 +22,29 @@ namespace minicyber {
 namespace data {
 namespace fusion {
 
-// 2 通道融合基类（M0 = primary, M1 = secondary）
-template <typename M0, typename M1 = NullType>
+template <typename M0, typename M1 = NullType, typename M2 = NullType,
+          typename M3 = NullType>
 class DataFusion {
+ public:
+  virtual ~DataFusion() = default;
+
+  virtual bool Fusion(uint64_t* index, std::shared_ptr<M0>& m0,
+                      std::shared_ptr<M1>& m1, std::shared_ptr<M2>& m2,
+                      std::shared_ptr<M3>& m3) = 0;
+};
+
+template <typename M0, typename M1, typename M2>
+class DataFusion<M0, M1, M2, NullType> {
+ public:
+  virtual ~DataFusion() = default;
+
+  virtual bool Fusion(uint64_t* index, std::shared_ptr<M0>& m0,
+                      std::shared_ptr<M1>& m1,
+                      std::shared_ptr<M2>& m2) = 0;
+};
+
+template <typename M0, typename M1>
+class DataFusion<M0, M1, NullType, NullType> {
  public:
   virtual ~DataFusion() = default;
 

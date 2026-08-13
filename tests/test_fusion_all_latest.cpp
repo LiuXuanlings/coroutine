@@ -156,6 +156,7 @@ TEST(AllLatestTest, MultiplePrimaryFiresAccumulateFusionEntries) {
   ASSERT_TRUE(al.Fusion(&index, m0, m1));
   EXPECT_EQ(*m0, 30);
   EXPECT_EQ(*m1, 999);
+  ++index;
 
   // Caught up: only 3 entries in fusion buffer, index now = Tail+1.
   EXPECT_FALSE(al.Fusion(&index, m0, m1));
@@ -165,14 +166,17 @@ TEST(AllLatestTest, MultiplePrimaryFiresAccumulateFusionEntries) {
   ASSERT_TRUE(al.Fusion(&index, m0, m1));
   EXPECT_EQ(*m0, 10);
   EXPECT_EQ(*m1, 999);
+  ++index;
 
   ASSERT_TRUE(al.Fusion(&index, m0, m1));
   EXPECT_EQ(*m0, 20);
   EXPECT_EQ(*m1, 999);
+  ++index;
 
   ASSERT_TRUE(al.Fusion(&index, m0, m1));
   EXPECT_EQ(*m0, 30);
   EXPECT_EQ(*m1, 999);
+  ++index;
 
   // No more fusion entries.
   EXPECT_FALSE(al.Fusion(&index, m0, m1));
@@ -197,12 +201,14 @@ TEST(AllLatestTest, StaleSecondaryReusedAcrossPrimaryFires) {
   ASSERT_TRUE(al.Fusion(&index, m0, m1));
   EXPECT_EQ(*m0, 100);
   EXPECT_EQ(*m1, 50);
+  ++index;
 
   // Second primary fire without updating secondary → fusion (a=200, b=50).
   DataDispatcher<int>::Instance()->Dispatch(9211, std::make_shared<int>(200));
   ASSERT_TRUE(al.Fusion(&index, m0, m1));
   EXPECT_EQ(*m0, 200);
   EXPECT_EQ(*m1, 50);
+  ++index;
 
   // Update secondary then fire primary → fusion (a=300, b=70).
   DataDispatcher<int>::Instance()->Dispatch(9212, std::make_shared<int>(70));
@@ -210,4 +216,19 @@ TEST(AllLatestTest, StaleSecondaryReusedAcrossPrimaryFires) {
   ASSERT_TRUE(al.Fusion(&index, m0, m1));
   EXPECT_EQ(*m0, 300);
   EXPECT_EQ(*m1, 70);
+}
+
+TEST(AllLatestTest, DestructionClearsPrimaryFusionCallback) {
+  auto [c1, ch1] = MakeChannel(9225);
+  auto [c2, ch2] = MakeChannel(9226);
+  DataDispatcher<int>::Instance()->Dispatch(9226, std::make_shared<int>(2));
+  {
+    minicyber::data::fusion::AllLatest<int, int> al(ch1, ch2);
+    DataDispatcher<int>::Instance()->Dispatch(9225, std::make_shared<int>(1));
+    uint64_t index = 0;
+    std::shared_ptr<int> m0, m1;
+    ASSERT_TRUE(al.Fusion(&index, m0, m1));
+  }
+  EXPECT_NO_FATAL_FAILURE(
+      DataDispatcher<int>::Instance()->Dispatch(9225, std::make_shared<int>(3)));
 }

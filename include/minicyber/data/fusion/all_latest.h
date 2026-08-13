@@ -4,118 +4,145 @@
 #include <memory>
 #include <mutex>
 #include <tuple>
-#include <utility>
 
-#include "minicyber/data/cache_buffer.h"
 #include "minicyber/data/channel_buffer.h"
-#include "minicyber/data/data_notifier.h"
 #include "minicyber/data/fusion/data_fusion.h"
-
-// =============================================================================
-// AllLatest：主通道触发、拉取副通道最新值的融合策略
-//   （对齐 CyberRT data::fusion::AllLatest）
-//
-// 原理：
-//   1. 在构造时注册一个 DataNotifier 回调到 primary channel。
-//   2. 每次 primary 有新数据到达（Dispatch → DataNotifier::Notify），
-//      回调被触发：拉取 primary 最新值 + secondary 最新值 → 打包成元组
-//      写入 fusion buffer。
-//   3. Fusion() 从 fusion buffer 按 index 取出元组并解包。
-//
-// 核心语义：
-//   - primary 是"驱动轴"：只有 primary 有数据时才尝试融合。
-//   - secondary 是"随从"：fusion 时取 secondary 的最新值（可能跟上次
-//     fusion 时的值相同，即"新的 primary + 老的 secondary"）。
-//   - 这符合自动驾驶中最常见的"高频 + 低频"传感器融合场景。
-//
-// 与 CyberRT 的差异：
-//   CyberRT 的 AllLatest 通过 CacheBuffer::SetFusionCallback 在 Fill
-//   内部加锁的 callback 中执行融合。MiniCyber 的 CacheBuffer 无此钩子，
-//   改用 DataNotifier 回调（Dispatch 后触发）。效果一致：primary 数据
-//   到达 → 执行 Fusion → 填充 fusion buffer。区别是锁不再由 CacheBuffer
-//   内部持有，融合回调需自己锁 fusion buffer 的 Mutex。
-// =============================================================================
 
 namespace minicyber {
 namespace data {
 namespace fusion {
 
-template <typename M0, typename M1 = NullType>
-class AllLatest : public DataFusion<M0, M1> {
-  using FusionDataType = std::tuple<std::shared_ptr<M0>, std::shared_ptr<M1>>;
+template <typename M0, typename M1 = NullType, typename M2 = NullType,
+          typename M3 = NullType>
+class AllLatest : public DataFusion<M0, M1, M2, M3> {
+  using FusionData = std::tuple<std::shared_ptr<M0>, std::shared_ptr<M1>,
+                                std::shared_ptr<M2>, std::shared_ptr<M3>>;
 
  public:
-  /// 构造 AllLatest 融合器。
-  /// @param buffer_0 primary 通道（驱动轴）
-  /// @param buffer_1 secondary 通道（随从）
   AllLatest(const ChannelBuffer<M0>& buffer_0,
-            const ChannelBuffer<M1>& buffer_1)
-      : buffer_m0_(buffer_0),
-        buffer_m1_(buffer_1),
-        // fusion buffer 的容量 = primary 容量 - 1（与 CyberRT 一致）
-        buffer_fusion_(
-            buffer_m0_.channel_id(),
-            std::make_shared<CacheBuffer<std::shared_ptr<FusionDataType>>>(
+            const ChannelBuffer<M1>& buffer_1,
+            const ChannelBuffer<M2>& buffer_2,
+            const ChannelBuffer<M3>& buffer_3)
+      : buffer_m0_(buffer_0), buffer_m1_(buffer_1), buffer_m2_(buffer_2),
+        buffer_m3_(buffer_3), buffer_fusion_(
+            buffer_0.channel_id(),
+            std::make_shared<CacheBuffer<std::shared_ptr<FusionData>>>(
                 buffer_0.Buffer()->Capacity() - 1)) {
-    // 注册 DataNotifier 回调到 primary 通道。
-    // DataDispatcher::Dispatch → DataNotifier::Notify(buffer_m0_.channel_id())
-    // → 触发此回调 → 拉取两个通道的最新值 → 填充 fusion buffer。
-    // 回调受 fusion buffer 的 mutex 保护，防止 DataFusion::Fusion()
-    // 同时读 fusion buffer 导致 data race。
-    notifier_ = std::make_shared<Notifier>();
-    notifier_->SetCallback([this]() {
-      std::shared_ptr<M0> m0;
+    buffer_m0_.Buffer()->SetFusionCallback([this](const std::shared_ptr<M0>& m0) {
       std::shared_ptr<M1> m1;
-      // primary + secondary 都必须有数据。这里只 check Latest 的返回值：
-      // primary 刚被 Fill 肯定有数据（刚 dispatch 的）；secondary 可能
-      // 尚无数据则 silently return（fusion buffer 不变，Fusion() 返回 false）。
-      if (!buffer_m0_.Latest(m0) || !buffer_m1_.Latest(m1)) {
-        return;
-      }
-
-      auto data = std::make_shared<FusionDataType>(std::move(m0), std::move(m1));
-      // Fill fusion buffer under its own mutex.
-      {
-        std::lock_guard<std::mutex> lg(buffer_fusion_.Buffer()->Mutex());
-        buffer_fusion_.Buffer()->Fill(data);
-      }
+      std::shared_ptr<M2> m2;
+      std::shared_ptr<M3> m3;
+      if (!buffer_m1_.Latest(m1) || !buffer_m2_.Latest(m2) ||
+          !buffer_m3_.Latest(m3)) return;
+      Fill(m0, m1, m2, m3);
     });
-    DataNotifier::Instance()->AddNotifier(buffer_m0_.channel_id(), notifier_);
   }
 
-  ~AllLatest() override {
-    DataNotifier::Instance()->RemoveNotifier(buffer_m0_.channel_id(), notifier_);
-  }
+  ~AllLatest() override { buffer_m0_.Buffer()->SetFusionCallback({}); }
 
-  /// 从 fusion buffer 取出一组融合数据。
-  /// 语义与 ChannelBuffer::Fetch 一致：*index == 0 ⇒ 取最新；
-  /// 否则取 *index 位置；消费者追平时返回 false。
   bool Fusion(uint64_t* index, std::shared_ptr<M0>& m0,
-              std::shared_ptr<M1>& m1) override {
-    std::shared_ptr<FusionDataType> fusion_data;
-    if (!buffer_fusion_.Fetch(index, fusion_data)) {
-      return false;
-    }
-    m0 = std::get<0>(*fusion_data);
-    m1 = std::get<1>(*fusion_data);
-    // 推进消费游标：ChannelBuffer::Fetch 将 *index 设为 Tail，
-    // 调用方需 +1 使其指向"已消费的下一位置"，下次调用才能正确判断
-    // "消费者已追平"（*index == Tail + 1）。
-    ++(*index);
+              std::shared_ptr<M1>& m1, std::shared_ptr<M2>& m2,
+              std::shared_ptr<M3>& m3) override {
+    std::shared_ptr<FusionData> data;
+    if (!buffer_fusion_.Fetch(index, data)) return false;
+    m0 = std::get<0>(*data);
+    m1 = std::get<1>(*data);
+    m2 = std::get<2>(*data);
+    m3 = std::get<3>(*data);
     return true;
   }
 
-  /// 直接访问底层 fusion buffer 的 ChannelBuffer（供上层 DataVisitor 或
-  /// DataNotifier 链式挂接使用）。
-  const ChannelBuffer<FusionDataType>& fusion_buffer() const {
-    return buffer_fusion_;
+ private:
+  void Fill(const std::shared_ptr<M0>& m0, const std::shared_ptr<M1>& m1,
+            const std::shared_ptr<M2>& m2, const std::shared_ptr<M3>& m3) {
+    std::lock_guard<std::mutex> lock(buffer_fusion_.Buffer()->Mutex());
+    buffer_fusion_.Buffer()->Fill(
+        std::make_shared<FusionData>(m0, m1, m2, m3));
+  }
+
+  ChannelBuffer<M0> buffer_m0_;
+  ChannelBuffer<M1> buffer_m1_;
+  ChannelBuffer<M2> buffer_m2_;
+  ChannelBuffer<M3> buffer_m3_;
+  ChannelBuffer<FusionData> buffer_fusion_;
+};
+
+template <typename M0, typename M1, typename M2>
+class AllLatest<M0, M1, M2, NullType> : public DataFusion<M0, M1, M2> {
+  using FusionData = std::tuple<std::shared_ptr<M0>, std::shared_ptr<M1>,
+                                std::shared_ptr<M2>>;
+
+ public:
+  AllLatest(const ChannelBuffer<M0>& buffer_0,
+            const ChannelBuffer<M1>& buffer_1,
+            const ChannelBuffer<M2>& buffer_2)
+      : buffer_m0_(buffer_0), buffer_m1_(buffer_1), buffer_m2_(buffer_2),
+        buffer_fusion_(
+            buffer_0.channel_id(),
+            std::make_shared<CacheBuffer<std::shared_ptr<FusionData>>>(
+                buffer_0.Buffer()->Capacity() - 1)) {
+    buffer_m0_.Buffer()->SetFusionCallback([this](const std::shared_ptr<M0>& m0) {
+      std::shared_ptr<M1> m1;
+      std::shared_ptr<M2> m2;
+      if (!buffer_m1_.Latest(m1) || !buffer_m2_.Latest(m2)) return;
+      std::lock_guard<std::mutex> lock(buffer_fusion_.Buffer()->Mutex());
+      buffer_fusion_.Buffer()->Fill(std::make_shared<FusionData>(m0, m1, m2));
+    });
+  }
+
+  ~AllLatest() override { buffer_m0_.Buffer()->SetFusionCallback({}); }
+
+  bool Fusion(uint64_t* index, std::shared_ptr<M0>& m0,
+              std::shared_ptr<M1>& m1, std::shared_ptr<M2>& m2) override {
+    std::shared_ptr<FusionData> data;
+    if (!buffer_fusion_.Fetch(index, data)) return false;
+    m0 = std::get<0>(*data);
+    m1 = std::get<1>(*data);
+    m2 = std::get<2>(*data);
+    return true;
   }
 
  private:
   ChannelBuffer<M0> buffer_m0_;
   ChannelBuffer<M1> buffer_m1_;
-  ChannelBuffer<FusionDataType> buffer_fusion_;
-  std::shared_ptr<Notifier> notifier_;
+  ChannelBuffer<M2> buffer_m2_;
+  ChannelBuffer<FusionData> buffer_fusion_;
+};
+
+template <typename M0, typename M1>
+class AllLatest<M0, M1, NullType, NullType> : public DataFusion<M0, M1> {
+  using FusionData = std::tuple<std::shared_ptr<M0>, std::shared_ptr<M1>>;
+
+ public:
+  AllLatest(const ChannelBuffer<M0>& buffer_0,
+            const ChannelBuffer<M1>& buffer_1)
+      : buffer_m0_(buffer_0), buffer_m1_(buffer_1), buffer_fusion_(
+            buffer_0.channel_id(),
+            std::make_shared<CacheBuffer<std::shared_ptr<FusionData>>>(
+                buffer_0.Buffer()->Capacity() - 1)) {
+    buffer_m0_.Buffer()->SetFusionCallback([this](const std::shared_ptr<M0>& m0) {
+      std::shared_ptr<M1> m1;
+      if (!buffer_m1_.Latest(m1)) return;
+      std::lock_guard<std::mutex> lock(buffer_fusion_.Buffer()->Mutex());
+      buffer_fusion_.Buffer()->Fill(std::make_shared<FusionData>(m0, m1));
+    });
+  }
+
+  ~AllLatest() override { buffer_m0_.Buffer()->SetFusionCallback({}); }
+
+  bool Fusion(uint64_t* index, std::shared_ptr<M0>& m0,
+              std::shared_ptr<M1>& m1) override {
+    std::shared_ptr<FusionData> data;
+    if (!buffer_fusion_.Fetch(index, data)) return false;
+    m0 = std::get<0>(*data);
+    m1 = std::get<1>(*data);
+    return true;
+  }
+
+ private:
+  ChannelBuffer<M0> buffer_m0_;
+  ChannelBuffer<M1> buffer_m1_;
+  ChannelBuffer<FusionData> buffer_fusion_;
 };
 
 }  // namespace fusion

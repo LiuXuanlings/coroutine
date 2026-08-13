@@ -1,6 +1,8 @@
 #ifndef MINICYBER_DATA_CACHE_BUFFER_H_
 #define MINICYBER_DATA_CACHE_BUFFER_H_
 
+#include <condition_variable>
+#include <functional>
 #include <mutex>
 #include <vector>
 
@@ -15,6 +17,7 @@ class CacheBuffer {
  public:
   using value_type = T;
   using size_type = std::size_t;
+  using FusionCallback = std::function<void(const T&)>;
 
   explicit CacheBuffer(uint64_t size) {
     capacity_ = size + 1;
@@ -27,6 +30,8 @@ class CacheBuffer {
     tail_ = rhs.tail_;
     buffer_ = rhs.buffer_;
     capacity_ = rhs.capacity_;
+    std::lock_guard<std::mutex> callback_lock(rhs.callback_mutex_);
+    fusion_callback_ = rhs.fusion_callback_;
   }
 
   T& operator[](const uint64_t& pos) { return buffer_[GetIndex(pos)]; }
@@ -46,9 +51,34 @@ class CacheBuffer {
   bool Full() const { return capacity_ - 1 == tail_ - head_; }
   uint64_t Capacity() const { return capacity_; }
 
+  void SetFusionCallback(const FusionCallback& callback) {
+    std::unique_lock<std::mutex> lock(callback_mutex_);
+    fusion_callback_ = callback;
+    fusion_finished_.wait(lock,
+                          [this]() { return active_fusion_callbacks_ == 0; });
+  }
+
   // Overwrite-aware push. When the buffer is full, the oldest element is
   // recycled and both head_ and tail_ advance, keeping Size() constant.
   void Fill(const T& value) {
+    FusionCallback callback;
+    {
+      std::lock_guard<std::mutex> lock(callback_mutex_);
+      callback = fusion_callback_;
+      if (callback) {
+        ++active_fusion_callbacks_;
+      }
+    }
+    if (callback) {
+      try {
+        callback(value);
+      } catch (...) {
+        FinishFusionCallback();
+        throw;
+      }
+      FinishFusionCallback();
+      return;
+    }
     if (Full()) {
       buffer_[GetIndex(head_)] = value;
       ++head_;
@@ -65,11 +95,23 @@ class CacheBuffer {
   CacheBuffer& operator=(const CacheBuffer& other) = delete;
   uint64_t GetIndex(const uint64_t& pos) const { return pos % capacity_; }
 
+  void FinishFusionCallback() {
+    {
+      std::lock_guard<std::mutex> lock(callback_mutex_);
+      --active_fusion_callbacks_;
+    }
+    fusion_finished_.notify_all();
+  }
+
   uint64_t head_ = 0;
   uint64_t tail_ = 0;
   uint64_t capacity_ = 0;
   std::vector<T> buffer_;
   mutable std::mutex mutex_;
+  mutable std::mutex callback_mutex_;
+  std::condition_variable fusion_finished_;
+  FusionCallback fusion_callback_;
+  size_t active_fusion_callbacks_ = 0;
 };
 
 }  // namespace data
