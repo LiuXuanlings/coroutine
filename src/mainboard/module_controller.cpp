@@ -215,6 +215,14 @@ bool ModuleController::LoadModule(const DagConfig& dag_config) {
     // Step 2: 创建事件驱动组件（Component<T>）
     // ======================================================================
     for (const auto& component_info : module_config.components()) {
+      if (component_info.class_name().empty() || !component_info.has_config() ||
+          component_info.config().name().empty() ||
+          component_info.config().readers_size() == 0 ||
+          component_info.config().readers(0).channel().empty()) {
+        MERROR << "Invalid component DAG entry: class_name, config.name, and "
+               << "the first reader channel are required." << std::endl;
+        return false;
+      }
       const std::string& class_name = component_info.class_name();
       const ComponentConfig& config = component_info.config();
 
@@ -245,6 +253,13 @@ bool ModuleController::LoadModule(const DagConfig& dag_config) {
     // Step 3: 创建定时组件（TimerComponent）
     // ======================================================================
     for (const auto& timer_info : module_config.timer_components()) {
+      if (timer_info.class_name().empty() || !timer_info.has_config() ||
+          timer_info.config().name().empty() ||
+          timer_info.config().interval() == 0) {
+        MERROR << "Invalid timer DAG entry: class_name, config.name, and "
+               << "a non-zero interval are required." << std::endl;
+        return false;
+      }
       const std::string& class_name = timer_info.class_name();
       const TimerComponentConfig& config = timer_info.config();
 

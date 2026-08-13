@@ -250,8 +250,9 @@ bool Component<M0, NullType, NullType, NullType>::Initialize(
   // CreateReader 内部调用 Transport::CreateReceiver<T>，自动决策
   // IntraReceiver 或 ShmReceiver（基于 TopologyManager 判断）。
   // 回调 func 在数据到达时被同步调用（见上方回调传递路径）。
-  auto reader =
-      node_->template CreateReader<M0>(config.readers(0).channel(), func);
+  auto reader = node_->template CreateReader<M0>(
+      config.readers(0).channel(), func,
+      config.readers(0).pending_queue_size());
   if (cyber_unlikely(reader == nullptr)) {
     CleanupInitializationFailure();
     return false;

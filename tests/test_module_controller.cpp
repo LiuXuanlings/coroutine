@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include <google/protobuf/text_format.h>
+
 #include "minicyber/component/component.h"
 #include "minicyber/component/component_factory.h"
 #include "minicyber/mainboard/module_controller.h"
@@ -154,6 +156,45 @@ TEST(ModuleControllerTest, LoadModuleUnknownClassName) {
   EXPECT_FALSE(controller.LoadModule(dag));
   // 失败后 component_list_ 可能为空或包含部分，但 Clear 应安全
   controller.Clear();
+}
+
+TEST(ModuleControllerTest, RejectsIncompleteComponentDagEntry) {
+  DagConfig dag;
+  auto* component = dag.add_module_config()->add_components();
+  component->set_class_name("McTestComponent");
+  component->mutable_config()->set_name("incomplete_component");
+
+  ModuleController controller({});
+  EXPECT_FALSE(controller.LoadModule(dag));
+  EXPECT_EQ(controller.ComponentCount(), 0u);
+}
+
+TEST(ModuleControllerTest, ParsePreservesReaderOptionFields) {
+  const std::string dag_content =
+      "module_config {\n"
+      "  module_library: \"\"\n"
+      "  components {\n"
+      "    class_name: \"McTestComponent\"\n"
+      "    config {\n"
+      "      name: \"rich_proto_node\"\n"
+      "      config_file_path: \"component.conf\"\n"
+      "      flag_file_path: \"component.flags\"\n"
+      "      readers {\n"
+      "        channel: \"/rich_proto\"\n"
+      "        pending_queue_size: 3\n"
+      "        qos_profile { depth: 3 reliability: RELIABILITY_BEST_EFFORT }\n"
+      "      }\n"
+      "    }\n"
+      "  }\n"
+      "}\n";
+  DagConfig dag;
+  ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(dag_content, &dag));
+  const auto& reader = dag.module_config(0).components(0).config().readers(0);
+  EXPECT_EQ(reader.channel(), "/rich_proto");
+  EXPECT_EQ(reader.pending_queue_size(), 3u);
+  EXPECT_EQ(reader.qos_profile().depth(), 3u);
+  EXPECT_EQ(reader.qos_profile().reliability(),
+            minicyber::proto::RELIABILITY_BEST_EFFORT);
 }
 
 // =============================================================================
