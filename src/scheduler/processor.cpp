@@ -56,6 +56,7 @@ void Processor::Run() {
       if (croutine) {
         snap_shot_->execute_start_time.store(
             std::chrono::steady_clock::now().time_since_epoch().count());
+        snap_shot_->routine_name = croutine->name();
         croutine->Resume();
         // 释放工作窃取锁：NextRoutine() 中 Acquire 获取，Resume() 返回后
         // （协程 Yield 或执行完毕）必须 Release，否则下次 NextRoutine 无法

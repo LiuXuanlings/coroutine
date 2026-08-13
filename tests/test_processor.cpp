@@ -151,6 +151,27 @@ TEST(ProcessorTest, SnapshotProcessorIdMatchesTid) {
   proc.Stop();
 }
 
+TEST(ProcessorTest, ReleasesRoutineAfterExecution) {
+  auto ctx = std::make_shared<MockContext>();
+  Processor proc;
+  proc.BindContext(ctx);
+
+  std::atomic<bool> ran{false};
+  auto cr = std::make_shared<CRoutine>([&]() { ran.store(true); });
+  cr->set_name("release-check");
+  ASSERT_TRUE(cr->Acquire());  // Model the ownership acquired by NextRoutine.
+  ctx->Enqueue(cr);
+
+  while (!ran.load()) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+
+  EXPECT_EQ(proc.ProcSnapshot()->routine_name, "release-check");
+  EXPECT_TRUE(cr->Acquire());
+  cr->Release();
+  proc.Stop();
+}
+
 // =====================================================================
 // Processor + ClassicContext 集成测试
 // 验证真实调度上下文下协程按优先级执行

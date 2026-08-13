@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 
 #include "minicyber/scheduler/processor_context.h"
@@ -20,6 +21,7 @@ class Scheduler;  // 前置声明，避免与 processor.h 的循环依赖
 struct Snapshot {
   std::atomic<uint64_t> execute_start_time{0};  // 当前协程开始执行的时间戳(ns)
   std::atomic<pid_t> processor_id{0};           // Processor 线程的 Linux TID
+  std::string routine_name;
 };
 
 // ----------------------------------------------------------------------
