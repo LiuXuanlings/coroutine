@@ -37,6 +37,7 @@ done
   printf '  "warmup": %s,\n' "$warmup"
   printf '  "samples": %s,\n' "$samples"
   printf '  "payload_bytes": [64, 1024, 65536],\n'
+  printf '  "backends": ["intra", "pipe", "shm", "mutex_cv_queue"],\n'
   printf '  "csv": "%s"\n' "$(basename "$csv")"
   printf '}\n'
 } > "$json"

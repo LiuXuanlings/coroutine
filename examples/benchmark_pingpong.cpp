@@ -3,11 +3,13 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -66,6 +68,33 @@ bool ReadAll(int fd, void* data, size_t size) {
   }
   return true;
 }
+
+class MutexConditionQueue {
+ public:
+  void Push(std::vector<char> frame) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    not_full_.wait(lock, [this] { return !full_; });
+    frame_ = std::move(frame);
+    full_ = true;
+    not_empty_.notify_one();
+  }
+
+  std::vector<char> Pop() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    not_empty_.wait(lock, [this] { return full_; });
+    std::vector<char> frame = std::move(frame_);
+    full_ = false;
+    not_full_.notify_one();
+    return frame;
+  }
+
+ private:
+  std::mutex mutex_;
+  std::condition_variable not_empty_;
+  std::condition_variable not_full_;
+  std::vector<char> frame_;
+  bool full_ = false;
+};
 
 Result RunIntra(const Options& options) {
   minicyber::node::Node subscriber("benchmark_intra_subscriber");
@@ -154,6 +183,37 @@ Result RunPipe(const Options& options) {
   ::close(acknowledgements[1]);
   if (!consumer_ok.load()) std::exit(1);
   return {"pipe", std::move(latencies), elapsed_ns};
+}
+
+Result RunMutexConditionQueue(const Options& options) {
+  MutexConditionQueue queue;
+  MutexConditionQueue acknowledgements;
+  std::vector<uint64_t> latencies;
+  latencies.reserve(options.samples);
+  const size_t frame_size = sizeof(Sample) + options.payload_bytes;
+  std::thread consumer([&] {
+    for (size_t index = 0; index < options.warmup + options.samples; ++index) {
+      auto frame = queue.Pop();
+      if (index >= options.warmup) {
+        Sample sample;
+        std::memcpy(&sample, frame.data(), sizeof(sample));
+        latencies.push_back(NowNs() - sample.sent_ns);
+      }
+      acknowledgements.Push(std::vector<char>(1, 'a'));
+    }
+  });
+
+  uint64_t start_ns = 0;
+  for (size_t index = 0; index < options.warmup + options.samples; ++index) {
+    if (index == options.warmup) start_ns = NowNs();
+    std::vector<char> frame(frame_size, 'q');
+    const Sample sample{NowNs(), index};
+    std::memcpy(frame.data(), &sample, sizeof(sample));
+    queue.Push(std::move(frame));
+    acknowledgements.Pop();
+  }
+  consumer.join();
+  return {"mutex_cv_queue", std::move(latencies), NowNs() - start_ns};
 }
 
 Result RunShm(const Options& options) {
@@ -340,5 +400,6 @@ int main(int argc, char** argv) {
   PrintResult(RunIntra(options), options);
   PrintResult(RunPipe(options), options);
   PrintResult(RunShm(options), options);
+  PrintResult(RunMutexConditionQueue(options), options);
   return 0;
 }
