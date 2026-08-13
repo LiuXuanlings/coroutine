@@ -5,6 +5,10 @@ cmake_minimum_required(VERSION 3.14)
 set(CMAKE_ASM_COMPILER /usr/bin/cc CACHE FILEPATH "ASM compiler")
 project(minicyber CXX C ASM)
 
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -12,12 +16,14 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # ---------------------------------------------------------
 # 编译选项配置 (包含 Sanitizers)
 # ---------------------------------------------------------
-# 默认开启较严格的警告
-add_compile_options(-Wall -Wextra -g -O0)
+# 默认开启较严格的警告。优化和调试信息由 CMAKE_BUILD_TYPE 决定，
+# 不再把 -O0 -g 注入 Release 或 sanitizer 构建。
+add_compile_options(-Wall -Wextra)
 
 # 允许通过 CMake 参数选择 Sanitizer类型: 
 # cmake -DUSE_SANITIZER=ASAN (内存检测) 或 TSAN (线程安全检测)
 set(USE_SANITIZER "" CACHE STRING "Compile with ASAN or TSAN")
+set_property(CACHE USE_SANITIZER PROPERTY STRINGS "" ASAN TSAN)
 
 if(USE_SANITIZER STREQUAL "ASAN")
     message(STATUS "Enable AddressSanitizer (ASan)")
@@ -27,6 +33,8 @@ elseif(USE_SANITIZER STREQUAL "TSAN")
     message(STATUS "Enable ThreadSanitizer (TSan)")
     add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
     add_link_options(-fsanitize=thread)
+elseif(NOT USE_SANITIZER STREQUAL "")
+    message(FATAL_ERROR "USE_SANITIZER must be ASAN, TSAN, or empty")
 endif()
 
 # ---------------------------------------------------------
