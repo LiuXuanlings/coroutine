@@ -78,6 +78,21 @@ TEST(DataDispatcherTest, DeadWeakPtrIsSkippedWithoutCrash) {
   EXPECT_EQ(*out, 99);
 }
 
+TEST(DataDispatcherTest, RemoveBufferStopsDeliveryAndErasesChannel) {
+  auto* disp = DataDispatcher<int>::Instance();
+  RegisterNoopNotifier(8010);
+  auto buf = std::make_shared<CacheBuffer<std::shared_ptr<int>>>(4);
+  ChannelBuffer<int> cb(8010, buf);
+  disp->AddBuffer(cb);
+  EXPECT_TRUE(disp->Dispatch(8010, std::make_shared<int>(1)));
+  EXPECT_TRUE(disp->RemoveBuffer(cb));
+  EXPECT_FALSE(disp->RemoveBuffer(cb));
+  EXPECT_FALSE(disp->Dispatch(8010, std::make_shared<int>(2)));
+  std::shared_ptr<int> out;
+  ASSERT_TRUE(cb.Latest(out));
+  EXPECT_EQ(*out, 1);
+}
+
 TEST(DataDispatcherTest, DispatchFiresDataNotifierCallback) {
   auto* disp = DataDispatcher<int>::Instance();
   auto* dn = DataNotifier::Instance();
@@ -131,6 +146,40 @@ TEST(DataDispatcherTest, ConcurrentDispatchOnSameChannelIsSafe) {
   // 800 messages into a 1000-capacity buffer: not full, all retained.
   EXPECT_EQ(buf->Size(), static_cast<uint64_t>(kThreads * kPerThread));
   EXPECT_FALSE(buf->Full());
+}
+
+TEST(DataDispatcherTest, ConcurrentRegistrationAndDispatchIsSafe) {
+  auto* disp = DataDispatcher<int>::Instance();
+  constexpr uint64_t kChannel = 8011;
+  RegisterNoopNotifier(kChannel);
+  auto stable = std::make_shared<CacheBuffer<std::shared_ptr<int>>>(1000);
+  ChannelBuffer<int> stable_cb(kChannel, stable);
+  disp->AddBuffer(stable_cb);
+
+  std::atomic<bool> start{false};
+  std::thread publisher([&]() {
+    while (!start.load(std::memory_order_acquire)) {
+      std::this_thread::yield();
+    }
+    for (int i = 0; i < 400; ++i) {
+      EXPECT_TRUE(disp->Dispatch(kChannel, std::make_shared<int>(i)));
+    }
+  });
+  std::thread registrar([&]() {
+    while (!start.load(std::memory_order_acquire)) {
+      std::this_thread::yield();
+    }
+    for (int i = 0; i < 200; ++i) {
+      auto temporary = std::make_shared<CacheBuffer<std::shared_ptr<int>>>(2);
+      ChannelBuffer<int> cb(kChannel, temporary);
+      disp->AddBuffer(cb);
+      EXPECT_TRUE(disp->RemoveBuffer(cb));
+    }
+  });
+  start.store(true, std::memory_order_release);
+  publisher.join();
+  registrar.join();
+  EXPECT_EQ(stable->Size(), 400u);
 }
 
 TEST(DataDispatcherTest, CallbackReentryDoesNotDeadlock) {

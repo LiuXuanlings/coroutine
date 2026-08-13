@@ -1,11 +1,12 @@
 #ifndef MINICYBER_DATA_DATA_DISPATCHER_H_
 #define MINICYBER_DATA_DATA_DISPATCHER_H_
 
+#include <algorithm>
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
-#include "minicyber/base/atomic_hash_map.h"
 #include "minicyber/data/channel_buffer.h"
 #include "minicyber/data/data_notifier.h"
 
@@ -15,14 +16,14 @@ namespace data {
 // Routes a published message to every ChannelBuffer registered on a channel,
 // then fires DataNotifier so waiting coroutines wake up.
 //
-// Buffer ownership is weak: the dispatcher holds weak_ptr to each CacheBuffer,
-// so destroying a ChannelBuffer/DataVisitor simply leaves a dead entry that
-// gets skipped on the next Dispatch.
+// Buffer ownership is weak: the dispatcher holds weak_ptr to each CacheBuffer.
+// A caller may also explicitly unregister its buffer during teardown.
 //
-// Lock strategy (Step 26, AtomicHashMap version):
-//   - AddBuffer: copy-on-write on the map entry (atomic CAS).
-//   - Dispatch:  read-only Get() from the map; each buffer is filled under
-//                its own mutex. No map-level lock needed.
+// Lock strategy:
+//   - registration and removal update the channel table under buffers_mtx_;
+//   - Dispatch takes a vector snapshot under that lock, then releases it
+//     before filling buffers or running notifier callbacks.
+// This keeps buffer-vector lifetime safe while allowing callback re-entry.
 template <typename T>
 class DataDispatcher {
  public:
@@ -36,26 +37,51 @@ class DataDispatcher {
 
   void AddBuffer(const ChannelBuffer<T>& channel_buffer) {
     auto buffer = channel_buffer.Buffer();
-    uint64_t ch_id = channel_buffer.channel_id();
-    BufferVector* existing = nullptr;
-    if (buffers_map_.Get(ch_id, &existing)) {
-      // Copy-on-write: atomically publish the extended vector.
-      BufferVector copy = *existing;
-      copy.emplace_back(std::move(buffer));
-      buffers_map_.Set(ch_id, std::move(copy));
-    } else {
-      buffers_map_.Set(ch_id, BufferVector{std::move(buffer)});
+    std::lock_guard<std::mutex> lock(buffers_mtx_);
+    auto& buffers = buffers_map_[channel_buffer.channel_id()];
+    buffers.erase(std::remove_if(buffers.begin(), buffers.end(),
+                                 [](const std::weak_ptr<BufferType>& item) {
+                                   return item.expired();
+                                 }),
+                  buffers.end());
+    buffers.emplace_back(std::move(buffer));
+  }
+
+  bool RemoveBuffer(const ChannelBuffer<T>& channel_buffer) {
+    const auto buffer = channel_buffer.Buffer();
+    std::lock_guard<std::mutex> lock(buffers_mtx_);
+    auto channel = buffers_map_.find(channel_buffer.channel_id());
+    if (channel == buffers_map_.end()) {
+      return false;
     }
+    auto& buffers = channel->second;
+    bool removed = false;
+    buffers.erase(std::remove_if(buffers.begin(), buffers.end(),
+                                 [&buffer, &removed](const std::weak_ptr<BufferType>& item) {
+                                   auto registered = item.lock();
+                                   if (registered == buffer) {
+                                     removed = true;
+                                     return true;
+                                   }
+                                   return !registered;
+                                 }),
+                  buffers.end());
+    if (buffers.empty()) {
+      buffers_map_.erase(channel);
+    }
+    return removed;
   }
 
   bool Dispatch(uint64_t channel_id, const std::shared_ptr<T>& msg) {
-    BufferVector* buffers_ptr = nullptr;
-    if (!buffers_map_.Get(channel_id, &buffers_ptr)) {
-      return false;
+    BufferVector snapshot;
+    {
+      std::lock_guard<std::mutex> lock(buffers_mtx_);
+      auto channel = buffers_map_.find(channel_id);
+      if (channel == buffers_map_.end()) {
+        return false;
+      }
+      snapshot = channel->second;
     }
-    // Take a snapshot (copy of weak_ptrs — cheap) so a callback that
-    // re-enters Dispatch sees a consistent view.
-    BufferVector snapshot = *buffers_ptr;
 
     for (auto& buffer_wptr : snapshot) {
       if (auto buffer = buffer_wptr.lock()) {
@@ -73,7 +99,8 @@ class DataDispatcher {
   DataDispatcher& operator=(const DataDispatcher&) = delete;
 
   DataNotifier* notifier_ = DataNotifier::Instance();
-  AtomicHashMap<uint64_t, BufferVector, 256> buffers_map_;
+  std::mutex buffers_mtx_;
+  std::unordered_map<uint64_t, BufferVector> buffers_map_;
 };
 
 }  // namespace data
