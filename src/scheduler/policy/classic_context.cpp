@@ -160,5 +160,17 @@ bool ClassicContext::RemoveCRoutine(const std::shared_ptr<CRoutine>& cr) {
   return true;
 }
 
+void ClassicContext::RemoveGroup(const std::string& group_name) {
+  auto wait_lock = mtx_wq_.find(group_name);
+  if (wait_lock != mtx_wq_.end()) {
+    std::lock_guard<std::mutex> lock(wait_lock->second);
+    notify_grp_.erase(group_name);
+  }
+  cv_wq_.erase(group_name);
+  mtx_wq_.erase(group_name);
+  rq_locks_.erase(group_name);
+  cr_group_.erase(group_name);
+}
+
 }  // namespace scheduler
 }  // namespace minicyber

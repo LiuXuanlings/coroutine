@@ -72,6 +72,9 @@ class ClassicContext : public ProcessorContext {
   // 按 id 从队列中移除协程
   static bool RemoveCRoutine(const std::shared_ptr<CRoutine>& cr);
 
+  // 释放已关闭 Scheduler 使用的 group 状态。
+  static void RemoveGroup(const std::string& group_name);
+
  private:
   void InitGroup(const std::string& group_name);
 

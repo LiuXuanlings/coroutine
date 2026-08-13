@@ -212,6 +212,12 @@ void Scheduler::Shutdown() {
     if (proc) proc->Stop();
   }
 
+  if (policy_ == "classic") {
+    for (size_t index = 0; index < contexts.size(); ++index) {
+      ClassicContext::RemoveGroup("proc_" + std::to_string(index));
+    }
+  }
+
   {
     std::lock_guard<std::mutex> lk(id_cr_mtx_);
     id_cr_.clear();
