@@ -8,7 +8,40 @@
 namespace {
 // 测试辅助：记录协程走过的状态轨迹
 static std::vector<minicyber::RoutineState> g_trace;
+
+minicyber::croutine::RoutineContext g_context;
+char* g_main_sp = nullptr;
+int g_context_phase = 0;
+
+void ContextEntry() {
+  g_context_phase = 1;
+  minicyber::croutine::SwapContext(&g_context.sp, &g_main_sp);
+  g_context_phase = 2;
+  minicyber::croutine::SwapContext(&g_context.sp, &g_main_sp);
+}
 }  // namespace
+
+TEST(RoutineContextTest, SwitchesBothDirectionsWithAbiAlignedEntry) {
+  g_context = {};
+  g_main_sp = nullptr;
+  g_context_phase = 0;
+  minicyber::croutine::MakeContext(&g_context, ContextEntry);
+
+#if defined(__x86_64__)
+  // After restoring rdi plus six callee-saved registers, ret enters the
+  // function with rsp at stack_end - sizeof(void*), as required by SysV ABI.
+  const uintptr_t expected_sp =
+      reinterpret_cast<uintptr_t>(g_context.stack) +
+      minicyber::croutine::STACK_SIZE - sizeof(void*);
+  EXPECT_EQ(expected_sp % 16, 8u);
+#endif
+
+  minicyber::croutine::SwapContext(&g_main_sp, &g_context.sp);
+  EXPECT_EQ(g_context_phase, 1);
+
+  minicyber::croutine::SwapContext(&g_main_sp, &g_context.sp);
+  EXPECT_EQ(g_context_phase, 2);
+}
 
 // ----------------------------------------------------------------------
 // 测试 1：基础状态流转 READY -> DATA_WAIT -> READY -> FINISHED

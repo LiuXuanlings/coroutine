@@ -1,6 +1,8 @@
 .global ctx_swap
+.type ctx_swap, @function
 
 ctx_swap:
+    pushq %rdi
     pushq %r12
     pushq %r13
     pushq %r14
@@ -16,4 +18,8 @@ ctx_swap:
     popq %r14
     popq %r13
     popq %r12
+    popq %rdi
     ret
+
+.size ctx_swap, .-ctx_swap
+.section .note.GNU-stack,"",@progbits

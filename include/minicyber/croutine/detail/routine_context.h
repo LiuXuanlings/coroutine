@@ -9,9 +9,11 @@ namespace minicyber {
 namespace croutine {
 
 constexpr size_t STACK_SIZE = 2 * 1024 * 1024;
-constexpr size_t REGISTERS_SIZE = 48;
+// rdi is preserved as an ABI/alignment slot alongside the six x86_64
+// callee-saved registers. This leaves rsp % 16 == 8 at the entry function.
+constexpr size_t REGISTERS_SIZE = 56;
 
-struct RoutineContext {
+struct alignas(16) RoutineContext {
   char stack[STACK_SIZE];
   char* sp = nullptr;
 };
