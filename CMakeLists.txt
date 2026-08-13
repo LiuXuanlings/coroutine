@@ -137,6 +137,9 @@ foreach(EXAMPLE_SRC ${EXAMPLE_FILES})
     get_filename_component(EXAMPLE_NAME ${EXAMPLE_SRC} NAME_WE)
     add_executable(${EXAMPLE_NAME} ${EXAMPLE_SRC})
     target_link_libraries(${EXAMPLE_NAME} minicyber_core pthread dl)
+    if(EXAMPLE_NAME STREQUAL "benchmark_cpp20_coroutine")
+        target_compile_features(${EXAMPLE_NAME} PRIVATE cxx_std_20)
+    endif()
 endforeach()
 
 # ---------------------------------------------------------
