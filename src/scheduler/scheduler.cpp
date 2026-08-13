@@ -60,9 +60,8 @@ void Scheduler::ApplyThreadPolicy(const SchedulerConf& conf, size_t proc_idx,
     SetSchedAffinity(proc->Thread(), conf.cpuset, conf.affinity,
                      static_cast<int>(proc_idx));
   }
-  // 调度策略默认 SCHED_OTHER，nice 值 0
-  // 若需要可扩展 SchedulerConf 增加 policy/prio 字段
-  SetSchedPolicy(proc->Thread(), "SCHED_OTHER", 0, proc->Tid().load());
+  SetSchedPolicy(proc->Thread(), conf.processor_policy, conf.processor_prio,
+                 proc->Tid().load());
 }
 
 // ----------------------------------------------------------------------

@@ -67,6 +67,7 @@ class Scheduler {
 
   // 获取 Processor 数量
   size_t ProcessorCount() const { return processors_.size(); }
+  bool IsStopped() const { return stop_.load(); }
 
  private:
   // 为每个 Processor 创建 ClassicContext 并启动线程

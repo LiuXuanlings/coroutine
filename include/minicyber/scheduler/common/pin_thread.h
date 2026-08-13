@@ -16,7 +16,7 @@ void ParseCpuset(const std::string& str, std::vector<int>* cpuset);
 // 设置线程的 CPU 亲和性。
 //   affinity == "range": 线程可在 cpus 列表中的任意 CPU 上运行
 //   affinity == "1to1":  线程绑定到 cpus[cpu_id] 单个 CPU
-//   cpu_id: 仅 1to1 模式使用，默认 -1 表示取 cpus[0]
+//   cpu_id: 仅 1to1 模式使用；无有效索引时不修改亲和性
 void SetSchedAffinity(std::thread* thread, const std::vector<int>& cpus,
                       const std::string& affinity, int cpu_id = -1);
 
