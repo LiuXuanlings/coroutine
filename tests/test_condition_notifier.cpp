@@ -4,6 +4,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <atomic>
+#include <array>
 #include <chrono>
 #include <thread>
 
@@ -109,6 +111,39 @@ TEST(ConditionNotifierTest, MultipleNotifyInOrder) {
   CleanupShm(n.key());
 }
 
+TEST(ConditionNotifierTest, ConcurrentPublishersCommitEveryNotification) {
+  ConditionNotifier n;
+  CleanupShm(n.key());
+  ASSERT_TRUE(n.Init());
+  constexpr uint32_t kPublishers = 4;
+  constexpr uint32_t kMessagesPerPublisher = 32;
+  std::vector<std::thread> publishers;
+  for (uint32_t publisher = 0; publisher < kPublishers; ++publisher) {
+    publishers.emplace_back([&n, publisher]() {
+      for (uint32_t message = 0; message < kMessagesPerPublisher; ++message) {
+        ASSERT_TRUE(n.Notify({publisher, message, 123}));
+      }
+    });
+  }
+  for (auto& publisher : publishers) {
+    publisher.join();
+  }
+
+  std::array<uint32_t, kPublishers> received{};
+  for (uint32_t i = 0; i < kPublishers * kMessagesPerPublisher; ++i) {
+    ReadableInfo got;
+    ASSERT_TRUE(n.Listen(100, &got));
+    ASSERT_LT(got.host_id, kPublishers);
+    ASSERT_EQ(got.channel_id, 123u);
+    ++received[got.host_id];
+  }
+  for (uint32_t publisher = 0; publisher < kPublishers; ++publisher) {
+    EXPECT_EQ(received[publisher], kMessagesPerPublisher);
+  }
+  n.Shutdown();
+  CleanupShm(n.key());
+}
+
 // 超过 kBufLength 条后，最早的若干条被覆盖；
 // Listen 的 fast-forward 语义：next_seq 落后时跳到槽位实际 seq，
 // 因此读出的是"当前槽位里还存活"的那批，按 seq 顺序。
@@ -158,6 +193,52 @@ TEST(ConditionNotifierTest, ShutdownIdempotent) {
   n.Shutdown();
   n.Shutdown();
   SUCCEED();
+  CleanupShm(n.key());
+}
+
+TEST(ConditionNotifierTest, InfiniteListenWaitsUntilNotification) {
+  ConditionNotifier n;
+  CleanupShm(n.key());
+  ASSERT_TRUE(n.Init());
+
+  ReadableInfo got;
+  std::atomic<bool> received{false};
+  std::thread listener([&]() {
+    received.store(n.Listen(-1, &got), std::memory_order_release);
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  EXPECT_FALSE(received.load(std::memory_order_acquire));
+  ASSERT_TRUE(n.Notify({77, 5, 88}));
+  listener.join();
+
+  EXPECT_TRUE(received.load(std::memory_order_acquire));
+  EXPECT_EQ(got.host_id, 77u);
+  EXPECT_EQ(got.block_index, 5u);
+  EXPECT_EQ(got.channel_id, 88u);
+  n.Shutdown();
+  CleanupShm(n.key());
+}
+
+TEST(ConditionNotifierTest, ShutdownWaitsForInfiniteListenToExit) {
+  ConditionNotifier n;
+  CleanupShm(n.key());
+  ASSERT_TRUE(n.Init());
+
+  std::atomic<bool> listener_started{false};
+  std::atomic<bool> listener_returned{false};
+  std::thread listener([&]() {
+    listener_started.store(true, std::memory_order_release);
+    ReadableInfo ignored;
+    EXPECT_FALSE(n.Listen(-1, &ignored));
+    listener_returned.store(true, std::memory_order_release);
+  });
+  while (!listener_started.load(std::memory_order_acquire)) {
+    std::this_thread::yield();
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  n.Shutdown();
+  listener.join();
+  EXPECT_TRUE(listener_returned.load(std::memory_order_acquire));
   CleanupShm(n.key());
 }
 

@@ -32,13 +32,14 @@ ConditionNotifier::ConditionNotifier() {
 ConditionNotifier::~ConditionNotifier() { Shutdown(); }
 
 bool ConditionNotifier::Init() {
-  if (shutdown_.load()) return false;
-  if (indicator_ != nullptr) return true;  // 已初始化
+  std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+  if (shutdown_.load(std::memory_order_acquire)) return false;
+  if (indicator_ != nullptr) return true;
   if (!OpenOrCreate()) {
     shutdown_.store(true);
     return false;
   }
-  next_seq_ = indicator_->next_seq.load();
+  next_seq_ = indicator_->next_seq.load(std::memory_order_acquire);
   return true;
 }
 
@@ -75,7 +76,7 @@ bool ConditionNotifier::OpenOrCreate() {
 }
 
 bool ConditionNotifier::OpenOnly() {
-  int shmid = ::shmget(key_, 0, 0644);// when size=0, it will return the existing segment id if it exists, otherwise it will return -1 and set errno to ENOENT
+  int shmid = ::shmget(key_, shm_size_, 0644);
   if (shmid == -1) return false;
 
   managed_shm_ = ::shmat(shmid, nullptr, 0);// attach the shared memory segment to the process's address space
@@ -105,55 +106,98 @@ void ConditionNotifier::Reset() {
 }
 
 bool ConditionNotifier::Notify(const ReadableInfo& info) {
-  if (shutdown_.load() || indicator_ == nullptr) return false;
-  uint64_t seq = indicator_->next_seq.fetch_add(1);
+  if (!BeginOperation()) return false;
+  struct OperationGuard {
+    ConditionNotifier* notifier;
+    ~OperationGuard() { notifier->EndOperation(); }
+  } guard{this};
+
+  while (indicator_->writer_lock.test_and_set(std::memory_order_acquire)) {
+    std::this_thread::yield();
+  }
+  struct WriterGuard {
+    std::atomic_flag* lock;
+    ~WriterGuard() { lock->clear(std::memory_order_release); }
+  } writer_guard{&indicator_->writer_lock};
+
+  const uint64_t seq = indicator_->next_seq.load(std::memory_order_relaxed);
   uint64_t idx = seq % kBufLength;
   indicator_->infos[idx] = info;
-  indicator_->seqs[idx] = seq;
+  indicator_->seqs[idx].store(seq, std::memory_order_release);
+  indicator_->next_seq.store(seq + 1, std::memory_order_release);
   return true;
 }
 
 bool ConditionNotifier::Listen(int timeout_ms, ReadableInfo* info) {
-  if (info == nullptr || shutdown_.load() || indicator_ == nullptr) return false;
+  if (info == nullptr || !BeginOperation()) return false;
+  struct OperationGuard {
+    ConditionNotifier* notifier;
+    ~OperationGuard() { notifier->EndOperation(); }
+  } guard{this};
 
-  // timeout_ms = -1 视为永久；这里用一个很大的 int 上限近似
-  int64_t remaining_us = (timeout_ms < 0) ? INT64_MAX : (int64_t)timeout_ms * 1000;
+  const auto deadline = timeout_ms < 0
+                            ? std::chrono::steady_clock::time_point::max()
+                            : std::chrono::steady_clock::now() +
+                                  std::chrono::milliseconds(timeout_ms);
 
-  while (!shutdown_.load()) {
-    uint64_t seq = indicator_->next_seq.load();
-        if (seq != next_seq_) {
+  while (!shutdown_.load(std::memory_order_acquire)) {
+    const uint64_t seq = indicator_->next_seq.load(std::memory_order_acquire);
+    if (seq != next_seq_) {
       // 计算当前期望序列号对应的环形槽位，通过槽内真实序列号校验数据有效性
       // 分三种场景处理：
       // 1. actual_seq == next_seq_：正常顺序消费，读取数据后消费进度+1
       // 2. actual_seq >  next_seq_：消费者落后过多，历史数据已被新消息覆盖
       //    触发 fast-forward 快进：直接对齐到槽位当前有效序列号，跳过全部丢失的历史消息
-      // 3. actual_seq <  next_seq_：槽位处于半写状态
-      //    生产者写入顺序为「先更新全局 next_seq，再填充槽位数据和seq」
-      //    此时槽内仍是旧数据，跳过本轮轮询，等待下一次检查
-      auto idx = next_seq_ % kBufLength;
-      uint64_t actual_seq = indicator_->seqs[idx];
-      if (actual_seq >= next_seq_) {
+      // 3. actual_seq < next_seq_：读到了未提交或已被重写的槽位，等待
+      //    下一个已发布序列或由 fast-forward 处理覆盖窗口。
+      const auto idx = next_seq_ % kBufLength;
+      const uint64_t actual_seq =
+          indicator_->seqs[idx].load(std::memory_order_acquire);
+      if (actual_seq == next_seq_) {
+        *info = indicator_->infos[idx];
+        ++next_seq_;
+        return true;
+      }
+      if (actual_seq != kUnpublishedSeq && actual_seq > next_seq_) {
         next_seq_ = actual_seq;
         *info = indicator_->infos[idx];
         ++next_seq_;
         return true;
       }
-      // 半写状态跳过，继续下一轮轮询
     }
 
-    if (remaining_us <= 0) return false;
-    int64_t sleep_us = (remaining_us < 50) ? remaining_us : 50;
-    std::this_thread::sleep_for(std::chrono::microseconds(sleep_us));
-    remaining_us -= sleep_us;
+    if (timeout_ms == 0 || std::chrono::steady_clock::now() >= deadline) {
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::microseconds(50));
   }
   return false;
 }
 
 void ConditionNotifier::Shutdown() {
-  if (shutdown_.exchange(true)) return;
-  // 与 CyberRT 一致：留一点时间让对端最后读一次
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  {
+    std::unique_lock<std::mutex> lock(lifecycle_mutex_);
+    if (shutdown_.exchange(true, std::memory_order_acq_rel)) return;
+    operations_finished_.wait(lock, [this]() { return active_operations_ == 0; });
+  }
   Reset();
+}
+
+bool ConditionNotifier::BeginOperation() {
+  std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+  if (shutdown_.load(std::memory_order_acquire) || indicator_ == nullptr) {
+    return false;
+  }
+  ++active_operations_;
+  return true;
+}
+
+void ConditionNotifier::EndOperation() {
+  std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+  --active_operations_;
+  if (active_operations_ == 0) {
+    operations_finished_.notify_all();
+  }
 }
 
 }  // namespace transport
