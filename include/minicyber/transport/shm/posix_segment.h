@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -90,6 +91,9 @@ class PosixSegment : public Segment {
 
   // 计算段总大小
   size_t TotalSize() const;
+  bool HasValidLayout(size_t mapped_size, uint64_t ceiling_msg_size,
+                      uint32_t* block_num) const;
+  uint32_t Detach();
   // 计算第 index 个 block 的 payload 起始地址
   uint8_t* BlockBufAddr(uint32_t index);
 
@@ -102,6 +106,7 @@ class PosixSegment : public Segment {
   State* state_ = nullptr;  // 位于 mem_ 偏移 0
   Block* blocks_ = nullptr; // 位于 mem_ + sizeof(State)
   bool opened_ = false;
+  std::mutex lifecycle_mutex_;
 };
 
 }  // namespace transport

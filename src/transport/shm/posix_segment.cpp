@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cerrno>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <new>
 
@@ -148,12 +149,19 @@ PosixSegment::~PosixSegment() { Destroy(); }
 
 size_t PosixSegment::TotalSize() const {
   // [State][Block[block_num]][block_buf_size * block_num]
-  return sizeof(State) + sizeof(Block) * block_num_ +
-         ceiling_msg_size_ * block_num_;
+  if (block_num_ == 0 || ceiling_msg_size_ == 0 ||
+      block_num_ > (std::numeric_limits<size_t>::max() - sizeof(State)) /
+                       (sizeof(Block) + ceiling_msg_size_)) {
+    return 0;
+  }
+  return sizeof(State) +
+         static_cast<size_t>(block_num_) * (sizeof(Block) + ceiling_msg_size_);
 }
 
 bool PosixSegment::Open() {
+  std::lock_guard<std::mutex> lock(lifecycle_mutex_);
   if (opened_) return true;
+  if (total_size_ == 0) return false;
   return OpenOrCreate();
 }
 
@@ -193,14 +201,8 @@ bool PosixSegment::OpenOrCreate() {
     return false;
   }
 
-  // 放置构造 State
+  // Place the control objects only after the complete mapping exists.
   state_ = new (mem_) State(ceiling_msg_size_);
-  if (state_ == nullptr) {
-    munmap(mem_, total_size_);
-    mem_ = nullptr;
-    shm_unlink(shm_name_.c_str());
-    return false;
-  }
 
   // 放置构造 Block 数组
   blocks_ = reinterpret_cast<Block*>(static_cast<char*>(mem_) + sizeof(State));
@@ -228,20 +230,27 @@ bool PosixSegment::OpenOnly() {
     close(fd);
     return false;
   }
-  total_size_ = static_cast<size_t>(file_attr.st_size);
+  const size_t mapped_size = static_cast<size_t>(file_attr.st_size);
+  if (mapped_size < sizeof(State)) {
+    close(fd);
+    return false;
+  }
 
-  mem_ = mmap(nullptr, total_size_, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  mem_ = mmap(nullptr, mapped_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
   close(fd);
   if (mem_ == MAP_FAILED) {
     mem_ = nullptr;
     return false;
   }
 
-  // 复用已有 State
+  // Reuse the control block only after validating the complete mapped layout.
   state_ = reinterpret_cast<State*>(mem_);
-  if (state_ == nullptr) {
-    munmap(mem_, total_size_);
+  uint32_t mapped_block_num = 0;
+  const uint64_t mapped_ceiling_msg_size = state_->ceiling_msg_size();
+  if (!HasValidLayout(mapped_size, mapped_ceiling_msg_size, &mapped_block_num)) {
+    munmap(mem_, mapped_size);
     mem_ = nullptr;
+    state_ = nullptr;
     return false;
   }
 
@@ -249,23 +258,21 @@ bool PosixSegment::OpenOnly() {
   blocks_ = reinterpret_cast<Block*>(static_cast<char*>(mem_) + sizeof(State));
 
   // 同步 ceiling_msg_size / block_num 从已有 State
-  ceiling_msg_size_ = state_->ceiling_msg_size();
-  // block_num_ 从段大小反推：block_num = (total - sizeof(State)) /
-  // (sizeof(Block) + ceiling_msg_size)
-  if (ceiling_msg_size_ > 0) {
-    block_num_ = static_cast<uint32_t>(
-        (total_size_ - sizeof(State)) / (sizeof(Block) + ceiling_msg_size_));
-  }
+  total_size_ = mapped_size;
+  ceiling_msg_size_ = mapped_ceiling_msg_size;
+  block_num_ = mapped_block_num;
 
   state_->IncreaseReferenceCounts();
   opened_ = true;
   return true;
 }
 
-void PosixSegment::Close() {
-  if (!opened_) return;
+uint32_t PosixSegment::Detach() {
+  if (!opened_) return 0;
+  uint32_t remaining_references = 0;
   if (state_ != nullptr) {
     state_->DecreaseReferenceCounts();
+    remaining_references = state_->reference_counts();
   }
   if (mem_ != nullptr) {
     munmap(mem_, total_size_);
@@ -274,14 +281,42 @@ void PosixSegment::Close() {
   state_ = nullptr;
   blocks_ = nullptr;
   opened_ = false;
+  return remaining_references;
+}
+
+void PosixSegment::Close() {
+  std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+  Detach();
 }
 
 void PosixSegment::Destroy() {
-  Close();
-  if (!shm_name_.empty()) {
+  std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+  if (!opened_) return;
+  const uint32_t remaining_references = Detach();
+  if (remaining_references == 0 && !shm_name_.empty()) {
     shm_unlink(shm_name_.c_str());
     UnregisterShmName(shm_name_);
   }
+}
+
+bool PosixSegment::HasValidLayout(size_t mapped_size,
+                                  uint64_t ceiling_msg_size,
+                                  uint32_t* block_num) const {
+  if (block_num == nullptr || ceiling_msg_size == 0 ||
+      mapped_size <= sizeof(State)) {
+    return false;
+  }
+  const size_t block_size = sizeof(Block) + static_cast<size_t>(ceiling_msg_size);
+  const size_t payload_size = mapped_size - sizeof(State);
+  if (block_size == 0 || payload_size % block_size != 0) {
+    return false;
+  }
+  const size_t count = payload_size / block_size;
+  if (count == 0 || count > std::numeric_limits<uint32_t>::max()) {
+    return false;
+  }
+  *block_num = static_cast<uint32_t>(count);
+  return true;
 }
 
 void* PosixSegment::GetMemPtr() { return mem_; }

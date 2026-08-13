@@ -271,3 +271,54 @@ TEST(PosixSegmentTest, ReleaseRejectsForeignBlockView) {
   seg.ReleaseWrittenBlock(blocked);
   seg.Destroy();
 }
+
+TEST(PosixSegmentTest, DestroyKeepsSharedSegmentUntilLastReference) {
+  const uint64_t CH = 91013;
+  const std::string name = "minicyber_" + std::to_string(CH);
+  UnlinkShm(name);
+  PosixSegment creator(CH, 64, 2);
+  PosixSegment peer(CH, 64, 2);
+  ASSERT_TRUE(creator.Open());
+  ASSERT_TRUE(peer.Open());
+  ASSERT_EQ(creator.state()->reference_counts(), 2u);
+
+  creator.Destroy();
+  EXPECT_TRUE(ShmFileExists(name));
+  ASSERT_NE(peer.state(), nullptr);
+  EXPECT_EQ(peer.state()->reference_counts(), 1u);
+  peer.Destroy();
+  EXPECT_FALSE(ShmFileExists(name));
+}
+
+TEST(PosixSegmentTest, RejectsInvalidConfigurationWithoutCreatingSegment) {
+  const uint64_t zero_size_channel = 91014;
+  const uint64_t zero_blocks_channel = 91015;
+  const std::string zero_size_name =
+      "minicyber_" + std::to_string(zero_size_channel);
+  const std::string zero_blocks_name =
+      "minicyber_" + std::to_string(zero_blocks_channel);
+  UnlinkShm(zero_size_name);
+  UnlinkShm(zero_blocks_name);
+
+  PosixSegment zero_size(zero_size_channel, 0, 1);
+  PosixSegment zero_blocks(zero_blocks_channel, 64, 0);
+  EXPECT_FALSE(zero_size.Open());
+  EXPECT_FALSE(zero_blocks.Open());
+  EXPECT_FALSE(ShmFileExists(zero_size_name));
+  EXPECT_FALSE(ShmFileExists(zero_blocks_name));
+}
+
+TEST(PosixSegmentTest, RejectsMalformedExistingMapping) {
+  const uint64_t CH = 91016;
+  const std::string name = "minicyber_" + std::to_string(CH);
+  UnlinkShm(name);
+  const int fd = ::shm_open(name.c_str(), O_RDWR | O_CREAT | O_EXCL, 0644);
+  ASSERT_GE(fd, 0);
+  ASSERT_EQ(::ftruncate(fd, static_cast<off_t>(sizeof(State))), 0);
+  ::close(fd);
+
+  PosixSegment seg(CH, 64, 1);
+  EXPECT_FALSE(seg.Open());
+  EXPECT_EQ(seg.GetMemPtr(), nullptr);
+  ::shm_unlink(name.c_str());
+}
