@@ -116,7 +116,7 @@ TEST(ShmDispatcherTest, WriteNotifyThenReceive) {
 
   std::atomic<int> fired{0};
   auto notifier = std::make_shared<Notifier>();
-  notifier->callback = [&]() { ++fired; };
+  notifier->SetCallback([&]() { ++fired; });
   DataNotifier::Instance()->AddNotifier(CH, notifier);
 
   auto* d = ShmDispatcher::Instance();

@@ -67,13 +67,13 @@ class ShmReceiver : public Receiver<std::string> {
 
     // 3. 注册 DataNotifier 回调：数据到达时从 ChannelBuffer 取最新消息回调上层
     notifier_ = std::make_shared<data::Notifier>();
-    notifier_->callback = [this]() {
+    notifier_->SetCallback([this]() {
       if (!enabled_ || cb_ == nullptr) return;
       std::shared_ptr<std::string> msg;
       if (cb_->Latest(msg)) {
         OnNewMessage(msg);
       }
-    };
+    });
     data::DataNotifier::Instance()->AddNotifier(channel_id_, notifier_);
 
     enabled_ = true;
@@ -83,8 +83,11 @@ class ShmReceiver : public Receiver<std::string> {
     if (!enabled_) return;
     enabled_ = false;
     if (notifier_) {
-      notifier_->callback = nullptr;
+      data::DataNotifier::Instance()->RemoveNotifier(channel_id_, notifier_);
       notifier_.reset();
+    }
+    if (cb_) {
+      data::DataDispatcher<std::string>::Instance()->RemoveBuffer(*cb_);
     }
     cb_.reset();
   }

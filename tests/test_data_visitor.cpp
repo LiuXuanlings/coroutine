@@ -38,7 +38,7 @@ TEST(DataVisitorTest, TryFetchReturnsDispatchedMessage) {
   // Register a no-op notifier so Dispatch returns true (buffers are filled
   // regardless of Notify's return value, but we want the true path here).
   auto n = std::make_shared<minicyber::data::Notifier>();
-  n->callback = []() {};
+  n->SetCallback([]() {});
   DataNotifier::Instance()->AddNotifier(9002, n);
 
   auto msg = std::make_shared<int>(42);
@@ -51,7 +51,7 @@ TEST(DataVisitorTest, TryFetchReturnsDispatchedMessage) {
 TEST(DataVisitorTest, TryFetchAdvancesIndexAndSecondCallReturnsFalseWhenCaughtUp) {
   DataVisitor<int> dv(VisitorConfig{9003, 4});
   auto n = std::make_shared<minicyber::data::Notifier>();
-  n->callback = []() {};
+  n->SetCallback([]() {});
   DataNotifier::Instance()->AddNotifier(9003, n);
 
   DataDispatcher<int>::Instance()->Dispatch(9003, std::make_shared<int>(1));
@@ -65,7 +65,7 @@ TEST(DataVisitorTest, TryFetchAdvancesIndexAndSecondCallReturnsFalseWhenCaughtUp
 TEST(DataVisitorTest, TryFetchAcrossMultipleDispatches) {
   DataVisitor<int> dv(VisitorConfig{9004, 4});
   auto n = std::make_shared<minicyber::data::Notifier>();
-  n->callback = []() {};
+  n->SetCallback([]() {});
   DataNotifier::Instance()->AddNotifier(9004, n);
 
   // First dispatch, then TryFetch (consumer starts after producer).
@@ -98,6 +98,22 @@ TEST(DataVisitorTest, ChannelIdAndBufferAccessors) {
   EXPECT_EQ(dv.channel_id(), 9006u);
   // Buffer accessor exposes the underlying ChannelBuffer for diagnostics.
   EXPECT_EQ(dv.buffer().channel_id(), 9006u);
+}
+
+TEST(DataVisitorTest, DestructionUnregistersBufferAndNotifier) {
+  constexpr uint64_t kChannel = 9009;
+  std::atomic<int> callbacks{0};
+  {
+    DataVisitor<int> dv(VisitorConfig{kChannel, 4});
+    dv.RegisterNotifyCallback(
+        [&]() { callbacks.fetch_add(1, std::memory_order_relaxed); });
+    ASSERT_TRUE(DataDispatcher<int>::Instance()->Dispatch(
+        kChannel, std::make_shared<int>(1)));
+    EXPECT_EQ(callbacks.load(), 1);
+  }
+  EXPECT_FALSE(DataDispatcher<int>::Instance()->Dispatch(
+      kChannel, std::make_shared<int>(2)));
+  EXPECT_EQ(callbacks.load(), 1);
 }
 
 // ---------------------------------------------------------------------------

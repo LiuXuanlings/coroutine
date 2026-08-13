@@ -265,7 +265,7 @@ TEST(ComponentTest, ShutdownStopsProcessing) {
   
 //   | 时间线 | 发生了什么                                                                       |
 //   | --- | --------------------------------------------------------------------------- |
-//   | T1  | `comp->Shutdown()` → `Reader::Shutdown()` → `notifier_->callback = nullptr` |
+//   | T1  | `comp->Shutdown()` → `Reader::Shutdown()` → `RemoveNotifier()` |
 //   | T2  | `ShmDispatcher` 后台线程仍在运行（它不知道你 Shutdown 了）                                  |
 //   | T3  | `writer->Write("after_shutdown")` → 消息写入 SHM                                |
 //   | T4  | `ShmDispatcher::ThreadFunc` 被 `ConditionNotifier` 唤醒                        |

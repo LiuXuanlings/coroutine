@@ -53,6 +53,11 @@ class DataVisitor<M0, NullType, NullType, NullType> : public DataVisitorBase {
     data_notifier_->AddNotifier(buffer_.channel_id(), notifier_);
   }
 
+  ~DataVisitor() {
+    data_notifier_->RemoveNotifier(buffer_.channel_id(), notifier_);
+    DataDispatcher<M0>::Instance()->RemoveBuffer(buffer_);
+  }
+
   // Non-blocking fetch. Returns false when caught up.
   bool TryFetch(std::shared_ptr<M0>& m) {
     if (buffer_.Fetch(&next_msg_index_, m)) {
@@ -119,6 +124,9 @@ class DataVisitor<M0, M1, NullType, NullType> : public DataVisitorBase {
       delete data_fusion_;
       data_fusion_ = nullptr;
     }
+    data_notifier_->RemoveNotifier(buffer_m0_.channel_id(), notifier_);
+    DataDispatcher<M0>::Instance()->RemoveBuffer(buffer_m0_);
+    DataDispatcher<M1>::Instance()->RemoveBuffer(buffer_m1_);
   }
 
   // Non-blocking fusion fetch. Returns true and fills m0/m1 with the next

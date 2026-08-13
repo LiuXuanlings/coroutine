@@ -36,7 +36,7 @@ using minicyber::data::Notifier;
 // 的 Notify 返回 true（有订阅者）。
 static void RegisterNoopNotifier(uint64_t channel_id) {
   auto n = std::make_shared<Notifier>();
-  n->callback = []() {};
+  n->SetCallback([]() {});
   DataNotifier::Instance()->AddNotifier(channel_id, n);
 }
 

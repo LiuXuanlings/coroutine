@@ -67,13 +67,13 @@ class IntraReceiver : public Receiver<M> {
     // 注册 DataNotifier 回调：数据到达时从 ChannelBuffer 取最新消息回调上层。
     // 每次 Dispatch 填入一条消息并 Notify 一次，Latest() 取到的即本次到达的消息。
     notifier_ = std::make_shared<data::Notifier>();
-    notifier_->callback = [this]() {
+    notifier_->SetCallback([this]() {
       if (!this->enabled_ || cb_ == nullptr) return;
       std::shared_ptr<M> msg;
       if (cb_->Latest(msg)) {
         this->OnNewMessage(msg);
       }
-    };
+    });
     data::DataNotifier::Instance()->AddNotifier(this->channel_id_, notifier_);
 
     this->enabled_ = true;
@@ -82,9 +82,9 @@ class IntraReceiver : public Receiver<M> {
   void Disable() override {
     if (!this->enabled_) return;
     this->enabled_ = false;
-    // 重置回调（ChannelBuffer 销毁后 DataDispatcher 中的 weak_ptr 失效，自动跳过）
+    data::DataNotifier::Instance()->RemoveNotifier(this->channel_id_, notifier_);
+    data::DataDispatcher<M>::Instance()->RemoveBuffer(*cb_);
     if (notifier_) {
-      notifier_->callback = nullptr;
       notifier_.reset();
     }
     cb_.reset();

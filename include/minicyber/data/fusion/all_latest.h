@@ -63,7 +63,7 @@ class AllLatest : public DataFusion<M0, M1> {
     // 回调受 fusion buffer 的 mutex 保护，防止 DataFusion::Fusion()
     // 同时读 fusion buffer 导致 data race。
     notifier_ = std::make_shared<Notifier>();
-    notifier_->callback = [this]() {
+    notifier_->SetCallback([this]() {
       std::shared_ptr<M0> m0;
       std::shared_ptr<M1> m1;
       // primary + secondary 都必须有数据。这里只 check Latest 的返回值：
@@ -79,8 +79,12 @@ class AllLatest : public DataFusion<M0, M1> {
         std::lock_guard<std::mutex> lg(buffer_fusion_.Buffer()->Mutex());
         buffer_fusion_.Buffer()->Fill(data);
       }
-    };
+    });
     DataNotifier::Instance()->AddNotifier(buffer_m0_.channel_id(), notifier_);
+  }
+
+  ~AllLatest() override {
+    DataNotifier::Instance()->RemoveNotifier(buffer_m0_.channel_id(), notifier_);
   }
 
   /// 从 fusion buffer 取出一组融合数据。

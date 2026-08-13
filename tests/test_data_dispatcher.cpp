@@ -22,7 +22,7 @@ TEST(DataDispatcherTest, DispatchOnUnknownChannelReturnsFalse) {
 static void RegisterNoopNotifier(uint64_t channel_id) {
   auto* dn = DataNotifier::Instance();
   auto n = std::make_shared<Notifier>();
-  n->callback = []() {};
+  n->SetCallback([]() {});
   dn->AddNotifier(channel_id, n);
 }
 
@@ -98,7 +98,8 @@ TEST(DataDispatcherTest, DispatchFiresDataNotifierCallback) {
   auto* dn = DataNotifier::Instance();
   std::atomic<int> counter{0};
   auto n = std::make_shared<Notifier>();
-  n->callback = [&counter]() { counter.fetch_add(1, std::memory_order_relaxed); };
+  n->SetCallback(
+      [&counter]() { counter.fetch_add(1, std::memory_order_relaxed); });
   dn->AddNotifier(8004, n);
 
   auto buf = std::make_shared<CacheBuffer<std::shared_ptr<int>>>(4);
@@ -190,9 +191,9 @@ TEST(DataDispatcherTest, CallbackReentryDoesNotDeadlock) {
 
   // Channel 8008 callback dispatches onto channel 8009.
   auto n = std::make_shared<Notifier>();
-  n->callback = [&]() {
+  n->SetCallback([&]() {
     disp->Dispatch(8009, std::make_shared<int>(555));
-  };
+  });
   dn->AddNotifier(8008, n);
 
   auto buf8 = std::make_shared<CacheBuffer<std::shared_ptr<int>>>(4);

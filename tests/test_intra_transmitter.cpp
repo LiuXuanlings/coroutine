@@ -119,7 +119,7 @@ TEST(IntraTransmitterTest, TransmitFiresDataNotifier) {
   Sub sub(CH);
   std::atomic<int> fired{0};
   auto notifier = std::make_shared<Notifier>();
-  notifier->callback = [&]() { ++fired; };
+  notifier->SetCallback([&]() { ++fired; });
   DataNotifier::Instance()->AddNotifier(CH, notifier);
 
   IntraTransmitter<std::string> tx(CH);
