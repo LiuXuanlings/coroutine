@@ -1,0 +1,15 @@
+{
+  "schema": "minicyber_latency_v1",
+  "commit": "c9a724a637360847036e5186cbd1457fee61772e",
+  "source_dirty": true,
+  "timestamp_utc": "20260813T152452Z",
+  "kernel": "Linux 6.8.0-124-generic",
+  "machine": "x86_64",
+  "cpu_model": "AMD Ryzen 7 5800H with Radeon Graphics",
+  "compiler": "c++ (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0",
+  "warmup": 2000,
+  "samples": 10000,
+  "payload_bytes": [64, 1024, 65536],
+  "backends": ["intra", "pipe", "shm", "mutex_cv_queue"],
+  "csv": "latency_20260813T152452Z.csv"
+}

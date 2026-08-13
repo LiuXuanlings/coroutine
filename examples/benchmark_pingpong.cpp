@@ -18,6 +18,7 @@
 #include <unistd.h>
 
 #include "minicyber/node/node.h"
+#include "minicyber/transport/dispatcher/shm_dispatcher.h"
 #include "minicyber/transport/receiver/shm_receiver.h"
 #include "minicyber/transport/transmitter/shm_transmitter.h"
 
@@ -316,6 +317,7 @@ Result RunShm(const Options& options) {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     receiver.Disable();
+    minicyber::transport::ShmDispatcher::Instance()->Shutdown();
     if (!WriteAll(results[1], latencies.data(),
                   latencies.size() * sizeof(latencies.front()))) {
       _exit(1);

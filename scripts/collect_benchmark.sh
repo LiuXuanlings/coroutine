@@ -17,6 +17,11 @@ stamp=$(date -u +%Y%m%dT%H%M%SZ)
 csv="$output_dir/latency_${stamp}.csv"
 json="$output_dir/latency_${stamp}.json"
 commit=$(git rev-parse HEAD)
+if git diff --quiet; then
+  source_dirty=false
+else
+  source_dirty=true
+fi
 compiler=$(${CXX:-c++} --version 2>/dev/null | head -n 1 || true)
 
 "$benchmark" --payload-bytes 64 --warmup "$warmup" --samples "$samples" > "$csv"
@@ -29,6 +34,7 @@ done
   printf '{\n'
   printf '  "schema": "minicyber_latency_v1",\n'
   printf '  "commit": "%s",\n' "$commit"
+  printf '  "source_dirty": %s,\n' "$source_dirty"
   printf '  "timestamp_utc": "%s",\n' "$stamp"
   printf '  "kernel": "%s",\n' "$(uname -sr)"
   printf '  "machine": "%s",\n' "$(uname -m)"
