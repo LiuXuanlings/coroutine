@@ -1,7 +1,9 @@
 #ifndef MINICYBER_TRANSPORT_RECEIVER_INTRA_RECEIVER_H_
 #define MINICYBER_TRANSPORT_RECEIVER_INTRA_RECEIVER_H_
 
+#include <atomic>
 #include <memory>
+#include <mutex>
 
 #include "minicyber/data/channel_buffer.h"
 #include "minicyber/data/data_dispatcher.h"
@@ -56,43 +58,67 @@ class IntraReceiver : public Receiver<M> {
   ~IntraReceiver() override { Disable(); }
 
   void Enable() override {
-    if (this->enabled_) return;
+    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+    if (subscription_) return;
 
     // 创建 ChannelBuffer 并注册到 DataDispatcher（订阅 channel）
     auto buffer =
         std::make_shared<typename data::ChannelBuffer<M>::BufferType>(10);
-    cb_ = std::make_unique<data::ChannelBuffer<M>>(this->channel_id_, buffer);
-    data::DataDispatcher<M>::Instance()->AddBuffer(*cb_);
+    auto subscription = std::make_shared<Subscription>(this->channel_id_, buffer);
+    data::DataDispatcher<M>::Instance()->AddBuffer(subscription->channel_buffer);
 
     // 注册 DataNotifier 回调：数据到达时从 ChannelBuffer 取最新消息回调上层。
     // 每次 Dispatch 填入一条消息并 Notify 一次，Latest() 取到的即本次到达的消息。
-    notifier_ = std::make_shared<data::Notifier>();
-    notifier_->SetCallback([this]() {
-      if (!this->enabled_ || cb_ == nullptr) return;
+    std::weak_ptr<Subscription> weak_subscription(subscription);
+    subscription->notifier->SetCallback([this, weak_subscription]() {
+      auto subscription = weak_subscription.lock();
+      if (!subscription) return;
+      if (!subscription->active.load(std::memory_order_acquire)) return;
       std::shared_ptr<M> msg;
-      if (cb_->Latest(msg)) {
+      if (subscription->channel_buffer.Latest(msg) &&
+          subscription->active.load(std::memory_order_acquire)) {
         this->OnNewMessage(msg);
       }
     });
-    data::DataNotifier::Instance()->AddNotifier(this->channel_id_, notifier_);
+    data::DataNotifier::Instance()->AddNotifier(this->channel_id_,
+                                                subscription->notifier);
 
+    subscription_ = std::move(subscription);
     this->enabled_ = true;
+    subscription_->active.store(true, std::memory_order_release);
   }
 
   void Disable() override {
-    if (!this->enabled_) return;
-    this->enabled_ = false;
-    data::DataNotifier::Instance()->RemoveNotifier(this->channel_id_, notifier_);
-    data::DataDispatcher<M>::Instance()->RemoveBuffer(*cb_);
-    if (notifier_) {
-      notifier_.reset();
+    std::shared_ptr<Subscription> subscription;
+    {
+      std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+      if (!subscription_) return;
+      subscription = std::move(subscription_);
+      subscription->active.store(false, std::memory_order_release);
+      this->enabled_ = false;
     }
-    cb_.reset();
+
+    // RemoveNotifier waits for callbacks started by other threads. Do not hold
+    // lifecycle_mutex_ here: a listener may itself call Disable().
+    data::DataNotifier::Instance()->RemoveNotifier(this->channel_id_,
+                                                    subscription->notifier);
+    data::DataDispatcher<M>::Instance()->RemoveBuffer(subscription->channel_buffer);
   }
 
  private:
-  std::unique_ptr<data::ChannelBuffer<M>> cb_;
-  std::shared_ptr<data::Notifier> notifier_;
+  struct Subscription {
+    Subscription(uint64_t channel_id,
+                 const std::shared_ptr<typename data::ChannelBuffer<M>::BufferType>& buffer)
+        : channel_buffer(channel_id, buffer),
+          notifier(std::make_shared<data::Notifier>()) {}
+
+    data::ChannelBuffer<M> channel_buffer;
+    std::shared_ptr<data::Notifier> notifier;
+    std::atomic<bool> active{false};
+  };
+
+  std::mutex lifecycle_mutex_;
+  std::shared_ptr<Subscription> subscription_;
 };
 
 }  // namespace transport

@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "minicyber/transport/receiver/intra_receiver.h"
@@ -155,4 +157,100 @@ TEST(IntraReceiverTest, ChannelIsolation) {
   EXPECT_GE(rb.count.load(), 1);
   EXPECT_EQ(ra.msgs.back(), "A");
   EXPECT_EQ(rb.msgs.back(), "B");
+}
+
+TEST(IntraReceiverTest, DisableThenReenableRestoresSingleDelivery) {
+  const uint64_t CH = 89009;
+  Recorder rec;
+  IntraReceiver<std::string> rx(CH,
+      [&](const std::shared_ptr<std::string>& m) { rec.OnMsg(m); });
+  IntraTransmitter<std::string> tx(CH);
+  tx.Enable();
+
+  rx.Enable();
+  ASSERT_TRUE(tx.Transmit(std::make_shared<std::string>("first")));
+  rx.Disable();
+  ASSERT_TRUE(tx.Transmit(std::make_shared<std::string>("ignored")));
+  rx.Enable();
+  ASSERT_TRUE(tx.Transmit(std::make_shared<std::string>("second")));
+
+  EXPECT_EQ(rec.count.load(), 2);
+  ASSERT_EQ(rec.msgs.size(), 2u);
+  EXPECT_EQ(rec.msgs[0], "first");
+  EXPECT_EQ(rec.msgs[1], "second");
+}
+
+TEST(IntraReceiverTest, ConcurrentEnableInstallsOneListener) {
+  const uint64_t CH = 89011;
+  Recorder rec;
+  IntraReceiver<std::string> rx(CH,
+      [&](const std::shared_ptr<std::string>& m) { rec.OnMsg(m); });
+  std::thread first_enable([&]() { rx.Enable(); });
+  std::thread second_enable([&]() { rx.Enable(); });
+  first_enable.join();
+  second_enable.join();
+
+  IntraTransmitter<std::string> tx(CH);
+  tx.Enable();
+  ASSERT_TRUE(tx.Transmit(std::make_shared<std::string>("once")));
+  EXPECT_EQ(rec.count.load(), 1);
+}
+
+TEST(IntraReceiverTest, ListenerCanDisableItself) {
+  const uint64_t CH = 89012;
+  std::atomic<int> callbacks{0};
+  IntraReceiver<std::string>* receiver = nullptr;
+  IntraReceiver<std::string> rx(CH, [&](const std::shared_ptr<std::string>&) {
+    ++callbacks;
+    receiver->Disable();
+  });
+  receiver = &rx;
+  rx.Enable();
+
+  IntraTransmitter<std::string> tx(CH);
+  tx.Enable();
+  ASSERT_TRUE(tx.Transmit(std::make_shared<std::string>("first")));
+  EXPECT_FALSE(rx.enabled());
+  ASSERT_TRUE(tx.Transmit(std::make_shared<std::string>("second")));
+  EXPECT_EQ(callbacks.load(), 1);
+}
+
+TEST(IntraReceiverTest, DisableWaitsForInFlightCallback) {
+  const uint64_t CH = 89010;
+  std::atomic<int> callbacks{0};
+  std::atomic<bool> entered{false};
+  std::atomic<bool> release{false};
+  IntraReceiver<std::string> rx(CH,
+      [&](const std::shared_ptr<std::string>&) {
+        ++callbacks;
+        entered.store(true, std::memory_order_release);
+        while (!release.load(std::memory_order_acquire)) {
+          std::this_thread::yield();
+        }
+      });
+  IntraTransmitter<std::string> tx(CH);
+  rx.Enable();
+  tx.Enable();
+
+  std::thread publisher([&]() {
+    EXPECT_TRUE(tx.Transmit(std::make_shared<std::string>("in-flight")));
+  });
+  while (!entered.load(std::memory_order_acquire)) {
+    std::this_thread::yield();
+  }
+
+  std::atomic<bool> disable_returned{false};
+  std::thread disabler([&]() {
+    rx.Disable();
+    disable_returned.store(true, std::memory_order_release);
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  EXPECT_FALSE(disable_returned.load(std::memory_order_acquire));
+  release.store(true, std::memory_order_release);
+  publisher.join();
+  disabler.join();
+
+  ASSERT_TRUE(disable_returned.load(std::memory_order_acquire));
+  ASSERT_TRUE(tx.Transmit(std::make_shared<std::string>("after-disable")));
+  EXPECT_EQ(callbacks.load(), 1);
 }

@@ -2,6 +2,7 @@
 #define MINICYBER_TRANSPORT_TRANSMITTER_INTRA_TRANSMITTER_H_
 
 #include <memory>
+#include <mutex>
 
 #include "minicyber/transport/dispatcher/intra_dispatcher.h"
 #include "minicyber/transport/transmitter/transmitter.h"
@@ -32,14 +33,19 @@ class IntraTransmitter : public Transmitter<M> {
   ~IntraTransmitter() override { Disable(); }
 
   void Enable() override {
+    std::lock_guard<std::recursive_mutex> lock(lifecycle_mutex_);
     if (this->enabled_) return;
     // IntraDispatcher 是单例，无需持有；标记启用即可。
     this->enabled_ = true;
   }
 
-  void Disable() override { this->enabled_ = false; }
+  void Disable() override {
+    std::lock_guard<std::recursive_mutex> lock(lifecycle_mutex_);
+    this->enabled_ = false;
+  }
 
   bool Transmit(const std::shared_ptr<M>& msg) override {
+    std::lock_guard<std::recursive_mutex> lock(lifecycle_mutex_);
     if (!this->enabled_) return false;
     // 与 CyberRT IntraTransmitter 一致：Dispatch 把消息投递进数据总线
     // （填充所有 ChannelBuffer + 触发 DataNotifier），无论是否有订阅者都
@@ -48,6 +54,9 @@ class IntraTransmitter : public Transmitter<M> {
     this->NextSeqNum();
     return true;
   }
+
+ private:
+  std::recursive_mutex lifecycle_mutex_;
 };
 
 }  // namespace transport

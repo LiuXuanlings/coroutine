@@ -145,3 +145,13 @@ TEST(IntraTransmitterTest, ChannelIsolation) {
   EXPECT_EQ(*ga, "A");
   EXPECT_EQ(*gb, "B");
 }
+
+TEST(IntraTransmitterTest, DisableBlocksSubsequentTransmitWithoutSequenceAdvance) {
+  const uint64_t CH = 87011;
+  IntraTransmitter<std::string> tx(CH);
+  tx.Enable();
+  ASSERT_TRUE(tx.Transmit(std::make_shared<std::string>("before-disable")));
+  tx.Disable();
+  EXPECT_FALSE(tx.Transmit(std::make_shared<std::string>("after-disable")));
+  EXPECT_EQ(tx.seq_num(), 1u);
+}
