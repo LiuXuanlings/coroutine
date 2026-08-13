@@ -229,3 +229,45 @@ TEST(PosixSegmentTest, ForkCrossProcessWrite) {
   EXPECT_EQ(got, 0xCAFEBABEu);
   seg.Destroy();
 }
+
+TEST(PosixSegmentTest, WriteAcquisitionSkipsBusyBlocks) {
+  const uint64_t CH = 91011;
+  UnlinkShm("minicyber_" + std::to_string(CH));
+  PosixSegment seg(CH, 64, 2);
+  ASSERT_TRUE(seg.Open());
+
+  minicyber::transport::ShmWritableBlock first;
+  minicyber::transport::ShmWritableBlock second;
+  minicyber::transport::ShmWritableBlock third;
+  ASSERT_TRUE(seg.AcquireBlockToWrite(8, &first));
+  ASSERT_TRUE(seg.AcquireBlockToWrite(8, &second));
+  EXPECT_NE(first.index, second.index);
+  EXPECT_FALSE(seg.AcquireBlockToWrite(8, &third));
+
+  seg.ReleaseWrittenBlock(first);
+  ASSERT_TRUE(seg.AcquireBlockToWrite(8, &third));
+  seg.ReleaseWrittenBlock(second);
+  seg.ReleaseWrittenBlock(third);
+  seg.Destroy();
+}
+
+TEST(PosixSegmentTest, ReleaseRejectsForeignBlockView) {
+  const uint64_t CH = 91012;
+  UnlinkShm("minicyber_" + std::to_string(CH));
+  PosixSegment seg(CH, 64, 1);
+  ASSERT_TRUE(seg.Open());
+
+  minicyber::transport::ShmWritableBlock writable;
+  ASSERT_TRUE(seg.AcquireBlockToWrite(8, &writable));
+  minicyber::transport::ShmWritableBlock foreign = writable;
+  Block unrelated;
+  foreign.block = &unrelated;
+  seg.ReleaseWrittenBlock(foreign);
+
+  minicyber::transport::ShmWritableBlock blocked;
+  EXPECT_FALSE(seg.AcquireBlockToWrite(8, &blocked));
+  seg.ReleaseWrittenBlock(writable);
+  EXPECT_TRUE(seg.AcquireBlockToWrite(8, &blocked));
+  seg.ReleaseWrittenBlock(blocked);
+  seg.Destroy();
+}

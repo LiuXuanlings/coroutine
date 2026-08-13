@@ -60,6 +60,16 @@ class Segment {
   virtual void* GetMemPtr() = 0;
   virtual size_t GetSize() = 0;
 
+  // Block ownership remains with the segment. A successful acquire grants the
+  // caller a temporary view which must be returned through the matching
+  // release function before the segment can reuse that block.
+  virtual bool AcquireBlockToWrite(size_t msg_size,
+                                   WritableBlock* writable_block) = 0;
+  virtual void ReleaseWrittenBlock(const WritableBlock& writable_block) = 0;
+  virtual bool AcquireBlockToRead(uint32_t index,
+                                  ReadableBlock* readable_block) = 0;
+  virtual void ReleaseReadBlock(const ReadableBlock& readable_block) = 0;
+
   // 元信息
   uint64_t channel_id() const { return channel_id_; }
 

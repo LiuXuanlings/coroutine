@@ -298,24 +298,37 @@ uint8_t* PosixSegment::BlockBufAddr(uint32_t index) {
 }
 
 bool PosixSegment::AcquireBlockToWrite(size_t msg_size, ShmWritableBlock* wb) {
-  if (!opened_ || wb == nullptr || msg_size > ceiling_msg_size_) return false;
-
-  // 简单策略：用 State 的 seq 取模决定下一个写块索引
-  // 这样多个写者通过原子 seq 自然错开；同进程内单写者时直接递增。
-  uint32_t index = 0;
-  if (state_ != nullptr) {
-    index = state_->FetchAddSeq(1) % block_num_;
+  if (!opened_ || wb == nullptr || state_ == nullptr || blocks_ == nullptr ||
+      block_num_ == 0 || msg_size > ceiling_msg_size_) {
+    return false;
   }
-  Block* blk = &blocks_[index];
-  if (!blk->TryLockForWrite()) return false;
-  wb->index = index;
-  wb->block = blk;
-  wb->buf = BlockBufAddr(index);
-  return true;
+
+  // A busy block must not make a publish fail while another block is free.
+  // Each candidate consumes a sequence value so concurrent writers naturally
+  // spread their probes across the ring.
+  for (uint32_t attempt = 0; attempt < block_num_; ++attempt) {
+    const uint32_t index = state_->FetchAddSeq(1) % block_num_;
+    Block* blk = &blocks_[index];
+    if (!blk->TryLockForWrite()) {
+      continue;
+    }
+    wb->index = index;
+    wb->block = blk;
+    wb->buf = BlockBufAddr(index);
+    if (wb->buf != nullptr) {
+      return true;
+    }
+    blk->ReleaseWriteLock();
+    return false;
+  }
+  return false;
 }
 
 void PosixSegment::ReleaseWrittenBlock(const ShmWritableBlock& wb) {
-  if (wb.block == nullptr) return;
+  if (!opened_ || wb.index >= block_num_ || blocks_ == nullptr ||
+      wb.block != &blocks_[wb.index]) {
+    return;
+  }
   wb.block->ReleaseWriteLock();
 }
 
@@ -330,7 +343,10 @@ bool PosixSegment::AcquireBlockToRead(uint32_t index, ShmReadableBlock* rb) {
 }
 
 void PosixSegment::ReleaseReadBlock(const ShmReadableBlock& rb) {
-  if (rb.block == nullptr) return;
+  if (!opened_ || rb.index >= block_num_ || blocks_ == nullptr ||
+      rb.block != &blocks_[rb.index]) {
+    return;
+  }
   rb.block->ReleaseReadLock();
 }
 
