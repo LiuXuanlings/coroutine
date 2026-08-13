@@ -121,13 +121,15 @@ class Node {
   template <typename T>
   std::shared_ptr<Reader<T>> CreateReader(
       const std::string& channel,
-      const typename Reader<T>::CallbackFunc& callback = nullptr) {
+      const typename Reader<T>::CallbackFunc& callback = nullptr,
+      uint32_t pending_queue_size = Reader<T>::kDefaultPendingQueueSize) {
     std::lock_guard<std::mutex> lg(endpoints_mutex_);
     if (shutdown_) return nullptr;
     if (readers_.find(channel) != readers_.end()) {
       return nullptr;  // 同 channel 不重复创建
     }
-    auto r = channel_impl_->template CreateReader<T>(channel, callback);
+    auto r = channel_impl_->template CreateReader<T>(channel, callback,
+                                                      pending_queue_size);
     if (r == nullptr) return nullptr;
     auto holder = std::make_shared<ReaderHolder<T>>(r);
     readers_[channel] = holder;

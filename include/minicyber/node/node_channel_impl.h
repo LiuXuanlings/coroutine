@@ -28,9 +28,11 @@ class NodeChannelImpl {
   template <typename T>
   std::shared_ptr<Reader<T>> CreateReader(
       const std::string& channel,
-      const typename Reader<T>::CallbackFunc& callback) const {
+      const typename Reader<T>::CallbackFunc& callback,
+      uint32_t pending_queue_size = Reader<T>::kDefaultPendingQueueSize) const {
     if (channel.empty()) return nullptr;
-    auto reader = std::make_shared<Reader<T>>(node_name_, channel, callback);
+    auto reader = std::make_shared<Reader<T>>(node_name_, channel, callback,
+                                              pending_queue_size);
     reader->Init();
     return reader->IsInit() ? reader : nullptr;
   }

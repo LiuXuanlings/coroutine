@@ -160,3 +160,38 @@ TEST(NodeTest, EmptyChannelIsRejected) {
                 "", [](const std::shared_ptr<std::string>&) {}),
             nullptr);
 }
+
+TEST(NodeTest, ReaderKeepsBoundedHistoryAndInvokesCallback) {
+  const std::string channel = "/ch/node_reader_history";
+  Node subscriber("test_node_history_subscriber");
+  std::atomic<int> callbacks{0};
+  auto reader = subscriber.CreateReader<std::string>(
+      channel, [&](const std::shared_ptr<std::string>&) { ++callbacks; }, 2);
+  Node publisher("test_node_history_publisher");
+  auto writer = publisher.CreateWriter<std::string>(channel);
+  ASSERT_NE(reader, nullptr);
+  ASSERT_NE(writer, nullptr);
+
+  ASSERT_TRUE(writer->Write("first"));
+  ASSERT_TRUE(writer->Write("second"));
+  ASSERT_TRUE(writer->Write("third"));
+  EXPECT_EQ(callbacks.load(), 3);
+  EXPECT_TRUE(reader->HasReceived());
+  EXPECT_EQ(reader->PendingQueueSize(), 2u);
+
+  reader->Observe();
+  EXPECT_FALSE(reader->Empty());
+  ASSERT_NE(reader->GetOldestObserved(), nullptr);
+  ASSERT_NE(reader->GetLatestObserved(), nullptr);
+  EXPECT_EQ(*reader->GetOldestObserved(), "second");
+  EXPECT_EQ(*reader->GetLatestObserved(), "third");
+  reader->ClearData();
+  EXPECT_TRUE(reader->Empty());
+}
+
+TEST(NodeTest, WriterRejectsNullMessage) {
+  Node node("test_node_null_message");
+  auto writer = node.CreateWriter<std::string>("/ch/null_message");
+  ASSERT_NE(writer, nullptr);
+  EXPECT_FALSE(writer->Write(std::shared_ptr<std::string>()));
+}
