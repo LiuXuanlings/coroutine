@@ -1,4 +1,8 @@
 cmake_minimum_required(VERSION 3.14)
+# Compile preprocessed assembly through the C compiler driver. CMake's direct
+# GNU as invocation converts shared-library export macros to invalid --defsym
+# arguments for src/swap.S.
+set(CMAKE_ASM_COMPILER /usr/bin/cc CACHE FILEPATH "ASM compiler")
 project(minicyber CXX C ASM)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -140,4 +144,3 @@ target_link_libraries(mainboard minicyber_core minicyber_proto
                       ${Protobuf_LIBRARIES} pthread dl)
 set_target_properties(mainboard PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-

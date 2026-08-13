@@ -1,5 +1,4 @@
 #include "minicyber/croutine/croutine.h"
-#include "minicyber/context.h"
 #include <exception>
 
 namespace minicyber {
@@ -64,7 +63,7 @@ CRoutine::CRoutine(const RoutineFunc& cb, int /*stack_size*/) {
   // （表示无通知），避免协程刚创建就被误判为收到通知而转 READY。
   // SetUpdateFlag() 会 clear 它，使下次 test_and_set 返回 false 触发转换。
   updated_.test_and_set(std::memory_order_release);
-  MakeContext(&ctx_, CRoutine::MainFunc);
+  croutine::MakeContext(&ctx_, CRoutine::MainFunc);
 }
 
 void CRoutine::Resume() {
@@ -74,8 +73,8 @@ void CRoutine::Resume() {
   t_croutine = shared_from_this();
   state_ = RoutineState::READY;
   if (!is_main_) {
-    SwapContext(reinterpret_cast<char**>(&t_thread_croutine->ctx_.sp),
-                reinterpret_cast<char**>(&ctx_.sp));
+    croutine::SwapContext(reinterpret_cast<char**>(&t_thread_croutine->ctx_.sp),
+                          reinterpret_cast<char**>(&ctx_.sp));
   }
 }
 
@@ -88,8 +87,8 @@ void CRoutine::Yield() {
   CRoutine* cr = t_croutine.get();
   t_croutine = t_thread_croutine;
   if (!cr->is_main_) {
-    SwapContext(reinterpret_cast<char**>(&cr->ctx_.sp),
-                reinterpret_cast<char**>(&t_thread_croutine->ctx_.sp));
+    croutine::SwapContext(reinterpret_cast<char**>(&cr->ctx_.sp),
+                          reinterpret_cast<char**>(&t_thread_croutine->ctx_.sp));
   }
 }
 

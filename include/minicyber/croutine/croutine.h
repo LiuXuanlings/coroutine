@@ -1,7 +1,7 @@
 #ifndef MINICYBER_CROUTINE_CROUTINE_H
 #define MINICYBER_CROUTINE_CROUTINE_H
 
-#include "minicyber/context.h"
+#include "minicyber/croutine/detail/routine_context.h"
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -35,7 +35,7 @@ class CRoutine : public std::enable_shared_from_this<CRoutine> {
   static thread_local ptr t_croutine;        // 当前正在运行的协程
   static thread_local ptr t_thread_croutine; // 当前线程的主协程
 
-  explicit CRoutine(const RoutineFunc& cb, int stack_size = FIBER_STACK_SIZE);
+  explicit CRoutine(const RoutineFunc& cb, int stack_size = croutine::STACK_SIZE);
   ~CRoutine();
 
   // 获取当前协程（若不存在则创建主协程）
@@ -111,7 +111,7 @@ class CRoutine : public std::enable_shared_from_this<CRoutine> {
   CRoutine();  // 主协程构造（私有，仅 GetThis 调用）
   static void MainFunc();  // 协程入口，包装用户回调
 
-  context ctx_;
+  croutine::RoutineContext ctx_;
   RoutineFunc cb_;
   bool is_main_;
   RoutineState state_;
@@ -138,4 +138,3 @@ class CRoutine : public std::enable_shared_from_this<CRoutine> {
 }  // namespace minicyber
 
 #endif  // MINICYBER_CROUTINE_CROUTINE_H
-
