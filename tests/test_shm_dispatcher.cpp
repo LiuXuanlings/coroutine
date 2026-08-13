@@ -189,6 +189,20 @@ TEST(ShmDispatcherTest, AddSegmentIdempotent) {
   EXPECT_TRUE(ShmFileExists("minicyber_" + std::to_string(CH)));
 }
 
+TEST(ShmDispatcherTest, ConcurrentAddSegmentIsIdempotent) {
+  const uint64_t CH = 86006;
+  UnlinkShm("minicyber_" + std::to_string(CH));
+  auto* dispatcher = ShmDispatcher::Instance();
+  std::vector<std::thread> registrars;
+  for (int i = 0; i < 8; ++i) {
+    registrars.emplace_back([dispatcher]() { dispatcher->AddSegment(CH); });
+  }
+  for (auto& registrar : registrars) {
+    registrar.join();
+  }
+  EXPECT_TRUE(ShmFileExists("minicyber_" + std::to_string(CH)));
+}
+
 // 真正的跨进程测试：fork 子进程写 SHM + Notify，
 // 父进程的 ShmDispatcher 读出并注入 DataDispatcher
 // （原生 SysV SHM 方案支持任意进程独立 Init 共享同 key_t，不限于 fork）

@@ -123,6 +123,30 @@ TEST(ShmReceiverTest, DisableStopsCallbacks) {
   UnlinkShm("minicyber_" + std::to_string(CH));
 }
 
+TEST(ShmReceiverTest, DisableThenReenableRestoresSingleDelivery) {
+  const uint64_t CH = 90008;
+  UnlinkShm("minicyber_" + std::to_string(CH));
+  std::atomic<int> count{0};
+  ShmReceiver rx(CH, [&](const std::shared_ptr<std::string>&) { ++count; });
+  ShmTransmitter tx(CH);
+  rx.Enable();
+  tx.Enable();
+  ASSERT_TRUE(tx.Transmit(std::make_shared<std::string>("first")));
+  ASSERT_TRUE(WaitForReceived(count, 1, 1000));
+
+  rx.Disable();
+  ASSERT_TRUE(tx.Transmit(std::make_shared<std::string>("ignored")));
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  EXPECT_EQ(count.load(), 1);
+
+  rx.Enable();
+  ASSERT_TRUE(tx.Transmit(std::make_shared<std::string>("second")));
+  ASSERT_TRUE(WaitForReceived(count, 2, 1000));
+  EXPECT_EQ(count.load(), 2);
+  tx.Disable();
+  UnlinkShm("minicyber_" + std::to_string(CH));
+}
+
 // 多次发送，receiver 收到多条
 TEST(ShmReceiverTest, MultipleMessages) {
   const uint64_t CH = 90004;

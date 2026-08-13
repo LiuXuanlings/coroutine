@@ -20,8 +20,8 @@ void ShmDispatcher::Init() {
 }
 
 void ShmDispatcher::AddSegment(uint64_t channel_id) {
-  // 幂等：已存在则不重复添加（避免替换导致旧 PosixSegment 析构 shm_unlink）
-  // 同 channel_id 仅保证内核共享内存同一块，每个 PosixSegment 是独立实例，覆盖会触发旧对象析构执行 shm_unlink
+  std::lock_guard<std::mutex> lock(segments_mutex_);
+  if (!running_.load(std::memory_order_acquire)) return;
   if (segments_.count(channel_id) > 0) return;
   auto seg = std::make_shared<PosixSegment>(channel_id);
   if (!seg->Open()) {
@@ -44,9 +44,14 @@ void ShmDispatcher::ThreadFunc() {
 }
 
 void ShmDispatcher::ReadMessage(uint64_t channel_id, uint32_t block_index) {
-  auto it = segments_.find(channel_id);
-  if (it == segments_.end() || it->second == nullptr) return;
-  auto& seg = it->second;
+  std::shared_ptr<PosixSegment> seg;
+  {
+    std::lock_guard<std::mutex> lock(segments_mutex_);
+    auto it = segments_.find(channel_id);
+    if (it == segments_.end()) return;
+    seg = it->second;
+  }
+  if (!seg) return;
 
   ShmReadableBlock rb;
   if (!seg->AcquireBlockToRead(block_index, &rb)) return;
@@ -65,6 +70,7 @@ void ShmDispatcher::Shutdown() {
   if (!running_.exchange(false)) return;
   if (thread_.joinable()) thread_.join();
   if (notifier_) notifier_->Shutdown();
+  std::lock_guard<std::mutex> lock(segments_mutex_);
   segments_.clear();
 }
 
