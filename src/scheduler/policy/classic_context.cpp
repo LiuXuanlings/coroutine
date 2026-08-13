@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <limits>
+#include <thread>
 
 #include "minicyber/base/macros.h"
 
@@ -15,8 +16,6 @@ std::unordered_map<std::string, LOCK_QUEUE> ClassicContext::rq_locks_;
 std::unordered_map<std::string, std::mutex> ClassicContext::mtx_wq_;
 std::unordered_map<std::string, std::condition_variable> ClassicContext::cv_wq_;
 std::unordered_map<std::string, int> ClassicContext::notify_grp_;
-std::vector<std::string> ClassicContext::all_groups_;
-std::mutex ClassicContext::all_groups_mtx_;
 
 ClassicContext::ClassicContext() {
   InitGroup(DEFAULT_GROUP_NAME);
@@ -31,15 +30,6 @@ void ClassicContext::InitGroup(const std::string& group_name) {
   cr_group_[group_name];       // 默认构造 MULTI_PRIO_QUEUE
   rq_locks_[group_name];       // 默认构造 LOCK_QUEUE
   notify_grp_[group_name] = 0;
-
-  // 注册 group 名，供 Work-Stealing 遍历
-  {
-    std::lock_guard<std::mutex> lk(all_groups_mtx_);
-    if (std::find(all_groups_.begin(), all_groups_.end(), group_name) ==
-        all_groups_.end()) {
-      all_groups_.push_back(group_name);
-    }
-  }
 
   multi_pri_rq_ = &cr_group_[group_name];
   lq_ = &rq_locks_[group_name];
@@ -78,54 +68,6 @@ std::shared_ptr<CRoutine> ClassicContext::NextRoutine() {
     }
   }
 
-  // 2. 本地空，尝试从其他 group 窃取（Work-Stealing）
-  std::vector<std::string> groups;
-  {
-    std::lock_guard<std::mutex> lk(all_groups_mtx_);
-    groups = all_groups_;
-  }
-  for (const auto& grp : groups) {
-    if (grp == current_grp_) continue;  // 跳过自己
-    auto stolen = Steal(grp);
-    if (stolen) return stolen;
-  }
-
-  return nullptr;
-}
-
-// ----------------------------------------------------------------------
-// Steal: 从 target_grp 的队列尾部窃取一个就绪协程
-// ----------------------------------------------------------------------
-// Work-Stealing 经典设计：
-//   - Owner 从队列 front 取任务（LIFO 语义，缓存友好）
-//   - Stealer 从队列 back 取任务（减少与 Owner 的锁争用）
-//   - 按优先级从高到低扫描，每级从 back 取首个 Acquire 成功且 READY 的
-// ----------------------------------------------------------------------
-std::shared_ptr<CRoutine> ClassicContext::Steal(const std::string& target_grp) {
-  auto grp_it = cr_group_.find(target_grp);
-  auto lock_it = rq_locks_.find(target_grp);
-  if (grp_it == cr_group_.end() || lock_it == rq_locks_.end()) {
-    return nullptr;
-  }
-
-  MULTI_PRIO_QUEUE& rq = grp_it->second;
-  LOCK_QUEUE& lq = lock_it->second;
-
-  for (int i = MAX_PRIO - 1; i >= 0; --i) {
-    std::lock_guard<std::mutex> lk(lq.at(i));
-    auto& queue = rq.at(i);
-    // 从尾部向前扫描（stealer 取 back）
-    for (auto it = queue.rbegin(); it != queue.rend(); ++it) {
-      auto& cr = *it;
-      if (!cr->Acquire()) {
-        continue;
-      }
-      if (cr->UpdateState() == RoutineState::READY) {
-        return cr;
-      }
-      cr->Release();
-    }
-  }
   return nullptr;
 }
 
@@ -208,8 +150,13 @@ bool ClassicContext::RemoveCRoutine(const std::shared_ptr<CRoutine>& cr) {
   if (it == queue.end()) {
     return false;
   }
-  (*it)->Stop();
+  auto target = *it;
+  target->Stop();
+  while (!target->Acquire()) {
+    std::this_thread::sleep_for(std::chrono::microseconds(1));
+  }
   queue.erase(it);
+  target->Release();
   return true;
 }
 

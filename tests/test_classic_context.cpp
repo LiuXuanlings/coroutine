@@ -193,5 +193,39 @@ TEST(ClassicContextTest, RemoveCRoutineNotFound) {
   EXPECT_FALSE(ClassicContext::RemoveCRoutine(cr));
 }
 
+TEST(ClassicContextTest, DoesNotConsumeAnotherGroupsQueue) {
+  ClassicContext owner("test_owner_only");
+  ClassicContext other("test_other_only");
+
+  auto cr = MakeReadyCRoutine(5, 1, "test_owner_only");
+  ClassicContext::Enqueue(cr);
+
+  EXPECT_EQ(other.NextRoutine(), nullptr);
+  auto out = owner.NextRoutine();
+  ASSERT_NE(out, nullptr);
+  EXPECT_EQ(out->id(), 1u);
+  out->Release();
+}
+
+TEST(ClassicContextTest, RemoveWaitsForAcquiredRoutine) {
+  ClassicContext ctx("test_remove_acquired");
+  auto cr = MakeReadyCRoutine(5, 1, "test_remove_acquired");
+  ClassicContext::Enqueue(cr);
+
+  auto acquired = ctx.NextRoutine();
+  ASSERT_NE(acquired, nullptr);
+  std::atomic<bool> removed{false};
+  std::thread remover([&]() {
+    removed.store(ClassicContext::RemoveCRoutine(cr));
+  });
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  EXPECT_FALSE(removed.load());
+  acquired->Release();
+  remover.join();
+  EXPECT_TRUE(removed.load());
+  EXPECT_EQ(ctx.NextRoutine(), nullptr);
+}
+
 }  // namespace scheduler
 }  // namespace minicyber
