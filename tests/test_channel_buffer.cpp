@@ -104,6 +104,17 @@ TEST(ChannelBufferTest, FetchMultiClampsToSize) {
   EXPECT_EQ(*vec[1], 8);
 }
 
+TEST(ChannelBufferTest, FetchMultiWithZeroSizeDoesNotAppend) {
+  auto buf = std::make_shared<CacheBuffer<std::shared_ptr<int>>>(2);
+  ChannelBuffer<int> cb(1, buf);
+  buf->Fill(std::make_shared<int>(7));
+  std::vector<std::shared_ptr<int>> vec{std::make_shared<int>(99)};
+
+  EXPECT_TRUE(cb.FetchMulti(0, &vec));
+  ASSERT_EQ(vec.size(), 1u);
+  EXPECT_EQ(*vec[0], 99);
+}
+
 TEST(ChannelBufferTest, FetchMultiOnEmptyReturnsFalse) {
   auto buf = std::make_shared<CacheBuffer<std::shared_ptr<int>>>(4);
   ChannelBuffer<int> cb(1, buf);
