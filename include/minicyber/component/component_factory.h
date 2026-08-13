@@ -88,9 +88,11 @@ class ComponentFactory {
    * @param class_name 组件类名（如 "MyComponent"）
    * @param creator    构造组件的函数对象
    */
-  void Register(const std::string& class_name, CreatorFunc creator) {
+  bool Register(const std::string& class_name, CreatorFunc creator) {
+    if (class_name.empty() || !creator) return false;
     std::lock_guard<std::mutex> lock(mutex_);
     registry_[class_name] = std::move(creator);
+    return true;
   }
 
   /**
@@ -107,12 +109,16 @@ class ComponentFactory {
    *   4. delete 指针释放内存
    */
   ComponentBase* Create(const std::string& class_name) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto it = registry_.find(class_name);
-    if (it == registry_.end()) {
-      return nullptr;
+    CreatorFunc creator;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      auto it = registry_.find(class_name);
+      if (it == registry_.end()) {
+        return nullptr;
+      }
+      creator = it->second;
     }
-    return it->second();
+    return creator ? creator() : nullptr;
   }
 
   /**
