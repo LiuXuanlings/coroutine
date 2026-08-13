@@ -22,17 +22,31 @@ if(TEST_FILES)
         
         # 注册到 ctest
         add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
+        set(TEST_LABELS "unit")
         if(TEST_NAME MATCHES "^test_scheduler_")
-            set_tests_properties(${TEST_NAME} PROPERTIES
-                LABELS "scheduler;stability;tsan")
+            list(APPEND TEST_LABELS "scheduler" "stability" "sanitizer")
         endif()
+        if(TEST_NAME MATCHES "^test_(atomic_hash_map|atomic_rw_lock|bounded_queue|shm_block|shm_state)$")
+            list(APPEND TEST_LABELS "stress")
+        endif()
+        if(TEST_NAME MATCHES "^test_(condition_notifier|posix_segment|posix_segment_signal|shm_dispatcher|shm_transmitter)$")
+            list(APPEND TEST_LABELS "cross_process")
+        endif()
+        set_tests_properties(${TEST_NAME} PROPERTIES LABELS "${TEST_LABELS}")
     endforeach()
 endif()
 
-# Focused entry for a TSAN-configured build:
-# cmake -S . -B build-tsan -DUSE_SANITIZER=TSAN
-# cmake --build build-tsan --target check_scheduler_tsan
 add_custom_target(check_scheduler_tsan
-    COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L tsan
+    COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L sanitizer
     DEPENDS test_scheduler_classic test_scheduler_choreography
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_custom_target(check_stress
+    COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L stress
+    DEPENDS test_atomic_hash_map test_atomic_rw_lock test_bounded_queue test_shm_block test_shm_state
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_custom_target(check_cross_process
+    COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L cross_process
+    DEPENDS test_condition_notifier test_posix_segment test_posix_segment_signal test_shm_dispatcher test_shm_transmitter
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
