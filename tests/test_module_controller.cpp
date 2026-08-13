@@ -313,6 +313,44 @@ TEST(ModuleControllerTest, LoadAllMultipleDagPaths) {
   ::unlink(p2.c_str());
 }
 
+TEST(ModuleControllerTest, LoadAllFailureRollsBackEarlierDag) {
+  const std::string valid_dag =
+      "module_config { components { class_name: \"McTestComponent\" "
+      "config { name: \"rollback_first\" readers { channel: \"/rollback_first\" } } } }\n";
+  const std::string invalid_dag =
+      "module_config { components { class_name: \"UnknownRollbackClass\" "
+      "config { name: \"rollback_second\" readers { channel: \"/rollback_second\" } } } }\n";
+  const std::string first = WriteTempDag(valid_dag);
+  const std::string second = WriteTempDag(invalid_dag);
+  ASSERT_FALSE(first.empty());
+  ASSERT_FALSE(second.empty());
+
+  ModuleController controller({first, second});
+  EXPECT_FALSE(controller.LoadAll());
+  EXPECT_EQ(controller.ComponentCount(), 0u);
+  EXPECT_EQ(controller.LibraryCount(), 0u);
+  ::unlink(first.c_str());
+  ::unlink(second.c_str());
+}
+
+TEST(ModuleControllerTest, LoadModuleFailureRollsBackEarlierComponent) {
+  DagConfig dag;
+  auto* module = dag.add_module_config();
+  auto* valid = module->add_components();
+  valid->set_class_name("McTestComponent");
+  valid->mutable_config()->set_name("rollback_module_first");
+  valid->mutable_config()->add_readers()->set_channel("/rollback_module_first");
+  auto* invalid = module->add_components();
+  invalid->set_class_name("UnknownRollbackClass");
+  invalid->mutable_config()->set_name("rollback_module_second");
+  invalid->mutable_config()->add_readers()->set_channel("/rollback_module_second");
+
+  ModuleController controller({});
+  EXPECT_FALSE(controller.LoadModule(dag));
+  EXPECT_EQ(controller.ComponentCount(), 0u);
+  EXPECT_EQ(controller.LibraryCount(), 0u);
+}
+
 // =============================================================================
 // 端到端：LoadAll → Writer 写数据 → Proc 被调用 → Clear
 // =============================================================================

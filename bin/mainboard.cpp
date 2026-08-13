@@ -171,6 +171,7 @@ int main(int argc, char** argv) {
     std::cerr << "[Mainboard] ERROR: Failed to load DAG(s). Cleaning up."
               << std::endl;
     controller.Clear();
+    scheduler->Shutdown();
     return -1;
   }
 

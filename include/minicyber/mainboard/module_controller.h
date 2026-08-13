@@ -118,6 +118,9 @@ class ModuleController {
    */
   bool LoadModuleFromFile(const std::string& path);
 
+  // 回滚一次 LoadAll/LoadModule 尝试中新创建的组件和动态库。
+  void RollbackTo(size_t component_count, size_t library_count);
+
   /**
    * @brief 解析 .dag 文本格式的配置文件
    *
