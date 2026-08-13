@@ -311,3 +311,14 @@ TEST(ComponentTest, RaaICleanupOnDestruction) {
   // 如果 Shutdown 有 bug（如未释放锁、double-free），ASan 会在此处报告
   SUCCEED();
 }
+
+TEST(ComponentTest, FailedInitializationCanBeRetried) {
+  auto comp = std::make_shared<SingleChannelComponent>(nullptr);
+  minicyber::proto::ComponentConfig config;
+  config.set_name("retry_component");
+  EXPECT_FALSE(comp->Initialize(config));
+
+  config.add_readers()->set_channel("/retry_component");
+  EXPECT_TRUE(comp->Initialize(config));
+  comp->Shutdown();
+}

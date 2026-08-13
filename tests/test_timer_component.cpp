@@ -138,6 +138,10 @@ TEST(TimerComponentTest, ZeroIntervalFails) {
   config.set_interval(0);  // 非法间隔
 
   EXPECT_FALSE(comp->Initialize(config));
+
+  config.set_interval(10);
+  EXPECT_TRUE(comp->Initialize(config));
+  comp->Shutdown();
 }
 
 // ---------------------------------------------------------------------------

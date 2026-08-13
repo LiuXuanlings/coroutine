@@ -55,7 +55,7 @@ template <typename M0 = NullType, typename M1 = NullType,
 class Component : public ComponentBase {
  public:
   Component() = default;
-  ~Component() override = default;
+  ~Component() override { Shutdown(); }
 
   /**
    * @brief 初始化组件（主模板默认实现 — 始终返回 false）
@@ -107,7 +107,7 @@ template <>
 class Component<NullType, NullType, NullType, NullType> : public ComponentBase {
  public:
   Component() = default;
-  ~Component() override = default;
+  ~Component() override { Shutdown(); }
 
   /**
    * @brief 无输入组件的初始化：创建 Node + Init()
@@ -149,7 +149,7 @@ template <typename M0>
 class Component<M0, NullType, NullType, NullType> : public ComponentBase {
  public:
   Component() = default;
-  ~Component() override = default;
+  ~Component() override { Shutdown(); }
 
   /**
    * @brief 单通道组件的初始化
@@ -197,6 +197,7 @@ inline bool Component<NullType, NullType, NullType>::Initialize(
   LoadConfigFiles(config);
 
   if (cyber_unlikely(!Init())) {
+    CleanupInitializationFailure();
     return false;
   }
   return true;
@@ -214,11 +215,13 @@ bool Component<M0, NullType, NullType, NullType>::Initialize(
 
   // Step 2: 校验配置 — 单通道组件必须至少有一个 Reader 配置
   if (cyber_unlikely(config.readers_size() < 1)) {
+    CleanupInitializationFailure();
     return false;
   }
 
   // Step 3: 业务初始化（由派生类重写）
   if (cyber_unlikely(!Init())) {
+    CleanupInitializationFailure();
     return false;
   }
 
@@ -250,6 +253,7 @@ bool Component<M0, NullType, NullType, NullType>::Initialize(
   auto reader =
       node_->template CreateReader<M0>(config.readers(0).channel(), func);
   if (cyber_unlikely(reader == nullptr)) {
+    CleanupInitializationFailure();
     return false;
   }
 

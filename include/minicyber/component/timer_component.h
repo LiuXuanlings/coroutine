@@ -76,11 +76,15 @@ class TimerComponent : public ComponentBase {
     // 校验定时周期必须有值
     interval_ = config.interval();
     if (interval_ == 0) {
+      CleanupInitializationFailure();
+      init_.store(false, std::memory_order_release);
       return false;
     }
 
     // 业务初始化
     if (!Init()) {
+      CleanupInitializationFailure();
+      init_.store(false, std::memory_order_release);
       return false;
     }
 

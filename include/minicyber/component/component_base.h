@@ -225,6 +225,17 @@ class ComponentBase : public std::enable_shared_from_this<ComponentBase> {
     }
   }
 
+  // Initialize 失败时回收已经创建的本地端点，但保留对象可重试初始化。
+  void CleanupInitializationFailure() {
+    Clear();
+    for (auto& reader : readers_) reader->Shutdown();
+    readers_.clear();
+    if (node_) {
+      node_->Shutdown();
+      node_.reset();
+    }
+  }
+
   // ==========================================================================
   // 成员变量
   // ==========================================================================
