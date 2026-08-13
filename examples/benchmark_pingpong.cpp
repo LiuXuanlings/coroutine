@@ -1,193 +1,203 @@
-// =============================================================================
-// benchmark_pingpong：MiniCyber INTRA vs POSIX PIPE 延迟对比
-//
-// 对比项：
-//   INTRA: DataDispatcher + DataNotifier（框架内部零拷贝数据分发）
-//   PIPE:  posix pipe() + 双线程（传统 IPC 基线）
-//
-// 输出：平均/最小/最大延迟（微秒）及每秒消息数
-//
-// 延迟模型：
-//   INTRA 测量 one-way: Writer::Write 同步返回（callback 在 Dispatch 内联执行）
-//   PIPE   测量 round-trip/2: 主线程 write → 读线程 echo → 主线程 read
-//
-// 编译（自动被 CMakeLists.txt examples glob 拾取）：
-//   cmake .. && make benchmark_pingpong -j
-//
-// 运行：
-//   ./benchmark_pingpong
-// =============================================================================
-
-#include <pthread.h>
-#include <sys/socket.h>
-#include <unistd.h>
+// SPSC one-way latency baseline for MiniCyber INTRA and POSIX pipe.
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
-#include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <iostream>
+#include <memory>
 #include <string>
 #include <thread>
+#include <vector>
+
+#include <unistd.h>
 
 #include "minicyber/node/node.h"
-#include "minicyber/node/reader.h"
-#include "minicyber/node/writer.h"
-#include "minicyber/time/time.h"
 
-using minicyber::Duration;
-using minicyber::Time;
+namespace {
 
-// =============================================================================
-// 配置
-// =============================================================================
-constexpr int kIterations = 100000;
-constexpr int kWarmup     = 2000;
-
-// =============================================================================
-// 工具：打印统计行
-// =============================================================================
-struct Stats {
-  const char* label;
-  uint64_t total_ns;
-  uint64_t min_ns;
-  uint64_t max_ns;
-  int count;
-  const char* note;  // e.g. "one-way" or "round-trip/2"
+struct Options {
+  size_t payload_bytes = 64;
+  size_t warmup = 2000;
+  size_t samples = 100000;
 };
 
-static void PrintStats(const Stats& s) {
-  double avg_us = static_cast<double>(s.total_ns) / s.count / 1000.0;
-  double min_us = static_cast<double>(s.min_ns) / 1000.0;
-  double max_us = static_cast<double>(s.max_ns) / 1000.0;
-  double msgs_per_sec =
-      static_cast<double>(s.count) / (static_cast<double>(s.total_ns) / 1e9);
+struct Sample {
+  uint64_t sent_ns;
+  uint64_t sequence;
+};
 
-  printf("  %-5s  (%s)\n", s.label, s.note);
-  printf("    Avg: %8.2f us\n", avg_us);
-  printf("    Min: %8.2f us\n", min_us);
-  printf("    Max: %8.2f us\n", max_us);
-  printf("    Msg/s: %10.0f\n", msgs_per_sec);
+struct Result {
+  const char* backend;
+  std::vector<uint64_t> latencies_ns;
+  uint64_t elapsed_ns;
+};
+
+uint64_t NowNs() {
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
 }
 
-// =============================================================================
-// INTRA 基准测试
-// =============================================================================
-static void RunIntraBenchmark(const std::string& payload) {
-  // Node + Writer + Reader on same channel -> Transport picks INTRA
-  minicyber::node::Node node("bench_intra");
-  auto writer = node.CreateWriter<std::string>("/intra_bench");
-  std::atomic<int> cb_count{0};
+bool WriteAll(int fd, const void* data, size_t size) {
+  const auto* cursor = static_cast<const char*>(data);
+  while (size > 0) {
+    const ssize_t written = ::write(fd, cursor, size);
+    if (written <= 0) return false;
+    cursor += written;
+    size -= static_cast<size_t>(written);
+  }
+  return true;
+}
 
-  auto reader = node.CreateReader<std::string>(
-      "/intra_bench", [&](const std::shared_ptr<std::string>& /*msg*/) {
-        cb_count.fetch_add(1, std::memory_order_relaxed);
+bool ReadAll(int fd, void* data, size_t size) {
+  auto* cursor = static_cast<char*>(data);
+  while (size > 0) {
+    const ssize_t read_size = ::read(fd, cursor, size);
+    if (read_size <= 0) return false;
+    cursor += read_size;
+    size -= static_cast<size_t>(read_size);
+  }
+  return true;
+}
+
+Result RunIntra(const Options& options) {
+  minicyber::node::Node subscriber("benchmark_intra_subscriber");
+  std::vector<uint64_t> latencies;
+  latencies.reserve(options.samples);
+  bool measuring = false;
+
+  auto reader = subscriber.CreateReader<std::string>(
+      "/benchmark/intra", [&](const std::shared_ptr<std::string>& frame) {
+        Sample sample;
+        std::memcpy(&sample, frame->data(), sizeof(sample));
+        if (measuring) latencies.push_back(NowNs() - sample.sent_ns);
       });
+  minicyber::node::Node publisher("benchmark_intra_publisher");
+  auto writer = publisher.CreateWriter<std::string>("/benchmark/intra");
+  if (!reader || !writer) std::exit(1);
 
-  if (!writer || !reader) {
-    std::fprintf(stderr, "[INTRA] failed to create writer/reader\n");
-    std::exit(1);
+  auto frame = std::make_shared<std::string>(sizeof(Sample) + options.payload_bytes,
+                                             'i');
+  for (size_t index = 0; index < options.warmup; ++index) {
+    const Sample sample{NowNs(), index};
+    std::memcpy(frame->data(), &sample, sizeof(sample));
+    if (!writer->Write(frame)) std::exit(1);
   }
 
-  // --- warmup ---
-  auto msg = std::make_shared<std::string>(payload);
-  for (int i = 0; i < kWarmup; ++i) {
-    writer->Write(msg);
+  measuring = true;
+  const uint64_t start_ns = NowNs();
+  for (size_t index = 0; index < options.samples; ++index) {
+    const Sample sample{NowNs(), index};
+    std::memcpy(frame->data(), &sample, sizeof(sample));
+    if (!writer->Write(frame)) std::exit(1);
   }
-  cb_count.store(0, std::memory_order_relaxed);
-
-  // --- measure ---
-  uint64_t total_ns = 0;
-  uint64_t min_ns = UINT64_MAX;
-  uint64_t max_ns = 0;
-
-  for (int i = 0; i < kIterations; ++i) {
-    auto t1 = Time::MonoTime();
-    writer->Write(msg);
-    auto t2 = Time::MonoTime();
-    uint64_t ns = (t2 - t1).ToNanosecond();
-    total_ns += ns;
-    if (ns < min_ns) min_ns = ns;
-    if (ns > max_ns) max_ns = ns;
-  }
-
-  PrintStats({"INTRA", total_ns, min_ns, max_ns, kIterations, "one-way"});
+  const uint64_t elapsed_ns = NowNs() - start_ns;
+  measuring = false;
+  return {"intra", std::move(latencies), elapsed_ns};
 }
 
-// =============================================================================
-// PIPE 基准测试（传统 IPC 基线）
-// =============================================================================
-static void RunPipeBenchmark(const std::string& /*payload*/) {
-  int to_child[2];   // main -> child
-  int to_parent[2];  // child -> main
-  if (pipe(to_child) != 0 || pipe(to_parent) != 0) {
-    std::fprintf(stderr, "[PIPE] pipe() failed\n");
-    std::exit(1);
-  }
+Result RunPipe(const Options& options) {
+  int fds[2];
+  int acknowledgements[2];
+  if (::pipe(fds) != 0 || ::pipe(acknowledgements) != 0) std::exit(1);
 
-  std::atomic<bool> running{true};
-
-  // Reader thread: echo one byte back
-  std::thread reader([&]() {
-    char ch;
-    while (running.load(std::memory_order_acquire)) {
-      ssize_t n = read(to_child[0], &ch, 1);
-      if (n <= 0) break;
-      write(to_parent[1], &ch, 1);
+  std::vector<uint64_t> latencies;
+  latencies.reserve(options.samples);
+  std::atomic<bool> consumer_ok{true};
+  const size_t frame_size = sizeof(Sample) + options.payload_bytes;
+  std::thread consumer([&] {
+    std::vector<char> frame(frame_size);
+    for (size_t index = 0; index < options.warmup + options.samples; ++index) {
+      if (!ReadAll(fds[0], frame.data(), frame.size())) {
+        consumer_ok.store(false);
+        return;
+      }
+      if (index >= options.warmup) {
+        Sample sample;
+        std::memcpy(&sample, frame.data(), sizeof(sample));
+        latencies.push_back(NowNs() - sample.sent_ns);
+      }
+      const char acknowledgement = 'a';
+      if (!WriteAll(acknowledgements[1], &acknowledgement,
+                    sizeof(acknowledgement))) {
+        consumer_ok.store(false);
+        return;
+      }
     }
   });
 
-  // --- warmup ---
-  char ch = 'x';
-  for (int i = 0; i < kWarmup; ++i) {
-    write(to_child[1], &ch, 1);
-    read(to_parent[0], &ch, 1);
+  std::vector<char> frame(frame_size, 'p');
+  uint64_t start_ns = 0;
+  for (size_t index = 0; index < options.warmup + options.samples; ++index) {
+    if (index == options.warmup) start_ns = NowNs();
+    Sample sample{NowNs(), index};
+    std::memcpy(frame.data(), &sample, sizeof(sample));
+    if (!WriteAll(fds[1], frame.data(), frame.size())) std::exit(1);
+    char acknowledgement;
+    if (!ReadAll(acknowledgements[0], &acknowledgement,
+                 sizeof(acknowledgement))) {
+      std::exit(1);
+    }
   }
-
-  // --- measure (round-trip, divide by 2 for one-way) ---
-  int half = kIterations / 2;
-  uint64_t total_ns = 0;
-  uint64_t min_ns = UINT64_MAX;
-  uint64_t max_ns = 0;
-
-  for (int i = 0; i < half; ++i) {
-    auto t1 = Time::MonoTime();
-    write(to_child[1], &ch, 1);
-    read(to_parent[0], &ch, 1);
-    auto t2 = Time::MonoTime();
-    uint64_t ns = (t2 - t1).ToNanosecond();
-    total_ns += ns;
-    if (ns < min_ns) min_ns = ns;
-    if (ns > max_ns) max_ns = ns;
-  }
-
-  // Cleanup
-  running.store(false, std::memory_order_release);
-  write(to_child[1], &ch, 1);  // wake reader so it can exit
-  reader.join();
-  close(to_child[0]);
-  close(to_child[1]);
-  close(to_parent[0]);
-  close(to_parent[1]);
-
-  // Round-trip / 2 for one-way
-  PrintStats({"PIPE", total_ns / 2, min_ns / 2, max_ns / 2, half * 2,
-              "one-way (rtt/2)"});
+  const uint64_t elapsed_ns = NowNs() - start_ns;
+  consumer.join();
+  ::close(fds[0]);
+  ::close(fds[1]);
+  ::close(acknowledgements[0]);
+  ::close(acknowledgements[1]);
+  if (!consumer_ok.load()) std::exit(1);
+  return {"pipe", std::move(latencies), elapsed_ns};
 }
 
-// =============================================================================
-// 主函数
-// =============================================================================
-int main() {
-  const std::string payload(64, 'a');
+void PrintResult(const Result& result, const Options& options) {
+  auto values = result.latencies_ns;
+  std::sort(values.begin(), values.end());
+  uint64_t total = 0;
+  for (uint64_t value : values) total += value;
+  const auto percentile = [&values](size_t numerator) {
+    return values[(values.size() - 1) * numerator / 100];
+  };
+  const double throughput =
+      static_cast<double>(values.size()) * 1e9 /
+      static_cast<double>(result.elapsed_ns);
+  std::cout << result.backend << ",spsc_one_way," << options.payload_bytes
+            << ',' << options.warmup << ',' << values.size() << ',' << values.front()
+            << ',' << percentile(50) << ',' << percentile(95) << ','
+            << percentile(99) << ',' << values.back() << ',' << total << ','
+            << throughput << '\n';
+}
 
-  printf("=== MiniCyber Benchmark: INTRA vs PIPE ===\n");
-  printf("Payload: %zu bytes  |  Iterations: %d\n\n", payload.size(),
-         kIterations);
+Options ParseOptions(int argc, char** argv) {
+  Options options;
+  for (int index = 1; index < argc; ++index) {
+    const std::string arg(argv[index]);
+    if (arg == "--payload-bytes" && index + 1 < argc) {
+      options.payload_bytes = std::strtoull(argv[++index], nullptr, 10);
+    } else if (arg == "--warmup" && index + 1 < argc) {
+      options.warmup = std::strtoull(argv[++index], nullptr, 10);
+    } else if (arg == "--samples" && index + 1 < argc) {
+      options.samples = std::strtoull(argv[++index], nullptr, 10);
+    } else {
+      std::cerr << "Usage: " << argv[0]
+                << " [--payload-bytes N] [--warmup N] [--samples N]\n";
+      std::exit(2);
+    }
+  }
+  if (options.payload_bytes == 0 || options.samples == 0) std::exit(2);
+  return options;
+}
 
-  RunIntraBenchmark(payload);
-  printf("\n");
-  RunPipeBenchmark(payload);
+}  // namespace
 
+int main(int argc, char** argv) {
+  const Options options = ParseOptions(argc, argv);
+  std::cout << "backend,model,payload_bytes,warmup,samples,min_ns,p50_ns,p95_ns,"
+               "p99_ns,max_ns,total_ns,throughput_msg_s\n";
+  PrintResult(RunIntra(options), options);
+  PrintResult(RunPipe(options), options);
   return 0;
 }
