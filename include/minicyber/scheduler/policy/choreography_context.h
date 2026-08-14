@@ -17,13 +17,9 @@ namespace scheduler {
 // =============================================================================
 // ChoreographyContext：编排调度上下文（对齐 CyberRT choreography_context）
 //
-// 与 ClassicContext 的核心差异：
-//   - ClassicContext：多级优先级队列 + Work-Stealing。Processor 空闲时扫描
-//     所有优先级队列、并从其他 group 窃取任务。复杂 DAG 中大量协程处于
-//     DATA_WAIT 时，扫描开销随队列长度线性增长。
-//   - ChoreographyContext：单一就绪队列，任务由上游"点对点"显式 Enqueue。
-//     NextRoutine() 从最高优先级扫描本地队列，不窃取其他 Context 的任务。
-//     专为点对点 DAG 依赖触发场景设计。
+// 与 ClassicContext 的核心差异：ClassicContext 由同组 Processor 共同消费
+// 多级优先级队列；ChoreographyContext 保留单一就绪队列，任务由上游显式
+// Enqueue，专用于后续定向 Processor 的 DAG 依赖触发。
 //
 // 实例本地状态（无静态成员）：
 //   - cr_queue_：multimap<prio, CRoutine, greater>，begin() 即最高优先级。

@@ -34,7 +34,8 @@ using LOCK_QUEUE = std::array<std::mutex, MAX_PRIO>;
 // ----------------------------------------------------------------------
 // ClassicContext: 经典多级优先级调度上下文
 // ----------------------------------------------------------------------
-// 每个 Processor 绑定一个 ClassicContext 作为本地队列。
+// 同一调度组内的每个 Processor 都绑定一个 ClassicContext，但这些 Context
+// 指向同一组静态 20 级队列和等待条件；因此组内竞争同一就绪集合。
 //
 // 调度逻辑（NextRoutine）：
 //   从最高优先级（19）到最低（0）扫描，每级队列中找首个
@@ -44,17 +45,15 @@ using LOCK_QUEUE = std::array<std::mutex, MAX_PRIO>;
 //   使用 condition_variable + notify 计数阻塞，
 //   Notify 入队新任务时计数 +1，Wait 醒来后计数 -1。
 //
-// 简化说明（vs CyberRT）：
-//   - 用 std::mutex 替代 AtomicRWLock（Steal 频率低，mutex 足够）
-//   - 当前所有实例共用 DEFAULT_GROUP_NAME，group 概念保留以备扩展
-//   - 静态成员 cr_group_/rq_locks_ 按 group 组织，与 CyberRT 一致
+// 简化说明（vs CyberRT）：用 std::mutex 替代 AtomicRWLock；静态成员仍按
+// group 组织，与原生 ClassicContext 的共享组职责一致。
 // ----------------------------------------------------------------------
 class ClassicContext : public ProcessorContext {
  public:
   ClassicContext();
   explicit ClassicContext(const std::string& group_name);
 
-  // 从高优先级到低优先级扫描本地队列，返回首个就绪协程。
+  // 从高优先级到低优先级扫描所属共享组队列，返回首个就绪协程。
   std::shared_ptr<CRoutine> NextRoutine() override;
 
   // 队列空时阻塞等待，直到 Notify 或 Shutdown

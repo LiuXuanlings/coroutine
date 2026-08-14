@@ -3,13 +3,65 @@
 #include <sched.h>
 #include <unistd.h>
 
+#include <stdexcept>
+
 #include "minicyber/base/macros.h"
 #include "minicyber/scheduler/common/pin_thread.h"
+#include "minicyber/proto/scheduler_conf.pb.h"
 
 namespace minicyber {
 namespace scheduler {
 
 thread_local Scheduler* Scheduler::t_scheduler_ = nullptr;
+
+bool SchedulerConf::FromProto(const ::minicyber::proto::SchedulerConf& proto,
+                              SchedulerConf* conf) {
+  if (conf == nullptr || !proto.has_classic_conf()) {
+    return false;
+  }
+
+  SchedulerConf parsed;
+  if (proto.has_policy() && proto.policy() != "classic") {
+    return false;
+  }
+  parsed.policy = "classic";
+  for (const auto& proto_group : proto.classic_conf().groups()) {
+    if (proto_group.name().empty()) {
+      return false;
+    }
+    ClassicGroupConf group;
+    group.name = proto_group.name();
+    group.processor_num = proto_group.processor_num();
+    group.affinity = proto_group.affinity();
+    if (proto_group.has_processor_policy()) {
+      group.processor_policy = proto_group.processor_policy();
+    }
+    group.processor_prio = proto_group.processor_prio();
+    try {
+      if (!proto_group.cpuset().empty()) {
+        ParseCpuset(proto_group.cpuset(), &group.cpuset);
+      }
+    } catch (const std::invalid_argument&) {
+      return false;
+    }
+    for (const auto& proto_task : proto_group.tasks()) {
+      if (proto_task.name().empty()) {
+        return false;
+      }
+      ClassicTaskConf task;
+      task.name = proto_task.name();
+      task.priority = proto_task.prio();
+      task.group_name = group.name;
+      group.tasks.push_back(std::move(task));
+    }
+    parsed.classic_groups.push_back(std::move(group));
+  }
+  if (parsed.classic_groups.empty()) {
+    return false;
+  }
+  *conf = std::move(parsed);
+  return true;
+}
 
 Scheduler::Scheduler(const SchedulerConf& conf) {
   stop_.store(false);
@@ -34,39 +86,63 @@ size_t Scheduler::ProcessorCount() const {
   return processors_.size();
 }
 
-// ----------------------------------------------------------------------
-// CreateProcessors: 创建 N 个 Processor，每个绑定独立 ClassicContext
-// ----------------------------------------------------------------------
-// 每个 Processor 的 ClassicContext 使用 group "proc_i"，拥有独立的
-// 本地优先级队列。group 名唯一，避免 ClassicContext 静态 map 冲突。
-// ----------------------------------------------------------------------
 void Scheduler::CreateProcessors(const SchedulerConf& conf) {
-  uint32_t proc_num = policy_ == "choreography" &&
-                              conf.choreography_processor_num != 0
-                          ? conf.choreography_processor_num
-                          : conf.thread_num;
-  if (proc_num == 0) {
-    // 默认按 CPU 核数
-    proc_num = static_cast<uint32_t>(sysconf(_SC_NPROCESSORS_ONLN));
-    if (proc_num == 0) proc_num = 1;
+  if (policy_ == "choreography") {
+    uint32_t proc_num = conf.choreography_processor_num != 0
+                            ? conf.choreography_processor_num
+                            : conf.thread_num;
+    if (proc_num == 0) {
+      proc_num = static_cast<uint32_t>(sysconf(_SC_NPROCESSORS_ONLN));
+      if (proc_num == 0) proc_num = 1;
+    }
+    for (uint32_t i = 0; i < proc_num; ++i) {
+      auto ctx = std::make_shared<ChoreographyContext>();
+      auto proc = std::make_shared<Processor>();
+      proc->SetScheduler(this);
+      proc->BindContext(ctx);
+      ApplyThreadPolicy(conf, i, proc.get());
+      contexts_.push_back(ctx);
+      processors_.push_back(proc);
+    }
+    return;
   }
 
-  for (uint32_t i = 0; i < proc_num; ++i) {
-    std::shared_ptr<ProcessorContext> ctx;
-    if (policy_ == "choreography") {
-      ctx = std::make_shared<ChoreographyContext>();
-    } else {
-      ctx = std::make_shared<ClassicContext>("proc_" + std::to_string(i));
+  classic_groups_ = conf.classic_groups;
+  if (classic_groups_.empty()) {
+    ClassicGroupConf group;
+    group.processor_num = conf.thread_num;
+    group.affinity = conf.affinity;
+    group.cpuset = conf.cpuset;
+    group.processor_policy = conf.processor_policy;
+    group.processor_prio = conf.processor_prio;
+    classic_groups_.push_back(std::move(group));
+  }
+
+  for (const auto& group : classic_groups_) {
+    uint32_t proc_num = group.processor_num;
+    if (proc_num == 0) {
+      proc_num = static_cast<uint32_t>(sysconf(_SC_NPROCESSORS_ONLN));
+      if (proc_num == 0) proc_num = 1;
     }
-    auto proc = std::make_shared<Processor>();
-    // 让 Processor 工作线程能通过 Scheduler::GetThis() 访问到本实例。
-    proc->SetScheduler(this);
-    proc->BindContext(ctx);
-
-    ApplyThreadPolicy(conf, i, proc.get());
-
-    contexts_.push_back(ctx);
-    processors_.push_back(proc);
+    for (const auto& task : group.tasks) {
+      ClassicTaskConf configured = task;
+      configured.group_name = group.name;
+      classic_tasks_[configured.name] = std::move(configured);
+    }
+    for (uint32_t i = 0; i < proc_num; ++i) {
+      auto ctx = std::make_shared<ClassicContext>(group.name);
+      auto proc = std::make_shared<Processor>();
+      proc->SetScheduler(this);
+      proc->BindContext(ctx);
+      SchedulerConf group_conf;
+      group_conf.affinity = group.affinity;
+      group_conf.cpuset = group.cpuset;
+      group_conf.processor_policy = group.processor_policy;
+      group_conf.processor_prio = group.processor_prio;
+      ApplyThreadPolicy(group_conf, i, proc.get());
+      contexts_.push_back(ctx);
+      processors_.push_back(proc);
+    }
   }
 }
 
@@ -83,14 +159,6 @@ void Scheduler::ApplyThreadPolicy(const SchedulerConf& conf, size_t proc_idx,
                  proc->Tid().load());
 }
 
-// ----------------------------------------------------------------------
-// CreateTask: 创建任务并分发到 Processor 队列
-// ----------------------------------------------------------------------
-// 1. 创建 CRoutine，分配 id
-  // 2. 轮询选择目标 Processor，设置 group_name
-  // 3. ClassicContext::Enqueue 入队
-  // 4. 记录到 id_cr_ 映射供 NotifyTask 查找
-// ----------------------------------------------------------------------
 uint64_t Scheduler::CreateTask(const std::function<void()>& func,
                                 const std::string& name, uint32_t prio,
                                 int processor_id) {
@@ -114,12 +182,21 @@ uint64_t Scheduler::CreateTask(const std::function<void()>& func,
   if (policy_ == "choreography" && processor_id >= 0 &&
       static_cast<size_t>(processor_id) < processors_.size()) {
     target = static_cast<uint32_t>(processor_id);
-  } else {
-    target = next_proc_.fetch_add(1) % processors_.size();
+  } else if (policy_ == "choreography") {
+    target = 0;
   }
-  cr->set_processor_id(policy_ == "choreography" ? static_cast<int>(target)
-                                                     : -1);
-  cr->set_group_name("proc_" + std::to_string(target));
+  cr->set_processor_id(policy_ == "choreography" ? static_cast<int>(target) : -1);
+  if (policy_ == "classic") {
+    const auto* group = FindClassicGroup(name);
+    if (group == nullptr) {
+      return 0;
+    }
+    cr->set_group_name(group->name);
+    const auto task = classic_tasks_.find(name);
+    if (task != classic_tasks_.end()) {
+      cr->set_priority(task->second.priority);
+    }
+  }
 
   // 记录到 id_cr_ 映射
   {
@@ -133,6 +210,61 @@ uint64_t Scheduler::CreateTask(const std::function<void()>& func,
     return 0;
   }
   return task_id;
+}
+
+uint64_t Scheduler::CreateTask(const croutine::RoutineFactory& factory,
+                               const std::string& name, uint32_t prio,
+                               int processor_id) {
+  const auto visitor = factory.GetDataVisitor();
+  if (!visitor || !factory.create_routine) {
+    return 0;
+  }
+
+  auto wake_state = std::make_shared<RoutineWakeState>();
+  wake_state->scheduler = this;
+  visitor->RegisterNotifyCallback([wake_state] {
+    std::lock_guard<std::mutex> lock(wake_state->mutex);
+    if (wake_state->scheduler != nullptr && wake_state->task_id != 0) {
+      wake_state->scheduler->NotifyTask(wake_state->task_id);
+    }
+  });
+  const uint64_t task_id = CreateTask(factory.CreateRoutine(), name, prio,
+                                      processor_id);
+  if (task_id == 0) {
+    std::lock_guard<std::mutex> lock(wake_state->mutex);
+    wake_state->scheduler = nullptr;
+    return 0;
+  }
+  {
+    std::lock_guard<std::mutex> lock(wake_state->mutex);
+    wake_state->task_id = task_id;
+  }
+  {
+    std::lock_guard<std::mutex> lock(routine_wake_mtx_);
+    // Shutdown 可能在 CreateTask 返回后开始。只有在状态仍可用时才发布
+    // Visitor 回调；否则不能把 this 留给生命周期更长的 DataVisitor。
+    if (stop_.load()) {
+      std::lock_guard<std::mutex> state_lock(wake_state->mutex);
+      wake_state->scheduler = nullptr;
+      return 0;
+    }
+    routine_wake_states_.push_back(std::move(wake_state));
+  }
+  return task_id;
+}
+
+const ClassicGroupConf* Scheduler::FindClassicGroup(
+    const std::string& name) const {
+  const auto task = classic_tasks_.find(name);
+  const std::string& group_name =
+      task == classic_tasks_.end() ? classic_groups_.front().name
+                                   : task->second.group_name;
+  for (const auto& group : classic_groups_) {
+    if (group.name == group_name) {
+      return &group;
+    }
+  }
+  return nullptr;
 }
 
 bool Scheduler::Enqueue(const std::shared_ptr<CRoutine>& cr, uint32_t target) {
@@ -195,6 +327,17 @@ void Scheduler::Shutdown() {
     return;
   }
 
+  // DataVisitor 可以比 Scheduler 活得更久。先让其回调无法再取得 this，
+  // 再拆除任务映射和 Processor，维持 DATA_WAIT 唤醒的所有权边界。
+  {
+    std::lock_guard<std::mutex> states_lock(routine_wake_mtx_);
+    for (const auto& state : routine_wake_states_) {
+      std::lock_guard<std::mutex> state_lock(state->mutex);
+      state->scheduler = nullptr;
+    }
+    routine_wake_states_.clear();
+  }
+
   std::vector<std::shared_ptr<Processor>> processors;
   std::vector<std::shared_ptr<ProcessorContext>> contexts;
   {
@@ -212,8 +355,8 @@ void Scheduler::Shutdown() {
   }
 
   if (policy_ == "classic") {
-    for (size_t index = 0; index < contexts.size(); ++index) {
-      ClassicContext::RemoveGroup("proc_" + std::to_string(index));
+    for (const auto& group : classic_groups_) {
+      ClassicContext::RemoveGroup(group.name);
     }
   }
 

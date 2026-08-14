@@ -163,10 +163,7 @@ TEST(ClassicContextTest, RemoveCRoutineById) {
   out->SetState(RoutineState::FINISHED);
   out->Release();
 
-  // 再取：由于 Work-Stealing 可能从其他测试遗留的 group 窃取，
-  // 持续消费直到本地 test_remove 队列确无任务。
-  // 这里只需验证 test_remove 队列不再返回 cr2（已被消费）。
-  // 验证方式：循环 NextRoutine，跳过非 test_remove 的任务
+  // 再取时只检查当前组；已消费的 cr2 不应再次从其共享队列返回。
   bool cr2_gone = true;
   for (int i = 0; i < 100; ++i) {
     auto cr = ctx.NextRoutine();

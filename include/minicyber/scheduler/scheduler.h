@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "minicyber/croutine/croutine.h"
+#include "minicyber/croutine/routine_factory.h"
 #include "minicyber/scheduler/policy/classic_context.h"
 #include "minicyber/scheduler/policy/choreography_context.h"
 #include "minicyber/scheduler/processor.h"
@@ -20,20 +21,9 @@ namespace scheduler {
 // ----------------------------------------------------------------------
 // Scheduler: 顶层调度器封装
 // ----------------------------------------------------------------------
-// 整合 Processor + Classic/Choreography Context，提供任务调度接口。
-//
-// 设计：
-//   - 构造时根据 SchedulerConf 创建 N 个 Processor，每个绑定独立
-//     ClassicContext（group "proc_i"），拥有本地优先级队列。
-//   - CreateTask 轮询分发任务到各 Processor 本地队列。
-//   - NotifyTask 查找 CRoutine 并 SetUpdateFlag + Notify 唤醒
-//     处于 DATA_WAIT/IO_WAIT 的协程。
-//   - Shutdown 停止所有 Processor 并清理。
-//
-// 与旧 Scheduler（include/minicyber/scheduler.h）的区别：
-//   旧 Scheduler 基于全局队列 + 条件变量；新 Scheduler 基于
-//   多 Processor 本地队列 + ClassicContext 优先级调度，为后续
-//   Work-Stealing 与数据驱动唤醒铺路。
+// 整合 Processor 与调度策略。Classic 对齐 CyberRT SchedulerClassic：同一
+// SchedGroup 的所有 Processor 绑定同一 ClassicContext 静态组并共同扫描其
+// 20 级队列；Acquire 仅保护单个 CRoutine 的并发执行所有权。
 // ----------------------------------------------------------------------
 class Scheduler {
  public:
@@ -61,6 +51,13 @@ class Scheduler {
                       const std::string& name, uint32_t prio = 0,
                       int processor_id = -1);
 
+  // 将 MC-609 的 RoutineFactory 接入调度器。DataVisitor 回调只转换为
+  // NotifyTask，不能在发布线程运行 Proc；关闭时会先解除回调到本 Scheduler
+  // 的引用，避免 Visitor 生命周期长于 Scheduler 时访问已销毁对象。
+  uint64_t CreateTask(const croutine::RoutineFactory& factory,
+                      const std::string& name, uint32_t prio = 0,
+                      int processor_id = -1);
+
   // 通知指定任务数据已就绪，唤醒 DATA_WAIT/IO_WAIT
   bool NotifyTask(uint64_t crid);
 
@@ -77,6 +74,7 @@ class Scheduler {
   // 为选定策略创建 Context 与 Processor 并启动线程。
   void CreateProcessors(const SchedulerConf& conf);
   bool Enqueue(const std::shared_ptr<CRoutine>& cr, uint32_t target);
+  const ClassicGroupConf* FindClassicGroup(const std::string& name) const;
 
   // 应用 CPU 亲和性与调度策略
   void ApplyThreadPolicy(const SchedulerConf& conf, size_t proc_idx,
@@ -88,14 +86,24 @@ class Scheduler {
   std::vector<std::shared_ptr<Processor>> processors_;
   std::vector<std::shared_ptr<ProcessorContext>> contexts_;
 
+  // 由 DataVisitor 保存的回调状态独立于 Scheduler 对象分配。Shutdown 在
+  // 销毁 Processor 前清空 scheduler 指针，并等待当前回调离开状态锁。
+  struct RoutineWakeState {
+    std::mutex mutex;
+    Scheduler* scheduler = nullptr;
+    uint64_t task_id = 0;
+  };
+  std::mutex routine_wake_mtx_;
+  std::vector<std::shared_ptr<RoutineWakeState>> routine_wake_states_;
+
   // task_id -> CRoutine 映射，用于 NotifyTask 查找
   std::mutex id_cr_mtx_;
   std::unordered_map<uint64_t, std::shared_ptr<CRoutine>> id_cr_;
 
   // 下一个 task_id（递增）
   std::atomic<uint64_t> next_task_id_{1};
-  // 轮询分发的下一个 Processor 索引
-  std::atomic<uint32_t> next_proc_{0};
+  std::unordered_map<std::string, ClassicTaskConf> classic_tasks_;
+  std::vector<ClassicGroupConf> classic_groups_;
   std::string policy_ = "classic";
 
   std::atomic<bool> stop_{false};

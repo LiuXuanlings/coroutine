@@ -6,7 +6,7 @@
 
 - 当前分支：`development`
 - 当前阶段：第二次重构，基础设施改造阶段
-- 当前任务：MC-610
+- 当前任务：MC-611
 - 当前状态：待开始
 - 唯一状态事实源：[`docs/refactor/00_进度记录.md`](docs/refactor/00_进度记录.md)
 - 唯一任务执行方案：[`docs/refactor/01_实施方案.md`](docs/refactor/01_实施方案.md)
@@ -27,8 +27,9 @@
   `docs/refactor/00_进度记录.md`，是 MC-604 显式源列表的唯一输入。
 - MC-607 已接收发现快照并恢复 INTRA/SHM HybridTransport；MC-608 已将 Hybrid 接入
   Protobuf-only Node API、RoleAttributes、`HasReader` 和端点生命周期；MC-609 已恢复
-  单/双输入 DataVisitor、AllLatest 和 RoutineFactory 数据协程链；MC-610 接收其
-  DataVisitorBase 交接点恢复 Classic 共享调度组，不得引入 RTPS 数据面。
+  单/双输入 DataVisitor、AllLatest 和 RoutineFactory 数据协程链；MC-610 已恢复
+  Classic 共享调度组并接回 DataVisitorBase 唤醒；MC-611 接收该公共队列语义，不得引入
+  RTPS 数据面。
 - MC-602 必须先从 `docs/refactor/baseline.md`、`docs/refactor/module_mapping.md`、
   `docs/refactor/perf/**`、`docs/croutine/shared_from_this.md`、
   `docs/scheduler/debug_vtable_hang.md`、`docs/transport/signal.md` 和

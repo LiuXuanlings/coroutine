@@ -227,3 +227,23 @@ MiniCyber 不支持 Windows、aarch64、跨主机 RTPS 数据、RPC、TimerCompo
 本初稿迁移自首轮模块映射、调度/传输/组件笔记、旧性能报告与 00 历史记录；具体最终
 决策以 `docs/refactor/02_架构取舍矩阵.md`、验收以
 `docs/refactor/03_验收与性能口径.md` 为准。MC-622 将在完整主干有真实证据后扩写。
+
+## Classic 调度组
+
+### Classic 为什么必须由调度组共享 20 级队列？
+
+原生 `SchedulerClassic` 为每个 `SchedGroup` 创建多个 Processor，并让它们的
+`ClassicContext` 指向同一组多级就绪队列。MC-610 保留该职责：`SchedGroup` 的
+`processor_num` 决定共享消费者数量，具名 `ClassicTask` 决定协程所在组和优先级，
+未知任务进入第一个默认组。每个 Processor 不再拥有 `proc_i` 私有组；高优先级由各
+Processor 从第 19 级到第 0 级统一扫描决定。
+
+`Acquire` 不负责跨组分发或负载策略，它只防止同一个 CRoutine 被两个同组 Processor
+同时 Resume。数据到达时，`RoutineFactory` 交出的 `DataVisitorBase` 只注册
+`Scheduler::NotifyTask`，把 `DATA_WAIT` 标记为可更新并唤醒所属组，发布线程不会直接
+调用 Proc。关闭 Scheduler 时先让 Visitor 回调失去 Scheduler 指针，再停止 Processor
+并删除静态组状态，避免生命周期更长的 Visitor 回调已销毁调度器。
+
+验证由 `test_scheduler_classic` 的 Protobuf 配置映射和共享组任务、
+`test_processor` 的完整候选集优先级顺序，以及 `test_routine_factory` 的通知唤醒覆盖；
+三者均已纳入 `high_risk`，并与 `test_classic_context` 连续运行 20 轮通过。
