@@ -1,0 +1,59 @@
+syntax = "proto2";
+
+package minicyber.proto;
+
+// 与 CyberRT 原生调度配置保持同一字段职责的精简配置骨架。
+message InnerThread {
+  optional string name = 1;
+  optional string cpuset = 2;
+  optional string policy = 3;
+  optional uint32 prio = 4 [default = 1];
+}
+
+message ClassicTask {
+  optional string name = 1;
+  optional uint32 prio = 2 [default = 1];
+  optional string group_name = 3;
+}
+
+message SchedGroup {
+  required string name = 1 [default = "default_grp"];
+  optional uint32 processor_num = 2;
+  optional string affinity = 3;
+  optional string cpuset = 4;
+  optional string processor_policy = 5;
+  optional int32 processor_prio = 6 [default = 0];
+  repeated ClassicTask tasks = 7;
+}
+
+message ClassicConf {
+  repeated SchedGroup groups = 1;
+}
+
+message ChoreographyTask {
+  optional string name = 1;
+  optional int32 processor = 2;
+  optional uint32 prio = 3 [default = 1];
+}
+
+message ChoreographyConf {
+  optional uint32 choreography_processor_num = 1;
+  optional string choreography_affinity = 2;
+  optional string choreography_processor_policy = 3;
+  optional int32 choreography_processor_prio = 4;
+  optional string choreography_cpuset = 5;
+  optional uint32 pool_processor_num = 6;
+  optional string pool_affinity = 7;
+  optional string pool_processor_policy = 8;
+  optional int32 pool_processor_prio = 9;
+  optional string pool_cpuset = 10;
+  repeated ChoreographyTask tasks = 11;
+}
+
+message SchedulerConf {
+  optional string policy = 1;
+  optional string process_level_cpuset = 2;
+  repeated InnerThread threads = 3;
+  optional ClassicConf classic_conf = 4;
+  optional ChoreographyConf choreography_conf = 5;
+}

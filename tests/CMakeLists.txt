@@ -1,7 +1,49 @@
 # 针对 tests 目录的 CMake 配置
 
-# 查找 tests 目录下所有的 GTest 测试文件（约定以 test_ 开头）。
-file(GLOB TEST_FILES "test_*.cpp")
+# MC-603 留存清单中的测试源文件，禁止通过 GLOB 隐式扩大测试边界。
+set(TEST_FILES
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_atomic_hash_map.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_atomic_rw_lock.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_base_macros.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_bounded_queue.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_cache_buffer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_channel_buffer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_choreography_context.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_classic_context.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_common_types.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_component.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_component_base.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_component_factory.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_condition_notifier.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_croutine.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_data_dispatcher.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_data_fusion.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_data_notifier.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_data_visitor.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_fusion_all_latest.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_intra_dispatcher.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_intra_receiver.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_intra_transmitter.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_module_controller.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_node.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_pin_thread.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_posix_segment.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_posix_segment_signal.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_processor.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_processor_context.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_scheduler_choreography.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_scheduler_classic.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_shm_block.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_shm_dispatcher.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_shm_receiver.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_shm_segment.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_shm_state.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_shm_transmitter.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_smoke.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_topology.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_transport_routing.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_wait_strategy.cpp
+)
 
 # 如果没有测试文件，则跳过
 if(TEST_FILES)

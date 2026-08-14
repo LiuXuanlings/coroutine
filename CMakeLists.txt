@@ -47,6 +47,10 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 # ---------------------------------------------------------
 # 查找系统安装的Protobuf库，找不到则直接报错（REQUIRED）
 find_package(Protobuf REQUIRED)
+find_package(FastRTPS REQUIRED CONFIG NAMES FastRTPS fastrtps)
+if(NOT TARGET fastrtps)
+    message(FATAL_ERROR "FastRTPS was found, but it did not export the fastrtps target")
+endif()
 # 将protobuf头文件路径加入全局头文件搜索路径
 include_directories(${Protobuf_INCLUDE_DIRS})
 
@@ -54,8 +58,14 @@ include_directories(${Protobuf_INCLUDE_DIRS})
 # CMAKE_CURRENT_BINARY_DIR = build构建目录
 set(PROTO_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/proto_gen)
 
-# 递归搜集所有proto文件：include/minicyber/proto/下全部*.proto
-file(GLOB_RECURSE PROTO_FILES "include/minicyber/proto/*.proto")
+# MC-603 留存清单中的 Proto 源文件，禁止递归 GLOB 将黑名单重新编入。
+set(PROTO_FILES
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/minicyber/proto/component_conf.proto
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/minicyber/proto/dag_conf.proto
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/minicyber/proto/qos_profile.proto
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/minicyber/proto/role_attributes.proto
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/minicyber/proto/scheduler_conf.proto
+)
 
 # 循环遍历每一个proto文件
 foreach(PROTO_FILE ${PROTO_FILES})
@@ -106,9 +116,28 @@ target_include_directories(minicyber_proto
 # ---------------------------------------------------------
 # 构建核心库
 # ---------------------------------------------------------
-file(GLOB_RECURSE SRC_FILES "src/*.cpp" "src/*.S")
-add_library(minicyber_core SHARED ${SRC_FILES})
-target_link_libraries(minicyber_core minicyber_proto ${Protobuf_LIBRARIES} pthread dl rt)
+set(MINICYBER_CORE_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/croutine.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/croutine/detail/routine_context.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/mainboard/module_controller.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/scheduler/common/pin_thread.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/scheduler/policy/choreography_context.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/scheduler/policy/classic_context.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/scheduler/processor.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/scheduler/processor_context.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/scheduler/scheduler.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/scheduler/scheduler_factory.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/swap.S
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/topology/topology_manager.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/transport/dispatcher/shm_dispatcher.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/transport/shm/condition_notifier.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/transport/shm/posix_segment.cpp
+)
+add_library(minicyber_core SHARED ${MINICYBER_CORE_SOURCES})
+target_link_libraries(minicyber_core
+    PUBLIC minicyber_proto ${Protobuf_LIBRARIES} fastrtps
+    PRIVATE pthread dl rt
+)
 
 # ---------------------------------------------------------
 # 集成 GoogleTest (使用 FetchContent 自动下载)
