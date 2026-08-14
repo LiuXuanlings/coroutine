@@ -114,7 +114,35 @@ ctest --test-dir build/debug --output-on-failure -R '^test_posix_segment_signal$
 运行前后应比较 `/dev/shm/minicyber_*`。跨进程 Protobuf SHM 路径将在 MC-607 和
 MC-617 重新覆盖。
 
-## 五、调度启动、关闭和动态库
+## 五、FastRTPS 发现控制面
+
+### CDR 对齐导致 ChangeMsg 反序列化失败
+
+**症状**：两个同机进程已创建 Participant，但 Reader 迟迟看不到远端 Writer，FastRTPS
+输出 `Deserialization of data failed`。直接把 Protobuf 字节写入 FastRTPS payload 时，问题
+会随消息长度出现或消失。
+
+**根因和修复边界**：FastRTPS 的 `TopicDataType` payload 是 DDS CDR 表示，不是裸字节
+容器；传输层会按 CDR 边界补齐。若裸 Protobuf 尾部混入补齐的 `0x00`，Protobuf 会将其
+视为非法字段标记而解析失败。MC-606 的私有 `ChangeMsgType` 用 `DDS_CDR` 封装和长度明确
+的字节序列承载 Protobuf，再交给 `ChangeMsg::ParseFromArray`。这只适用于 Join/Leave
+控制 Topic，不能据此恢复 RTPS 数据面或公开 RTPS 类型。
+
+**Participant 离场**：Participant 名称携带本机 host 和 PID。发现监听到远端 Participant
+被移除或丢弃时，TopologyManager 从唯一 writer/reader 状态表删除该进程的角色，并向变更
+监听器发送对应 Channel Leave。关闭时先移除 Participant，随后清空状态和监听器，避免
+已卸载消费者收到后续控制面回调。
+
+**定位和回归**：确认 `RoleAttributes.host_name` 与本机一致，检查控制 Topic 的 CDR
+封装和字节序列长度；不要用固定 sleep 代替 `HasReader`/`HasWriter`。跨进程测试覆盖
+Writer/Reader Join、Leave 和状态恢复。
+
+```bash
+cmake --build build/debug -j2 --target test_topology test_topology_discovery
+ctest --test-dir build/debug --output-on-failure -R '^test_(topology|topology_discovery)$'
+```
+
+## 六、调度启动、关闭和动态库
 
 **构造期虚调用历史问题**：旧 IOManager 在基类构造期间启动工作线程，线程进入
 基类 `run()` 而非派生类实现；停止时主线程卡在 `pthread_join`，工作线程等待
@@ -130,7 +158,7 @@ MC-617 重新覆盖。
 进入唯一工厂、组件初始化、回滚水位和 Shutdown 顺序。MC-613 会移除空
 `module_library` 的生产绕过路径。
 
-## 六、证据来源
+## 七、证据来源
 
 本初稿迁移自首轮 `00_进度记录.md`、`baseline.md`、`module_mapping.md`、
 `croutine/shared_from_this.md`、`scheduler/debug_vtable_hang.md`、

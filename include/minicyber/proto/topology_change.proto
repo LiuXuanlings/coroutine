@@ -1,0 +1,27 @@
+syntax = "proto2";
+
+package minicyber.proto;
+
+import "minicyber/proto/role_attributes.proto";
+
+enum ChangeType {
+  CHANGE_CHANNEL = 1;
+}
+
+enum OperateType {
+  OPT_JOIN = 1;
+  OPT_LEAVE = 2;
+}
+
+enum RoleType {
+  ROLE_WRITER = 1;
+  ROLE_READER = 2;
+}
+
+message ChangeMsg {
+  optional uint64 timestamp = 1;
+  optional ChangeType change_type = 2;
+  optional OperateType operate_type = 3;
+  optional RoleType role_type = 4;
+  optional RoleAttributes role_attr = 5;
+}

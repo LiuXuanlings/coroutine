@@ -61,14 +61,16 @@ INTRA 只在同进程传递同一个 `shared_ptr`，可证明对象身份不变�
 
 同一个 Writer 可能同时面对本进程 Audit Reader 和外部 Sink Reader。最终
 HybridTransport 按每个对端并行维护连接：同进程走 INTRA，其他同机进程走 SHM；它
-不是创建端的一次性全局二选一，也不允许重复投递。该能力待 MC-606 至 MC-608 完成。
+不是创建端的一次性全局二选一，也不允许重复投递。该能力待 MC-607 至 MC-608 完成。
 
 ### FastRTPS 在项目中承担什么角色？
 
 FastRTPS 只负责同机 Channel Join/Leave 控制面。数据面只有 INTRA 和 POSIX SHM，
 不构建 RTPS 数据收发类型，也不声称支持跨主机数据。系统包通过
-`find_package(FastRTPS REQUIRED)` 提供；当前主机尚未找到该 CMake 包，这是 MC-604
-的外部前置而非可用能力。
+`find_package(FastRTPS REQUIRED)` 提供；MC-604 已验证当前系统导出 `fastrtps` target。
+MC-606 以私有 CDR 字节序列承载 Protobuf `ChangeMsg`，使两个同机进程能传播
+Writer/Reader Join 和 Leave；Participant 离场监听会清除该进程残留角色。CDR 封装只服务
+控制 Topic，不改变数据面边界。
 
 ## 插件、范围和可靠性
 

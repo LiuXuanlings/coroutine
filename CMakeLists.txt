@@ -65,6 +65,7 @@ set(PROTO_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/include/minicyber/proto/qos_profile.proto
     ${CMAKE_CURRENT_SOURCE_DIR}/include/minicyber/proto/role_attributes.proto
     ${CMAKE_CURRENT_SOURCE_DIR}/include/minicyber/proto/scheduler_conf.proto
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/minicyber/proto/topology_change.proto
 )
 
 # 循环遍历每一个proto文件

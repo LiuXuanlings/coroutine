@@ -42,6 +42,7 @@ set(TEST_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/test_smoke.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_time.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_topology.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_topology_discovery.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_transport_routing.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_wait_strategy.cpp
 )
@@ -75,6 +76,12 @@ if(TEST_FILES)
         if(TEST_NAME MATCHES "^test_(condition_notifier|posix_segment|posix_segment_signal|shm_dispatcher|shm_transmitter)$")
             list(APPEND TEST_LABELS "cross_process")
         endif()
+        if(TEST_NAME MATCHES "^test_topology$")
+            list(APPEND TEST_LABELS "high_risk")
+        endif()
+        if(TEST_NAME MATCHES "^test_topology_discovery$")
+            list(APPEND TEST_LABELS "high_risk" "cross_process")
+        endif()
         set_tests_properties(${TEST_NAME} PROPERTIES LABELS "${TEST_LABELS}")
     endforeach()
 endif()
@@ -91,5 +98,5 @@ add_custom_target(check_stress
 
 add_custom_target(check_cross_process
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L cross_process
-    DEPENDS test_condition_notifier test_posix_segment test_posix_segment_signal test_shm_dispatcher test_shm_transmitter
+    DEPENDS test_condition_notifier test_posix_segment test_posix_segment_signal test_shm_dispatcher test_shm_transmitter test_topology_discovery
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
