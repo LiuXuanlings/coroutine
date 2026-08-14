@@ -4,7 +4,6 @@
 #include <memory>
 
 #include "minicyber/common/types.h"
-#include "minicyber/croutine/croutine.h"
 #include "minicyber/data/channel_buffer.h"
 #include "minicyber/data/data_dispatcher.h"
 #include "minicyber/data/data_visitor_base.h"
@@ -19,118 +18,15 @@ struct VisitorConfig {
   uint32_t queue_size;
 };
 
-// =============================================================================
-// DataVisitor：协程侧的数据访问器。
-//
-// 模板形参对齐 CyberRT：M0 为主通道（驱动轴），M1/M2/M3 为副通道。
-// 通过偏特化提供 1/2/3/4 通道版本。
-//
-// 单通道版本：直接从 ChannelBuffer 取数据。
-// 双通道版本：组合 AllLatest 融合引擎，仅当主通道数据到达且副通道有最新值时
-//   才产生一组对齐的融合数据。DataNotifier 仅挂在主通道——副通道到达不会
-//   单独唤醒协程，符合 AllLatest "主通道驱动" 语义。
-// =============================================================================
+// DataVisitor 只保存 ChannelBuffer、消费游标和数据到达 notifier。它不执行
+// Component 业务回调；RoutineFactory 在 CRoutine 中调用 TryFetch 和 Proc，
+// 对齐 CyberRT data::DataVisitor 与 croutine::RoutineFactory 的职责边界。
+// 终局主干只需要单通道和首通道驱动的双通道 AllLatest，三/四输入不再提供。
+template <typename M0, typename M1 = NullType>
+class DataVisitor;
 
-// Forward declarations of the partial specializations (defined below).
-template <typename M0, typename M1 = NullType, typename M2 = NullType,
-          typename M3 = NullType>
-class DataVisitor;  // primary, intentionally undefined for the general case
-
-template <typename M0, typename M1, typename M2, typename M3>
-class DataVisitor : public DataVisitorBase {
- public:
-  using BufferType0 = CacheBuffer<std::shared_ptr<M0>>;
-  using BufferType1 = CacheBuffer<std::shared_ptr<M1>>;
-  using BufferType2 = CacheBuffer<std::shared_ptr<M2>>;
-  using BufferType3 = CacheBuffer<std::shared_ptr<M3>>;
-
-  DataVisitor(const VisitorConfig& cfg0, const VisitorConfig& cfg1,
-              const VisitorConfig& cfg2, const VisitorConfig& cfg3)
-      : buffer_m0_(cfg0.channel_id, std::make_shared<BufferType0>(cfg0.queue_size)),
-        buffer_m1_(cfg1.channel_id, std::make_shared<BufferType1>(cfg1.queue_size)),
-        buffer_m2_(cfg2.channel_id, std::make_shared<BufferType2>(cfg2.queue_size)),
-        buffer_m3_(cfg3.channel_id, std::make_shared<BufferType3>(cfg3.queue_size)) {
-    DataDispatcher<M0>::Instance()->AddBuffer(buffer_m0_);
-    DataDispatcher<M1>::Instance()->AddBuffer(buffer_m1_);
-    DataDispatcher<M2>::Instance()->AddBuffer(buffer_m2_);
-    DataDispatcher<M3>::Instance()->AddBuffer(buffer_m3_);
-    data_fusion_ = new fusion::AllLatest<M0, M1, M2, M3>(
-        buffer_m0_, buffer_m1_, buffer_m2_, buffer_m3_);
-    data_notifier_->AddNotifier(buffer_m0_.channel_id(), notifier_);
-  }
-
-  ~DataVisitor() {
-    data_notifier_->RemoveNotifier(buffer_m0_.channel_id(), notifier_);
-    delete data_fusion_;
-    DataDispatcher<M0>::Instance()->RemoveBuffer(buffer_m0_);
-    DataDispatcher<M1>::Instance()->RemoveBuffer(buffer_m1_);
-    DataDispatcher<M2>::Instance()->RemoveBuffer(buffer_m2_);
-    DataDispatcher<M3>::Instance()->RemoveBuffer(buffer_m3_);
-  }
-
-  bool TryFetch(std::shared_ptr<M0>& m0, std::shared_ptr<M1>& m1,
-                std::shared_ptr<M2>& m2, std::shared_ptr<M3>& m3) {
-    if (!data_fusion_->Fusion(&next_msg_index_, m0, m1, m2, m3)) return false;
-    ++next_msg_index_;
-    return true;
-  }
-
- private:
-  ChannelBuffer<M0> buffer_m0_;
-  ChannelBuffer<M1> buffer_m1_;
-  ChannelBuffer<M2> buffer_m2_;
-  ChannelBuffer<M3> buffer_m3_;
-  fusion::AllLatest<M0, M1, M2, M3>* data_fusion_ = nullptr;
-};
-
-template <typename M0, typename M1, typename M2>
-class DataVisitor<M0, M1, M2, NullType> : public DataVisitorBase {
- public:
-  using BufferType0 = CacheBuffer<std::shared_ptr<M0>>;
-  using BufferType1 = CacheBuffer<std::shared_ptr<M1>>;
-  using BufferType2 = CacheBuffer<std::shared_ptr<M2>>;
-
-  DataVisitor(const VisitorConfig& cfg0, const VisitorConfig& cfg1,
-              const VisitorConfig& cfg2)
-      : buffer_m0_(cfg0.channel_id, std::make_shared<BufferType0>(cfg0.queue_size)),
-        buffer_m1_(cfg1.channel_id, std::make_shared<BufferType1>(cfg1.queue_size)),
-        buffer_m2_(cfg2.channel_id, std::make_shared<BufferType2>(cfg2.queue_size)) {
-    DataDispatcher<M0>::Instance()->AddBuffer(buffer_m0_);
-    DataDispatcher<M1>::Instance()->AddBuffer(buffer_m1_);
-    DataDispatcher<M2>::Instance()->AddBuffer(buffer_m2_);
-    data_fusion_ = new fusion::AllLatest<M0, M1, M2>(
-        buffer_m0_, buffer_m1_, buffer_m2_);
-    data_notifier_->AddNotifier(buffer_m0_.channel_id(), notifier_);
-  }
-
-  ~DataVisitor() {
-    data_notifier_->RemoveNotifier(buffer_m0_.channel_id(), notifier_);
-    delete data_fusion_;
-    DataDispatcher<M0>::Instance()->RemoveBuffer(buffer_m0_);
-    DataDispatcher<M1>::Instance()->RemoveBuffer(buffer_m1_);
-    DataDispatcher<M2>::Instance()->RemoveBuffer(buffer_m2_);
-  }
-
-  bool TryFetch(std::shared_ptr<M0>& m0, std::shared_ptr<M1>& m1,
-                std::shared_ptr<M2>& m2) {
-    if (!data_fusion_->Fusion(&next_msg_index_, m0, m1, m2)) return false;
-    ++next_msg_index_;
-    return true;
-  }
-
- private:
-  ChannelBuffer<M0> buffer_m0_;
-  ChannelBuffer<M1> buffer_m1_;
-  ChannelBuffer<M2> buffer_m2_;
-  fusion::AllLatest<M0, M1, M2>* data_fusion_ = nullptr;
-};
-
-// -----------------------------------------------------------------------------
-// Single-channel specialization: DataVisitor<M0, NullType, NullType, NullType>
-// Behaves identically to the pre-Step-35 DataVisitor<T>.
-// -----------------------------------------------------------------------------
 template <typename M0>
-class DataVisitor<M0, NullType, NullType, NullType> : public DataVisitorBase {
+class DataVisitor<M0, NullType> : public DataVisitorBase {
  public:
   using BufferType = CacheBuffer<std::shared_ptr<M0>>;
 
@@ -142,27 +38,17 @@ class DataVisitor<M0, NullType, NullType, NullType> : public DataVisitorBase {
   }
 
   ~DataVisitor() {
+    // 先从 notifier 表移除并等待在途回调，再移除弱引用 Buffer。这样关闭后
+    // 不会再从发布线程进入已销毁的唤醒回调。
     data_notifier_->RemoveNotifier(buffer_.channel_id(), notifier_);
     DataDispatcher<M0>::Instance()->RemoveBuffer(buffer_);
   }
 
-  // Non-blocking fetch. Returns false when caught up.
-  bool TryFetch(std::shared_ptr<M0>& m) {
-    if (buffer_.Fetch(&next_msg_index_, m)) {
-      ++next_msg_index_;
-      return true;
+  bool TryFetch(std::shared_ptr<M0>& message) {
+    if (!buffer_.Fetch(&next_msg_index_, message)) {
+      return false;
     }
-    return false;
-  }
-
-  // Blocking fetch for use inside a CRoutine. Yields with DATA_WAIT when no
-  // data is available; retries after the notifier fires.
-  bool Fetch(std::shared_ptr<M0>& m) {
-    while (!TryFetch(m)) {
-      auto rt = CRoutine::GetThis();
-      rt->SetState(RoutineState::DATA_WAIT);
-      CRoutine::Yield(RoutineState::DATA_WAIT);
-    }
+    ++next_msg_index_;
     return true;
   }
 
@@ -173,92 +59,52 @@ class DataVisitor<M0, NullType, NullType, NullType> : public DataVisitorBase {
   ChannelBuffer<M0> buffer_;
 };
 
-// -----------------------------------------------------------------------------
-// Two-channel specialization: DataVisitor<M0, M1, NullType, NullType>
-// Integrates AllLatest fusion. Notifier is bound to the PRIMARY channel only.
-//
-// Construction order matters (Step 35 design decision):
-//   1. Register both ChannelBuffers with their DataDispatcher.
-//   2. Construct AllLatest — it registers ITS OWN notifier on M0 to fill the
-//      fusion buffer when M0 data arrives.
-//   3. Register the visitor's notifier on M0 AFTER AllLatest's notifier.
-//      DataNotifier::Notify iterates notifiers in registration order, so the
-//      fusion buffer is populated BEFORE the coroutine is woken. Reversing
-//      this order would let the coroutine wake, see an empty fusion buffer,
-//      and park — missing the wake until the next M0 dispatch.
-// -----------------------------------------------------------------------------
 template <typename M0, typename M1>
-class DataVisitor<M0, M1, NullType, NullType> : public DataVisitorBase {
+class DataVisitor : public DataVisitorBase {
  public:
-  using BufferType0 = CacheBuffer<std::shared_ptr<M0>>;
-  using BufferType1 = CacheBuffer<std::shared_ptr<M1>>;
+  using PrimaryBufferType = CacheBuffer<std::shared_ptr<M0>>;
+  using SecondaryBufferType = CacheBuffer<std::shared_ptr<M1>>;
 
-  DataVisitor(const VisitorConfig& cfg0, const VisitorConfig& cfg1)
-      : buffer_m0_(cfg0.channel_id,
-                   std::make_shared<BufferType0>(cfg0.queue_size)),
-        buffer_m1_(cfg1.channel_id,
-                   std::make_shared<BufferType1>(cfg1.queue_size)) {
-    DataDispatcher<M0>::Instance()->AddBuffer(buffer_m0_);
-    DataDispatcher<M1>::Instance()->AddBuffer(buffer_m1_);
-    // Step 1: AllLatest registers its M0 notifier (fills fusion buffer).
-    data_fusion_ = new fusion::AllLatest<M0, M1>(buffer_m0_, buffer_m1_);
-    // Step 2: visitor's wake-up notifier on M0, registered AFTER AllLatest's
-    // so the fusion buffer is populated before the coroutine re-checks.
-    data_notifier_->AddNotifier(buffer_m0_.channel_id(), notifier_);
+  DataVisitor(const VisitorConfig& primary_config,
+              const VisitorConfig& secondary_config)
+      : primary_(primary_config.channel_id,
+                 std::make_shared<PrimaryBufferType>(primary_config.queue_size)),
+        secondary_(secondary_config.channel_id,
+                   std::make_shared<SecondaryBufferType>(secondary_config.queue_size)),
+        fusion_(std::make_unique<fusion::AllLatest<M0, M1>>(primary_, secondary_)) {
+    DataDispatcher<M0>::Instance()->AddBuffer(primary_);
+    DataDispatcher<M1>::Instance()->AddBuffer(secondary_);
+    // AllLatest 已在 primary_ 的 Fill 回调中安装融合；DataDispatcher 在 Fill
+    // 后才 Notify，因此这里的唤醒回调总在融合队列填充之后执行。
+    data_notifier_->AddNotifier(primary_.channel_id(), notifier_);
   }
 
   ~DataVisitor() {
-    if (data_fusion_) {
-      delete data_fusion_;
-      data_fusion_ = nullptr;
-    }
-    data_notifier_->RemoveNotifier(buffer_m0_.channel_id(), notifier_);
-    DataDispatcher<M0>::Instance()->RemoveBuffer(buffer_m0_);
-    DataDispatcher<M1>::Instance()->RemoveBuffer(buffer_m1_);
+    data_notifier_->RemoveNotifier(primary_.channel_id(), notifier_);
+    fusion_.reset();
+    DataDispatcher<M0>::Instance()->RemoveBuffer(primary_);
+    DataDispatcher<M1>::Instance()->RemoveBuffer(secondary_);
   }
 
-  // Non-blocking fusion fetch. Returns true and fills m0/m1 with the next
-  // aligned pair. Returns false when the fusion buffer is empty or the
-  // consumer has caught up.
-  //
-  // Cursor advancement is owned by AllLatest::Fusion (it calls ++(*index)
-  // internally), so unlike the single-channel TryFetch we do NOT bump
-  // next_msg_index_ here — that would double-advance and read past Tail.
-  bool TryFetch(std::shared_ptr<M0>& m0, std::shared_ptr<M1>& m1) {
-    if (!data_fusion_->Fusion(&next_msg_index_, m0, m1)) {
+  bool TryFetch(std::shared_ptr<M0>& primary_message,
+                std::shared_ptr<M1>& secondary_message) {
+    if (!fusion_->Fusion(&next_msg_index_, primary_message, secondary_message)) {
       return false;
     }
     ++next_msg_index_;
     return true;
   }
 
-  // Blocking fusion fetch for use inside a CRoutine. Parks in DATA_WAIT until
-  // a fused pair is available. Wakes on M0 dispatch only (M1 dispatch does
-  // not trigger the notifier); the coroutine re-checks and parks again if the
-  // fusion buffer is still empty (e.g. M1 had no data at the time of M0's
-  // dispatch).
-  bool Fetch(std::shared_ptr<M0>& m0, std::shared_ptr<M1>& m1) {
-    while (!TryFetch(m0, m1)) {
-      auto rt = CRoutine::GetThis();
-      rt->SetState(RoutineState::DATA_WAIT);
-      CRoutine::Yield(RoutineState::DATA_WAIT);
-    }
-    return true;
-  }
-
-  // Primary channel is the "drive shaft" — it's the channel the notifier
-  // binds to and the one whose dispatch triggers fusion attempts.
-  uint64_t channel_id() const { return buffer_m0_.channel_id(); }
-  uint64_t primary_channel_id() const { return buffer_m0_.channel_id(); }
-  uint64_t secondary_channel_id() const { return buffer_m1_.channel_id(); }
-
-  const ChannelBuffer<M0>& primary_buffer() const { return buffer_m0_; }
-  const ChannelBuffer<M1>& secondary_buffer() const { return buffer_m1_; }
+  uint64_t channel_id() const { return primary_.channel_id(); }
+  uint64_t primary_channel_id() const { return primary_.channel_id(); }
+  uint64_t secondary_channel_id() const { return secondary_.channel_id(); }
+  const ChannelBuffer<M0>& primary_buffer() const { return primary_; }
+  const ChannelBuffer<M1>& secondary_buffer() const { return secondary_; }
 
  private:
-  ChannelBuffer<M0> buffer_m0_;
-  ChannelBuffer<M1> buffer_m1_;
-  fusion::AllLatest<M0, M1>* data_fusion_ = nullptr;
+  ChannelBuffer<M0> primary_;
+  ChannelBuffer<M1> secondary_;
+  std::unique_ptr<fusion::AllLatest<M0, M1>> fusion_;
 };
 
 }  // namespace data

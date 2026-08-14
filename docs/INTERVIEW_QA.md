@@ -51,6 +51,22 @@ Processor，关闭时能切断任务和 Reader，避免发布线程进入已卸�
 就不产生融合结果。填充 notifier 必须早于 Scheduler 唤醒 notifier，且融合游标只能
 推进一次。业务启动先预热 VehicleState，避免第一条主输入缺少次输入。
 
+### 为什么 DataVisitor 不再提供直接阻塞 Fetch？
+
+DataVisitor 的职责是维护 ChannelBuffer、消费游标和 DataNotifier，而不是在任意调用线程
+阻塞或执行 Component 业务。MC-609 只保留 `TryFetch`，由 RoutineFactory 创建 CRoutine
+循环：每轮先标记 `DATA_WAIT`，有数据时才调用 Proc 并 `Yield(READY)`，无数据则保持等待。
+调度层通过 `DataVisitorBase` 注册 `NotifyTask` 回调，把数据到达转换为协程唤醒；发布线程
+只负责 Dispatch。这样关闭时可以先解除 notifier，再回收协程和 Reader，不会把业务执行
+留在 Transport 回调栈上。
+
+### 为什么 RoutineFactory 只支持单/双输入？
+
+唯一业务链只有单通道处理和 Fusion 的双通道 AllLatest。双通道由首通道驱动：次通道更新
+最新值但不唤醒协程，首通道 Fill 在 DataNotifier 唤醒前生成融合对；访问器的游标对每个
+成功融合恰好前进一次。三/四输入模板会扩大未验证的 API 与关闭组合，MC-609 已物理删除，
+不以泛型外观伪装项目未支持的多通道同步能力。
+
 ### INTRA 和 SHM 的零拷贝边界是什么？
 
 INTRA 只在同进程传递同一个 `shared_ptr`，可证明对象身份不变。跨进程不能共享带有

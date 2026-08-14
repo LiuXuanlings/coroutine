@@ -32,6 +32,7 @@ set(TEST_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/test_posix_segment_signal.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_processor.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_processor_context.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_routine_factory.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_scheduler_choreography.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_scheduler_classic.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_shm_block.cpp
@@ -87,6 +88,9 @@ if(TEST_FILES)
             list(APPEND TEST_LABELS "high_risk" "cross_process")
         endif()
         if(TEST_NAME MATCHES "^test_node$")
+            list(APPEND TEST_LABELS "high_risk")
+        endif()
+        if(TEST_NAME MATCHES "^test_(croutine|data_dispatcher|data_notifier|data_visitor|data_fusion|fusion_all_latest|routine_factory)$")
             list(APPEND TEST_LABELS "high_risk")
         endif()
         set_tests_properties(${TEST_NAME} PROPERTIES LABELS "${TEST_LABELS}")

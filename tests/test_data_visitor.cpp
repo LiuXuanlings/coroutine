@@ -2,25 +2,17 @@
 
 #include <gtest/gtest.h>
 #include <atomic>
-#include <chrono>
 #include <memory>
-#include <thread>
 
-#include "minicyber/croutine/croutine.h"
 #include "minicyber/data/data_dispatcher.h"
 #include "minicyber/data/data_notifier.h"
-#include "minicyber/scheduler/scheduler.h"
 
 namespace {
 
-using minicyber::data::CacheBuffer;
-using minicyber::data::ChannelBuffer;
 using minicyber::data::DataDispatcher;
 using minicyber::data::DataNotifier;
 using minicyber::data::DataVisitor;
 using minicyber::data::VisitorConfig;
-using minicyber::scheduler::Scheduler;
-using minicyber::scheduler::SchedulerConf;
 
 // ---------------------------------------------------------------------------
 // Unit tests for TryFetch (no coroutine context required)
@@ -114,110 +106,6 @@ TEST(DataVisitorTest, DestructionUnregistersBufferAndNotifier) {
   EXPECT_FALSE(DataDispatcher<int>::Instance()->Dispatch(
       kChannel, std::make_shared<int>(2)));
   EXPECT_EQ(callbacks.load(), 1);
-}
-
-// ---------------------------------------------------------------------------
-// Integration test for Fetch (requires Scheduler + CRoutine context)
-// ---------------------------------------------------------------------------
-
-TEST(DataVisitorTest, FetchBlocksAndResumesOnDispatch) {
-  SchedulerConf conf;
-  conf.thread_num = 1;
-  Scheduler sched(conf);
-
-  DataVisitor<int> dv(VisitorConfig{9007, 4});
-  // Wire the notifier callback to wake the coroutine via the scheduler:
-  // the callback is fired by DataNotifier after Dispatch; it calls
-  // NotifyTask to re-enqueue the parked coroutine.
-  std::atomic<uint64_t> task_id{0};
-  dv.RegisterNotifyCallback([&]() {
-    uint64_t id = task_id.load();
-    if (id != 0) {
-      sched.NotifyTask(id);
-    }
-  });
-
-  std::atomic<bool> fetched{false};
-  std::atomic<int> fetched_value{-1};
-
-  uint64_t id = sched.CreateTask(
-      [&]() {
-        std::shared_ptr<int> msg;
-        // Fetch() will loop: TryFetch fails -> DATA_WAIT + Yield -> retry.
-        dv.Fetch(msg);
-        fetched_value.store(*msg);
-        fetched.store(true);
-      },
-      "data_wait_consumer", 5);
-  task_id.store(id);
-
-  // Let the coroutine start, TryFetch, and park in DATA_WAIT.
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  EXPECT_FALSE(fetched.load());
-
-  // Publish data: Dispatch fills the buffer and fires the notifier, which
-  // calls NotifyTask -> the coroutine wakes and Fetch succeeds.
-  DataDispatcher<int>::Instance()->Dispatch(9007, std::make_shared<int>(777));
-
-  for (int i = 0; i < 100 && !fetched.load(); ++i) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
-  EXPECT_TRUE(fetched.load());
-  EXPECT_EQ(fetched_value.load(), 777);
-
-  sched.Shutdown();
-}
-
-TEST(DataVisitorTest, FetchRetriesAcrossMultipleWaits) {
-  // Coroutine Fetches twice; first Fetch parks until first Dispatch, second
-  // Fetch parks until second Dispatch. Verifies the TryFetch loop survives
-  // multiple DATA_WAIT -> READY -> DATA_WAIT transitions.
-  SchedulerConf conf;
-  conf.thread_num = 1;
-  Scheduler sched(conf);
-
-  DataVisitor<int> dv(VisitorConfig{9008, 4});
-  std::atomic<uint64_t> task_id{0};
-  dv.RegisterNotifyCallback([&]() {
-    uint64_t id = task_id.load();
-    if (id != 0) sched.NotifyTask(id);
-  });
-
-  std::atomic<int> sum{0};
-  std::atomic<int> fetches{0};
-
-  uint64_t id = sched.CreateTask(
-      [&]() {
-        std::shared_ptr<int> m;
-        dv.Fetch(m);
-        sum.fetch_add(*m);
-        fetches.fetch_add(1);
-        dv.Fetch(m);
-        sum.fetch_add(*m);
-        fetches.fetch_add(1);
-      },
-      "two_fetch_consumer", 5);
-  task_id.store(id);
-
-  std::this_thread::sleep_for(std::chrono::milliseconds(80));
-  ASSERT_EQ(fetches.load(), 0);
-  DataDispatcher<int>::Instance()->Dispatch(9008, std::make_shared<int>(100));
-  for (int i = 0; i < 100 && fetches.load() < 1; ++i) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
-  ASSERT_EQ(fetches.load(), 1);
-
-  // Second Fetch parks again.
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  ASSERT_EQ(fetches.load(), 1);
-  DataDispatcher<int>::Instance()->Dispatch(9008, std::make_shared<int>(200));
-  for (int i = 0; i < 100 && fetches.load() < 2; ++i) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
-  EXPECT_EQ(fetches.load(), 2);
-  EXPECT_EQ(sum.load(), 300);
-
-  sched.Shutdown();
 }
 
 }  // namespace
