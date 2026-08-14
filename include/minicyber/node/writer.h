@@ -2,76 +2,88 @@
 #define MINICYBER_NODE_WRITER_H_
 
 #include <memory>
+#include <mutex>
 #include <string>
+#include <type_traits>
+#include <utility>
 
+#include <google/protobuf/message.h>
+
+#include "minicyber/proto/role_attributes.pb.h"
 #include "minicyber/topology/topology_manager.h"
-#include "minicyber/transport/transmitter/transmitter.h"
 #include "minicyber/transport/transport.h"
 
 namespace minicyber {
 namespace node {
 
-// =============================================================================
-// Writer：发布端用户接口（对齐 CyberRT Writer<M>）
-//
-// 职责：封装 Transmitter，提供极简的 Write(msg) API。
-//   创建时自动向 TopologyManager 注册为 writer，使 Transport 路由可感知拓扑。
-//
-// 生命周期：
-//   Init()    : 注册拓扑 + Transport::CreateTransmitter<T>
-//   Write(msg): transmitter_->Transmit(msg)
-//   Shutdown(): transmitter_->Disable()
-//
-// 与 CyberRT 的简化：
-//   - 去掉 RoleAttributes / WriterBase / ChangeConnection / 动态拓扑监听
-//   - 去掉 HasReader / GetReaders（依赖 ChannelManager，本移植无）
-//   - 拓扑在 Init 时静态注册，不做动态变更通知
-// =============================================================================
-
+// Writer 对齐 CyberRT 的端点生命周期：先创建会订阅发现变化的 Hybrid
+// transmitter，再 Join ChannelManager；关闭顺序反转为先停 Transport、再 Leave，
+// 保证动态库卸载前不会再收到 opposite 的拓扑回调。
 template <typename T>
 class Writer {
- public:
-  Writer(const std::string& node_name, const std::string& channel)
-      : node_name_(node_name), channel_(channel) {}
+  static_assert(std::is_base_of<google::protobuf::Message, T>::value,
+                "Node Channel messages must derive from google::protobuf::Message");
 
+ public:
+  explicit Writer(proto::RoleAttributes role_attr)
+      : role_attr_(std::move(role_attr)) {}
   ~Writer() { Shutdown(); }
 
-  // 注册拓扑 + 创建底层 Transmitter
-  void Init() {
-    if (init_) return;
-    topology::TopologyManager::Instance()->AddChannelWriter(
-        channel_, node_name_, ::getpid());
-    transmitter_ = transport::Transport::CreateTransmitter<T>(channel_);
+  bool Init() {
+    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+    if (init_) return true;
+    transmitter_ = transport::Transport::CreateHybridTransmitter<T>(role_attr_);
+    if (transmitter_ == nullptr ||
+        !topology::TopologyManager::Instance()->Join(proto::ROLE_WRITER,
+                                                      role_attr_)) {
+      if (transmitter_) transmitter_->Disable();
+      transmitter_.reset();
+      return false;
+    }
     init_ = true;
+    return true;
   }
 
-  // 发布消息（shared_ptr 版本，零拷贝传递）
   bool Write(const std::shared_ptr<T>& msg) {
-    if (!init_ || transmitter_ == nullptr || msg == nullptr) return false;
-    return transmitter_->Transmit(msg);
+    std::shared_ptr<transport::HybridTransmitter<T>> transmitter;
+    {
+      std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+      if (!init_ || msg == nullptr) return false;
+      transmitter = transmitter_;
+    }
+    return transmitter != nullptr && transmitter->Transmit(msg);
   }
 
-  // 发布消息（值版本，内部包装成 shared_ptr）
-  bool Write(const T& msg) {
-    return Write(std::make_shared<T>(msg));
-  }
+  bool Write(const T& msg) { return Write(std::make_shared<T>(msg)); }
 
   void Shutdown() {
-    if (!init_) return;
-    init_ = false;
-    if (transmitter_) {
-      transmitter_->Disable();
-      transmitter_.reset();
+    std::shared_ptr<transport::HybridTransmitter<T>> transmitter;
+    {
+      std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+      if (!init_) return;
+      init_ = false;
+      transmitter = std::move(transmitter_);
     }
+    if (transmitter) transmitter->Disable();
+    topology::TopologyManager::Instance()->Leave(proto::ROLE_WRITER, role_attr_);
   }
 
-  bool IsInit() const { return init_; }
-  const std::string& channel() const { return channel_; }
+  bool IsInit() const {
+    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+    return init_;
+  }
+  bool HasReader() const {
+    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+    return init_ && topology::TopologyManager::Instance()->HasReader(
+                        role_attr_.channel_name());
+  }
+  const std::string& channel() const { return role_attr_.channel_name(); }
+  const proto::RoleAttributes& role_attr() const { return role_attr_; }
 
  private:
-  std::string node_name_;
-  std::string channel_;
-  std::shared_ptr<transport::Transmitter<T>> transmitter_;
+  proto::RoleAttributes role_attr_;
+  mutable std::mutex lifecycle_mutex_;
+  std::shared_ptr<transport::HybridTransmitter<T>> transmitter_;
   bool init_ = false;
 };
 

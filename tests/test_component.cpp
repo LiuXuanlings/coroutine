@@ -6,6 +6,16 @@
 #include "minicyber/component/component.h"
 #include "minicyber/node/node.h"
 
+namespace {
+using TestMessage = minicyber::proto::RoleAttributes;
+
+TestMessage MakeMessage(const std::string& value) {
+  TestMessage message;
+  message.set_node_name(value);
+  return message;
+}
+}  // namespace
+
 // =============================================================================
 // SingleChannelComponent — 单通道组件测试桩
 //
@@ -16,7 +26,7 @@
 // 可以创建多个独立实例，避免全局状态污染。
 // =============================================================================
 class SingleChannelComponent
-    : public minicyber::component::Component<std::string> {
+    : public minicyber::component::Component<TestMessage> {
  public:
   // 通过 output 指针将 Proc 结果传出（测试使用栈上对象确保安全）
   explicit SingleChannelComponent(std::string* output,
@@ -30,8 +40,8 @@ class SingleChannelComponent
     return true;
   }
 
-  bool Proc(const std::shared_ptr<std::string>& msg) override {
-    if (output_) *output_ = *msg;
+  bool Proc(const std::shared_ptr<TestMessage>& msg) override {
+    if (output_) *output_ = msg->node_name();
     if (count_) count_->fetch_add(1, std::memory_order_relaxed);
     proc_called_.store(true);
     return true;
@@ -53,10 +63,10 @@ class SingleChannelComponent
 // NoReaderComponent — 验证无 Reader 配置时 Initialize 返回 false
 // =============================================================================
 class NoReaderComponent
-    : public minicyber::component::Component<std::string> {
+    : public minicyber::component::Component<TestMessage> {
  protected:
   bool Init() override { return true; }
-  bool Proc(const std::shared_ptr<std::string>&) override { return true; }
+  bool Proc(const std::shared_ptr<TestMessage>&) override { return true; }
 };
 
 // =============================================================================
@@ -84,10 +94,10 @@ class NullComponent
 // FailInitComponent — Init() 失败的组件，验证 Initialize 传播失败
 // =============================================================================
 class FailInitComponent
-    : public minicyber::component::Component<std::string> {
+    : public minicyber::component::Component<TestMessage> {
  protected:
   bool Init() override { return false; }
-  bool Proc(const std::shared_ptr<std::string>&) override { return true; }
+  bool Proc(const std::shared_ptr<TestMessage>&) override { return true; }
 };
 
 // =============================================================================
@@ -114,7 +124,7 @@ TEST(ComponentTest, SingleChannelSyncDelivery) {
 
   // 创建发布者 Node + Writer
   minicyber::node::Node pub_node("publisher");
-  auto writer = pub_node.CreateWriter<std::string>("/test_single");
+  auto writer = pub_node.CreateWriter<TestMessage>("/test_single");
   ASSERT_NE(writer, nullptr);
 
   // 创建组件配置：组件名 + 一个 Reader 订阅 /test_single
@@ -132,13 +142,13 @@ TEST(ComponentTest, SingleChannelSyncDelivery) {
   EXPECT_FALSE(comp->IsShutdown());
 
   // 写入消息 → Proc 应被同步调用
-  std::string test_msg("hello from single channel test");
-  EXPECT_TRUE(writer->Write(test_msg));
+  const std::string test_msg("hello from single channel test");
+  EXPECT_TRUE(writer->Write(MakeMessage(test_msg)));
   EXPECT_TRUE(comp->proc_called());
   EXPECT_EQ(received, test_msg);
 
   // 写入第二条不同消息
-  EXPECT_TRUE(writer->Write("second message"));
+  EXPECT_TRUE(writer->Write(MakeMessage("second message")));
   EXPECT_EQ(received, "second message");
 
   // 清理
@@ -160,8 +170,8 @@ TEST(ComponentTest, MultipleChannelsIsolated) {
   auto comp_b = std::make_shared<SingleChannelComponent>(&received_b);
 
   minicyber::node::Node pub_node("publisher");
-  auto writer_a = pub_node.CreateWriter<std::string>("/chan_a");
-  auto writer_b = pub_node.CreateWriter<std::string>("/chan_b");
+  auto writer_a = pub_node.CreateWriter<TestMessage>("/chan_a");
+  auto writer_b = pub_node.CreateWriter<TestMessage>("/chan_b");
   ASSERT_NE(writer_a, nullptr);
   ASSERT_NE(writer_b, nullptr);
 
@@ -178,14 +188,14 @@ TEST(ComponentTest, MultipleChannelsIsolated) {
   ASSERT_TRUE(comp_b->Initialize(cfg_b));
 
   // 向 /chan_a 写消息 — 仅 comp_a 应收到
-  EXPECT_TRUE(writer_a->Write("msg_for_a"));
+  EXPECT_TRUE(writer_a->Write(MakeMessage("msg_for_a")));
   EXPECT_TRUE(comp_a->proc_called());
   EXPECT_EQ(received_a, "msg_for_a");
   EXPECT_FALSE(comp_b->proc_called());
   EXPECT_TRUE(received_b.empty());
 
   // 向 /chan_b 写消息 — 仅 comp_b 应收到
-  EXPECT_TRUE(writer_b->Write("msg_for_b"));
+  EXPECT_TRUE(writer_b->Write(MakeMessage("msg_for_b")));
   EXPECT_TRUE(comp_b->proc_called());
   EXPECT_EQ(received_b, "msg_for_b");
 
@@ -238,7 +248,7 @@ TEST(ComponentTest, ShutdownStopsProcessing) {
   auto comp = std::make_shared<SingleChannelComponent>(&received);
 
   minicyber::node::Node pub_node("publisher");
-  auto writer = pub_node.CreateWriter<std::string>("/shutdown_test");
+  auto writer = pub_node.CreateWriter<TestMessage>("/shutdown_test");
   ASSERT_NE(writer, nullptr);
 
   minicyber::proto::ComponentConfig config;
@@ -247,13 +257,13 @@ TEST(ComponentTest, ShutdownStopsProcessing) {
   ASSERT_TRUE(comp->Initialize(config));
 
   // 先验证正常接收
-  EXPECT_TRUE(writer->Write("before_shutdown"));
+  EXPECT_TRUE(writer->Write(MakeMessage("before_shutdown")));
   EXPECT_EQ(received, "before_shutdown");
 
   // Shutdown 后写入
   comp->Shutdown();
   received.clear();
-  EXPECT_TRUE(writer->Write("after_shutdown"));
+  EXPECT_TRUE(writer->Write(MakeMessage("after_shutdown")));
   // is_shutdown_ 导致 Process 直接返回 true，不调用 Proc
   // 所以 received 保持清空
   //

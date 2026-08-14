@@ -6,7 +6,7 @@
 
 - 当前分支：`development`
 - 当前阶段：第二次重构，基础设施改造阶段
-- 当前任务：MC-608
+- 当前任务：MC-609
 - 当前状态：待开始
 - 唯一状态事实源：[`docs/refactor/00_进度记录.md`](docs/refactor/00_进度记录.md)
 - 唯一任务执行方案：[`docs/refactor/01_实施方案.md`](docs/refactor/01_实施方案.md)
@@ -25,8 +25,9 @@
 - MC-603 已完成 RPC、TimerComponent、旧示例、旧 benchmark、旧脚本及其专属测试的物理删除；
   Debug 重新配置、全量构建和黑名单扫描均通过。当前精确留存清单记录在
   `docs/refactor/00_进度记录.md`，是 MC-604 显式源列表的唯一输入。
-- MC-607 已接收发现快照并恢复 INTRA/SHM HybridTransport；MC-608 接收 Hybrid
-  作为输入，对齐 Protobuf-only Node API 和端点生命周期；不得引入 RTPS 数据面。
+- MC-607 已接收发现快照并恢复 INTRA/SHM HybridTransport；MC-608 已将 Hybrid 接入
+  Protobuf-only Node API、RoleAttributes、`HasReader` 和端点生命周期；MC-609 接收
+  Reader 有界队列作为输入恢复数据驱动链，不得引入 RTPS 数据面。
 - MC-602 必须先从 `docs/refactor/baseline.md`、`docs/refactor/module_mapping.md`、
   `docs/refactor/perf/**`、`docs/croutine/shared_from_this.md`、
   `docs/scheduler/debug_vtable_hang.md`、`docs/transport/signal.md` 和
