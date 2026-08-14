@@ -32,7 +32,6 @@ using minicyber::component::ComponentFactory;
 using minicyber::component::ComponentBase;
 using minicyber::proto::ComponentConfig;
 using minicyber::proto::DagConfig;
-using minicyber::proto::TimerComponentConfig;
 
 // =============================================================================
 // 构造 / 析构
@@ -168,11 +167,7 @@ bool ModuleController::LoadModuleFromFile(const std::string& path) {
 //       b. component->Initialize(config) → 配置+初始化
 //       c. component_list_.push_back → 生命周期管理
 //
-//   Step 3: 创建定时组件
-//     遍历 ModuleConfig::timer_components：
-//       a. 同上，但调 Initialize(TimerComponentConfig)
-//
-//   Step 4: 错误处理
+//   Step 3: 错误处理
 //     任何一步失败 → 返回 false，由上层 Clear() 统一清理
 //
 // dlopen 的关键机制（面试核心考点）：
@@ -259,40 +254,6 @@ bool ModuleController::LoadModule(const DagConfig& dag_config) {
       component_list_.emplace_back(std::move(comp));
     }
 
-    // ======================================================================
-    // Step 3: 创建定时组件（TimerComponent）
-    // ======================================================================
-    for (const auto& timer_info : module_config.timer_components()) {
-      if (timer_info.class_name().empty() || !timer_info.has_config() ||
-          timer_info.config().name().empty() ||
-          timer_info.config().interval() == 0) {
-        MERROR << "Invalid timer DAG entry: class_name, config.name, and "
-               << "a non-zero interval are required." << std::endl;
-        return fail();
-      }
-      const std::string& class_name = timer_info.class_name();
-      const TimerComponentConfig& config = timer_info.config();
-
-      ComponentBase* raw = ComponentFactory::Instance()->Create(class_name);
-      if (raw == nullptr) {
-        MERROR << "ComponentFactory::Create failed for timer class: "
-               << class_name << std::endl;
-        return fail();
-      }
-
-      std::shared_ptr<ComponentBase> comp(raw);
-
-      // 注意：TimerComponent 重写了 Initialize(const TimerComponentConfig&)
-      if (!comp->Initialize(config)) {
-        MERROR << "TimerComponent::Initialize failed for: " << class_name
-               << " (node: " << config.name() << ")" << std::endl;
-        return fail();
-      }
-
-      MINFO << "TimerComponent loaded: " << class_name
-            << " (node: " << config.name() << ")" << std::endl;
-      component_list_.emplace_back(std::move(comp));
-    }
   }
 
   return true;

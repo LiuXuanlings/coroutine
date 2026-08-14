@@ -9,8 +9,8 @@
 // =============================================================================
 // Identity：传输层身份标识（对齐 CyberRT transport::Identity）
 //
-// 职责：为每个 Transport 端点（Transmitter/Receiver/Service/Client）生成
-//   唯一的 8 字节标识符，用于消息路由、sender_id 匹配和请求追踪。
+// 职责：为每个 Transport 端点（Transmitter/Receiver）生成唯一的 8 字节
+//   标识符，用于消息路由与发送端识别。
 //
 // 简化 vs CyberRT：
 //   - CyberRT 底层使用 Poco UUID（36字节字符串 + hash），这里用 8 字节随机数
@@ -18,10 +18,8 @@
 //   - 去掉 Deserialize/Serialize（数据量小，memcpy 即可）
 //
 // 面试口径（Identity 的设计动机）：
-//   "Identity 是传输层的端点指纹。在 RPC 场景中，Client 需要确保收到的
-//   Response 匹配自己发出的 Request。Identity 提供了轻量的发送者身份标记，
-//   配合 seq_num 可以实现 O(1) 的 pending_requests 查找。8 字节的碰撞概率
-//   在单进程内可忽略（2^64 空间）。"
+//   "Identity 是传输层的端点指纹，为消息来源提供轻量的身份标记。8 字节的
+//   碰撞概率在单进程内可忽略（2^64 空间）。"
 // =============================================================================
 
 namespace minicyber {

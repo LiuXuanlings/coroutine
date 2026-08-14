@@ -9,21 +9,13 @@
 // =============================================================================
 // MessageInfo：传输层消息元数据（对齐 CyberRT transport::MessageInfo）
 //
-// 职责：携带消息的发送者身份、序号和信道标识，是实现 RPC request_id 匹配
-//   的核心元数据结构。
+// 职责：携带消息的发送者身份、序号和信道标识。
 //
 // 字段说明：
 //   sender_id_  : 发送端 Identity（区分消息来源端点）
 //   channel_id_ : 信道标识（当前暂未使用，保留以对齐 CyberRT）
-//   seq_num_    : 序列号（Client 端单调递增，用于匹配 Response）
-//   spare_id_   : 备用标识（RPC 场景：Server 将请求的 sender_id 回填至此，
-//                  Client 收到 Response 后对比 spare_id 是否等于自己的
-//                 writer_id，确认是自己的回复）
-//
-// 与 MiniCyber 传输层的集成：
-//   当前 MiniCyber 的 Transmitter::Transmit(msg) 只传消息体，没有
-//   MessageInfo 旁路通道。因此 Step 33 的 RPC 实现会将 MessageInfo 内嵌
-//   到包裹消息体内（如 RpcRequest<Req> 结构体），在业务层模拟虚通道。
+//   seq_num_    : 序列号
+//   spare_id_   : 备用标识
 //
 // 与 CyberRT 的简化：
 //   - 去掉 SerializeTo/DeserializeFrom（当前阶段不需要跨进程序列化）

@@ -24,14 +24,3 @@ message ComponentConfig {
   optional string flag_file_path = 3;           // 【字段编号3】组件启动参数/标志文件路径
   repeated ReaderOption readers = 4;            // 【字段编号4】订阅列表，repeated代表数组，可订阅多个话题
 }
-
-/**
- * TimerComponentConfig：定时器驱动组件配置
- * 触发逻辑：不依赖话题消息，按照固定周期自动执行
- */
-message TimerComponentConfig {
-  optional string name = 1;                     // 【字段编号1】定时器组件名称
-  optional string config_file_path = 2;         // 【字段编号2】组件业务私有配置文件路径
-  optional string flag_file_path = 3;           // 【字段编号3】组件启动参数/标志文件路径
-  optional uint32 interval = 4;                 // 【字段编号4】定时执行周期，单位：毫秒
-}

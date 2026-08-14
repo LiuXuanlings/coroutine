@@ -63,7 +63,7 @@ class NoReaderComponent
 // NullComponent — 验证 NullType 特化的初始化
 // =============================================================================
 // Component<NullType> 全特化没有 Proc()，只有 Init()。
-// 这个特化用于 TimerComponent 等不依赖数据通道的组件。
+// 这个特化用于不依赖数据通道的启动器组件。
 // =============================================================================
 class NullComponent
     : public minicyber::component::Component<minicyber::NullType> {
@@ -279,7 +279,7 @@ TEST(ComponentTest, ShutdownStopsProcessing) {
 // NullType 特化：无输入组件的 Initialize 成功
 // ---------------------------------------------------------------------------
 // Component<NullType> 特化不创建 Reader，仅创建 Node + Init()。
-// 用于 TimerComponent 或纯启动器类的基类。
+// 用于纯启动器类的基类。
 // ===========================================================================
 TEST(ComponentTest, NullTypeInitialization) {
   auto comp = std::make_shared<NullComponent>();

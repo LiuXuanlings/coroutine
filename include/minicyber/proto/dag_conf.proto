@@ -14,21 +14,12 @@ message ComponentInfo {
 }
 
 /**
- * TimerComponentInfo：定时器驱动组件包装信息
- */
-message TimerComponentInfo {
-  optional string class_name = 1;              // 【字段编号1】定时组件C++类名
-  optional TimerComponentConfig config = 2;    // 【字段编号2】定时组件运行参数（执行周期、配置文件等）
-}
-
-/**
  * ModuleConfig：模块配置
  * 一个模块对应一个 .so 动态库，库内包含若干业务组件
  */
 message ModuleConfig {
   optional string module_library = 1;                  // 【字段编号1】动态库文件路径，mainboard通过dlopen加载
   repeated ComponentInfo components = 2;               // 【字段编号2】模块内所有事件驱动组件列表
-  repeated TimerComponentInfo timer_components = 3;    // 【字段编号3】模块内所有定时器驱动组件列表
 }
 
 /**

@@ -51,8 +51,7 @@ class Processor {
   // 绑定上下文并延迟启动线程（call_once 保证只启动一次）
   void BindContext(const std::shared_ptr<ProcessorContext>& context);
 
-  // 设置本 Processor 线程可见的 Scheduler 指针（用于 Scheduler::GetThis()
-  // 在工作线程中能被回调用到，如 RPC Client::HandleResponse -> NotifyTask）
+  // 设置本 Processor 线程可见的 Scheduler 指针。
   void SetScheduler(Scheduler* sched) { scheduler_ = sched; }
 
   // 获取底层线程句柄（供 SetSchedAffinity/SetSchedPolicy 使用）

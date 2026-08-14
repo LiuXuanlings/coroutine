@@ -73,7 +73,6 @@ class ModuleController {
    * 遍历 dag_config.module_config() 列表：
    *   1. 解析 module_library 路径 → dlopen
    *   2. 遍历 components → ComponentFactory::Create → Initialize
-   *   3. 遍历 timer_components → ComponentFactory::Create → Initialize
    *
    * @param dag_config 已解析的计算图配置
    * @return true  全部加载成功

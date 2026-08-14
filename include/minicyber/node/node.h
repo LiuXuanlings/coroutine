@@ -10,8 +10,6 @@
 #include <vector>
 
 #include "minicyber/node/node_channel_impl.h"
-#include "minicyber/service/client.h"
-#include "minicyber/service/service.h"
 #include "minicyber/topology/topology_manager.h"
 
 namespace minicyber {
@@ -62,16 +60,6 @@ class WriterHolder : public ManagedEndpoint {
   std::shared_ptr<Writer<T>> writer_;
 };
 
-template <typename T>
-class ServiceHolder : public ManagedEndpoint {
- public:
-  explicit ServiceHolder(std::shared_ptr<T> service) : service_(std::move(service)) {}
-  void Shutdown() override { service_->Destroy(); }
-
- private:
-  std::shared_ptr<T> service_;
-};
-
 class Node {
  public:
   explicit Node(const std::string& name) : node_name_(name) {
@@ -96,12 +84,8 @@ class Node {
       shutdown_ = true;
       for (const auto& entry : readers_) endpoints.push_back(entry.second);
       endpoints.insert(endpoints.end(), writers_.begin(), writers_.end());
-      endpoints.insert(endpoints.end(), services_.begin(), services_.end());
-      endpoints.insert(endpoints.end(), clients_.begin(), clients_.end());
       readers_.clear();
       writers_.clear();
-      services_.clear();
-      clients_.clear();
     }
     for (const auto& endpoint : endpoints) endpoint->Shutdown();
   }
@@ -147,48 +131,12 @@ class Node {
     return holder->reader;
   }
 
-  // 创建 Service（RPC 服务端）
-  // 自动注册拓扑 + Init。Service 生命周期由 Node 持有。
-  template <typename Req, typename Rsp>
-  std::shared_ptr<service::Service<Req, Rsp>> CreateService(
-      const std::string& service_name,
-      const typename service::Service<Req, Rsp>::ServiceCallback& callback) {
-    auto s = std::make_shared<service::Service<Req, Rsp>>(node_name_,
-                                                           service_name, callback);
-    if (!s->Init()) return nullptr;
-    std::lock_guard<std::mutex> lg(endpoints_mutex_);
-    if (shutdown_) {
-      s->Destroy();
-      return nullptr;
-    }
-    services_.push_back(std::make_shared<ServiceHolder<service::Service<Req, Rsp>>>(s));
-    return s;
-  }
-
-  // 创建 Client（RPC 客户端）
-  // 自动注册拓扑 + Init。Client 生命周期由 Node 持有。
-  template <typename Req, typename Rsp>
-  std::shared_ptr<service::Client<Req, Rsp>> CreateClient(
-      const std::string& service_name) {
-    auto c = std::make_shared<service::Client<Req, Rsp>>(node_name_, service_name);
-    if (!c->Init()) return nullptr;
-    std::lock_guard<std::mutex> lg(endpoints_mutex_);
-    if (shutdown_) {
-      c->Destroy();
-      return nullptr;
-    }
-    clients_.push_back(std::make_shared<ServiceHolder<service::Client<Req, Rsp>>>(c));
-    return c;
-  }
-
  private:
   std::string node_name_;
   std::unique_ptr<NodeChannelImpl> channel_impl_;
   mutable std::mutex endpoints_mutex_;
   std::map<std::string, std::shared_ptr<ManagedEndpoint>> readers_;
   std::vector<std::shared_ptr<ManagedEndpoint>> writers_;
-  std::vector<std::shared_ptr<ManagedEndpoint>> services_;
-  std::vector<std::shared_ptr<ManagedEndpoint>> clients_;
   bool shutdown_ = false;
 };
 

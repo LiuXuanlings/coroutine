@@ -85,7 +85,6 @@ class ReaderT : public ReaderBase {
 
 // 前置声明
 using minicyber::proto::ComponentConfig;
-using minicyber::proto::TimerComponentConfig;
 
 /**
  * @brief 组件生命周期基类（抽象接口）
@@ -93,8 +92,7 @@ using minicyber::proto::TimerComponentConfig;
  * 继承层次：
  *   ComponentBase                    ← 生命周期、Node 引用、配置路径
  *     ├── Component<M0>              ← 单通道事件驱动组件
- *     ├── Component<M0, M1>          ← 双通道融合组件（Phase 7）
- *     └── TimerComponent             ← 定时触发组件
+ *     └── Component<M0, M1>          ← 双通道融合组件（Phase 7）
  *
  * 典型使用流程（由 mainboard 的 ModuleController 驱动）：
  *   1. dlopen 加载 .so → 静态注册 MINICYBER_REGISTER_COMPONENT 宏
@@ -111,14 +109,10 @@ class ComponentBase : public std::enable_shared_from_this<ComponentBase> {
   // Initialize — 组件初始化入口（由框架调用）
   // ==========================================================================
   // 基类默认实现返回 false，表示"未实现"。真正的初始化逻辑由
-  // Component<M0>::Initialize() 或 TimerComponent::Initialize() 重写。
-  //
-  // 两个重载分别对应事件驱动和定时驱动两种组件模式。
-  // 这是 C++ 重载（overload）而非覆盖（override），因为参数类型不同。
+  // Component<M0>::Initialize() 等事件组件重写。
   // ==========================================================================
 
   virtual bool Initialize(const ComponentConfig& config) { (void)config; return false; }
-  virtual bool Initialize(const TimerComponentConfig& config) { (void)config; return false; }
 
   /**
    * @brief 组件关闭（幂等）
@@ -214,12 +208,6 @@ class ComponentBase : public std::enable_shared_from_this<ComponentBase> {
    *   如果需要，上层可以自行解析 flags。
    */
   void LoadConfigFiles(const ComponentConfig& config) {
-    if (!config.config_file_path().empty()) {
-      config_file_path_ = config.config_file_path();
-    }
-  }
-
-  void LoadConfigFiles(const TimerComponentConfig& config) {
     if (!config.config_file_path().empty()) {
       config_file_path_ = config.config_file_path();
     }

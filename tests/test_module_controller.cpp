@@ -217,26 +217,6 @@ TEST(ModuleControllerTest, LoadModuleNonExistentLibrary) {
 }
 
 // =============================================================================
-// LoadModule：TimerComponent 路径
-// =============================================================================
-
-TEST(ModuleControllerTest, LoadModuleTimerComponent) {
-  // 使用 McSecondComponent 假装是 timer component（仅为验证 LoadModule
-  // 的 timer_components 分支不会崩溃；实际类型不匹配会在 Initialize 返回 false）
-  // 这里用一个真实继承自 TimerComponent 的类更合适，但为简化测试，
-  // 我们只验证 LoadModule 在 timer_components 为空时不会创建任何组件。
-  DagConfig dag;
-  ModuleConfig* mc = dag.add_module_config();
-  mc->set_module_library("");
-  // 不添加任何 components 或 timer_components
-
-  ModuleController controller({});
-  ASSERT_TRUE(controller.LoadModule(dag));
-  EXPECT_EQ(controller.ComponentCount(), 0u);
-  controller.Clear();
-}
-
-// =============================================================================
 // LoadAll：从文件路径加载
 // =============================================================================
 

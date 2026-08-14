@@ -130,19 +130,6 @@ enable_testing()
 add_subdirectory(tests)
 
 # ---------------------------------------------------------
-# 示例程序 (examples/)
-# ---------------------------------------------------------
-file(GLOB EXAMPLE_FILES "examples/*.cpp")
-foreach(EXAMPLE_SRC ${EXAMPLE_FILES})
-    get_filename_component(EXAMPLE_NAME ${EXAMPLE_SRC} NAME_WE)
-    add_executable(${EXAMPLE_NAME} ${EXAMPLE_SRC})
-    target_link_libraries(${EXAMPLE_NAME} minicyber_core pthread dl)
-    if(EXAMPLE_NAME STREQUAL "benchmark_cpp20_coroutine")
-        target_compile_features(${EXAMPLE_NAME} PRIVATE cxx_std_20)
-    endif()
-endforeach()
-
-# ---------------------------------------------------------
 # mainboard 启动入口 (bin/)
 # ---------------------------------------------------------
 # mainboard 是 MiniCyber 的标准化启动程序，读取 DAG 配置并通过 dlopen 加载

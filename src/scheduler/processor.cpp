@@ -42,10 +42,8 @@ void Processor::Run() {
   // 这与 Scheduler::run() 中调用 Fiber::GetThis() 的作用完全一致。
   CRoutine::GetThis();
 
-  // 让本工作线程可见 Scheduler 实例，使协程内回调用到
-  // Scheduler::GetThis() 时能拿到正确的指针（如 RPC Client::HandleResponse
-  // -> NotifyTask）。Scheduler::GetThis() 是 thread_local，原本只在
-  // 构造 Scheduler 的线程可见。
+  // 让本工作线程可见 Scheduler 实例。Scheduler::GetThis() 是 thread_local，
+  // 原本只在构造 Scheduler 的线程可见。
   if (scheduler_ != nullptr) {
     Scheduler::SetThisForCurrentThread(scheduler_);
   }

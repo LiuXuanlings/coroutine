@@ -96,7 +96,7 @@ class Component : public ComponentBase {
 // 偏特化：Component<NullType, NullType, NullType, NullType>（无输入组件）
 // =============================================================================
 // 这种变体不订阅任何 Channel，仅执行 Init()。
-// 适用场景：纯 Timer 组件（配合 TimerComponent）或仅用作启动器。
+// 适用场景：仅用作启动器的无输入组件。
 //
 // 与 CyberRT 的差异：
 //   CyberRT 将这个变体用于 "Component 基类" 语义（所有 Component 变体
