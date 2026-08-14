@@ -128,6 +128,9 @@ set(MINICYBER_CORE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/scheduler/scheduler.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/scheduler/scheduler_factory.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/swap.S
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/time/duration.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/time/rate.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/time/time.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/topology/topology_manager.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/transport/dispatcher/shm_dispatcher.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/transport/shm/condition_notifier.cpp

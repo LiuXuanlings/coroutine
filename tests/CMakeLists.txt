@@ -40,6 +40,7 @@ set(TEST_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/test_shm_state.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_shm_transmitter.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_smoke.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_time.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_topology.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_transport_routing.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_wait_strategy.cpp

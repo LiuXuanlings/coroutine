@@ -46,6 +46,27 @@ ctest --test-dir build/debug --output-on-failure -R '^test_croutine$'
 同样只用裸指针切回主协程。测试必须继续恢复到 `FINISHED`，不能把未完成协程当作
 测试结束状态。
 
+### CRoutine 与时间库的 `Duration` 名称冲突
+
+**症状**：同一翻译单元包含 `minicyber/croutine/croutine.h` 和旧版
+`minicyber/time/time.h` 时，编译器报告 `minicyber::Duration` 重定义，或后续代码把
+协程的微秒别名误当作纳秒时间间隔。
+
+**根因和修复边界**：协程保留 `minicyber::Duration` 作为内部等待时长别名；旧时间库
+也在根命名空间定义了不同语义的 `Duration`。MC-605 将 Time、Duration、Rate 收拢到
+`minicyber::time`，以 `time::Duration` 表示纳秒间隔，避免修改协程状态与睡眠职责。
+业务节拍只能使用 `time::Rate`，不能以该修复为理由把 Rate 接入 Scheduler 或恢复
+Timer。
+
+**定位和回归**：确认调用方包含 `minicyber/time/rate.h` 并使用 `minicyber::time`；
+`tests/test_time.cpp` 同时包含协程和时间头文件，覆盖类型隔离、`MonoTime`、
+`SleepUntil` 与 Rate 超期后的周期重置。
+
+```bash
+cmake --build build/debug -j2 --target test_time
+ctest --test-dir build/debug --output-on-failure -R '^test_time$'
+```
+
 ## 三、数据通知和 AllLatest
 
 ### Notifier 注销竞态
