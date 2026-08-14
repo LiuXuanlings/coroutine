@@ -1,6 +1,7 @@
 #ifndef MINICYBER_TRANSPORT_RECEIVER_HYBRID_RECEIVER_H_
 #define MINICYBER_TRANSPORT_RECEIVER_HYBRID_RECEIVER_H_
 
+#include <atomic>
 #include <mutex>
 #include <type_traits>
 #include <unordered_map>
@@ -36,11 +37,11 @@ class HybridReceiver : public Receiver<M> {
       : Base(attr.channel_id(), msg_listener), attr_(attr) {
     intra_ = std::make_shared<IntraReceiver<M>>(
         this->channel_id_, [this](const std::shared_ptr<M>& msg) {
-          this->OnNewMessage(msg);
+          if (accepting_.load(std::memory_order_acquire)) this->OnNewMessage(msg);
         });
     shm_ = std::make_shared<ShmReceiver<M>>(
         this->channel_id_, [this](const std::shared_ptr<M>& msg) {
-          this->OnNewMessage(msg);
+          if (accepting_.load(std::memory_order_acquire)) this->OnNewMessage(msg);
         });
     listener_ = topology::TopologyManager::Instance()->AddChangeListener(
         [this](const proto::ChangeMsg& msg) { OnTopologyChange(msg); });
@@ -53,18 +54,25 @@ class HybridReceiver : public Receiver<M> {
   }
 
   void Enable() override {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (this->enabled_) return;
-    this->enabled_ = true;
-    ReconcileBackendsLocked();
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (this->enabled_) return;
+      this->enabled_ = true;
+      accepting_.store(true, std::memory_order_release);
+      UpdateDesiredBackendsLocked();
+    }
+    ReconcileBackends();
   }
 
   void Disable() override {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!this->enabled_) return;
-    this->enabled_ = false;
-    intra_->Disable();
-    shm_->Disable();
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!this->enabled_) return;
+      this->enabled_ = false;
+      accepting_.store(false, std::memory_order_release);
+      UpdateDesiredBackendsLocked();
+    }
+    ReconcileBackends();
   }
 
   void Enable(const RoleAttributes& opposite_attr) {
@@ -119,15 +127,18 @@ class HybridReceiver : public Receiver<M> {
     const Relation relation = RelationFor(opposite);
     if (relation != SAME_PROC && relation != DIFF_PROC) return;
     const uint64_t id = RoleId(opposite);
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (join) {
-      if (opposite_.emplace(id, relation).second) ReconcileBackendsLocked();
-      return;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (join && opposite_.emplace(id, relation).second) {
+        UpdateDesiredBackendsLocked();
+      } else if (!join && opposite_.erase(id) != 0) {
+        UpdateDesiredBackendsLocked();
+      }
     }
-    if (opposite_.erase(id) != 0) ReconcileBackendsLocked();
+    ReconcileBackends();
   }
 
-  void ReconcileBackendsLocked() {
+  void UpdateDesiredBackendsLocked() {
     bool same_proc = false;
     bool diff_proc = false;
     for (const auto& item : opposite_) {
@@ -135,19 +146,49 @@ class HybridReceiver : public Receiver<M> {
       diff_proc = diff_proc || item.second == DIFF_PROC;
     }
     if (!this->enabled_) {
-      intra_enabled_ = false;
-      shm_enabled_ = false;
+      intra_desired_ = false;
+      shm_desired_ = false;
       return;
     }
-    if (same_proc != intra_enabled_) {
-      intra_enabled_ = same_proc;
-      if (intra_enabled_) intra_->Enable();
-      else intra_->Disable();
-    }
-    if (diff_proc != shm_enabled_) {
-      shm_enabled_ = diff_proc;
-      if (shm_enabled_) shm_->Enable();
-      else shm_->Disable();
+    intra_desired_ = same_proc;
+    shm_desired_ = diff_proc;
+  }
+
+  void ReconcileBackends() {
+    bool expected = false;
+    if (!reconciling_.compare_exchange_strong(expected, true)) return;
+    for (;;) {
+      enum class Action {
+        NONE,
+        ENABLE_INTRA,
+        DISABLE_INTRA,
+        ENABLE_SHM,
+        DISABLE_SHM
+      };
+      Action action = Action::NONE;
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (intra_applied_ != intra_desired_) {
+          intra_applied_ = intra_desired_;
+          action = intra_applied_ ? Action::ENABLE_INTRA : Action::DISABLE_INTRA;
+        } else if (shm_applied_ != shm_desired_) {
+          shm_applied_ = shm_desired_;
+          action = shm_applied_ ? Action::ENABLE_SHM : Action::DISABLE_SHM;
+        }
+      }
+      // 后端 Disable 可能等待在途回调，必须在 Hybrid 状态锁外执行；回调内
+      // 再次关闭端点时只更新期望状态，由当前协调循环在回调退出后收口。
+      if (action == Action::ENABLE_INTRA) intra_->Enable();
+      else if (action == Action::DISABLE_INTRA) intra_->Disable();
+      else if (action == Action::ENABLE_SHM) shm_->Enable();
+      else if (action == Action::DISABLE_SHM) shm_->Disable();
+      else {
+        reconciling_.store(false, std::memory_order_release);
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (intra_applied_ == intra_desired_ && shm_applied_ == shm_desired_) return;
+        expected = false;
+        if (!reconciling_.compare_exchange_strong(expected, true)) return;
+      }
     }
   }
 
@@ -157,8 +198,12 @@ class HybridReceiver : public Receiver<M> {
   std::shared_ptr<IntraReceiver<M>> intra_;
   std::shared_ptr<ShmReceiver<M>> shm_;
   topology::TopologyManager::ChangeConnection listener_;
-  bool intra_enabled_ = false;
-  bool shm_enabled_ = false;
+  std::atomic<bool> reconciling_{false};
+  std::atomic<bool> accepting_{false};
+  bool intra_desired_ = false;
+  bool shm_desired_ = false;
+  bool intra_applied_ = false;
+  bool shm_applied_ = false;
 };
 
 }  // namespace transport

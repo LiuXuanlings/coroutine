@@ -193,6 +193,54 @@ Participant 异常退出、晚加入、启动失败回滚及监听器并发注�
 
 ## 六、调度启动、关闭和动态库
 
+### Hybrid 状态锁与同步 INTRA 回调形成自死锁
+
+**触发环境与最小复现**：MC-609 后的 Debug 构建中，创建同进程 Hybrid Writer/Reader，
+Reader 回调内调用同一 Writer 的 `Disable`。原实现的 `HybridTransmitter::Transmit` 持有
+Hybrid `mutex_` 调用 `IntraTransmitter::Transmit`，INTRA 又在发布线程同步进入该回调。
+
+**原始现象与排查时间线**：静态调用链显示回调内关闭会沿
+`Transmit -> DataDispatcher -> DataNotifier -> Reader callback -> Disable` 回入同一非递归锁。
+首先对照 `IntraReceiver::Disable`，确认底层已经刻意在生命周期锁外等待 in-flight，排除了
+底层 Notifier 必然死锁的假设；随后检查 HybridReceiver，发现其仍在 Hybrid 锁内调用可能
+等待回调的后端 Disable，说明问题位于新增聚合层。若只把 `Transmit` 解锁，拓扑 Leave 与
+关闭并发时仍可能在 `ReconcileBackendsLocked` 中重现等待环，因此最终统一拆分为“锁内更新
+期望状态、锁外启停后端”。
+
+**工具与证据**：使用 `rg`、`nl` 对照 Hybrid、IntraReceiver、DataNotifier 的锁和回调链；
+新增 `IntraCallbackCanDisableTransmitter` 与 `IntraCallbackCanDisableReceiver`，定向重复测试
+验证回调能够有界返回。协调循环用原子标志串行消费期望状态；回调内再次关闭只更新状态，
+不等待当前正在执行的后端操作。Receiver 另以 `accepting_` 在关闭开始时阻止新用户回调。
+
+**根因、修复边界和经验**：根因不是“互斥锁不能使用”，而是持生命周期锁调用了可同步
+回入用户代码或等待用户代码结束的路径。修复未改变 Hybrid per-opposite 路由，只调整锁
+边界。以后审查聚合层时，不能因为底层类已实现安全注销，就假设上层持锁调用底层仍安全。
+
+### SHM 段容量随端点启动顺序变化
+
+**触发环境与最小复现**：Protobuf `ShmTransmitter` 默认请求 64 KiB，但 Receiver 先启动时
+`ShmDispatcher::AddSegment` 原来使用 `PosixSegment` 的 1 KiB 默认值创建同名段。Writer 后
+启动进入 `OpenOnly`，无条件采用已有布局；超过 1 KiB 的动态字段随后申请块失败。
+
+**排查时间线**：先比较 Sender、Dispatcher 和 PosixSegment 三处默认参数，确认不是
+Protobuf 序列化失败；再检查 `OpenOnly`，发现它校验布局后覆盖调用方请求值。对照
+`cyber_ref/cyber/transport/shm/segment.cc` 和 `shm_conf.cc`，原生实现会按消息大小档位管理
+容量并在不足时重建。MiniCyber 不恢复完整分级机制，但正式 Protobuf 两端必须请求相同
+布局，较小既存段必须明确拒绝。排查还发现 `AddListener` 在 `AddSegment` 失败后仍返回有效
+ID，会造成 Receiver 表面启用但实际没有可读段。
+
+**修复与回归**：`AddSegment` 改为返回结果并校验既存段容量；Protobuf `AddListener` 默认
+请求 64 KiB/4 块，失败返回 0；`OpenOnly` 拒绝小于请求值的布局。Hybrid SHM 测试使用
+2048 字节动态字段覆盖 Reader 先启动路径，PosixSegment 测试覆盖 1 KiB 既存段拒绝 64 KiB
+请求。该修复只做一致布局和失败诊断，不宣称具备原生动态扩容能力。
+
+### 未确认问题：ConditionNotifier 跨进程偶发失败
+
+MC-608 全量测试曾出现 `ConditionNotifierTest.ForkCrossProcessNotify` 子进程状态 1，随后
+连续 5 轮通过，当前没有稳定根因。该现象不能因复跑通过而删除：MC-617 必须记录复现率、
+父子进程退出码、notifier SHM 初始状态和清理结果，并用事件条件而非扩大 sleep 判断是否为
+通知初始化、残留资源或测试编排问题。在 MC-617 收口前，它保持“未确认问题”状态。
+
 **构造期虚调用历史问题**：旧 IOManager 在基类构造期间启动工作线程，线程进入
 基类 `run()` 而非派生类实现；停止时主线程卡在 `pthread_join`，工作线程等待
 `futex` 或 `epoll_wait`。根因是构造和析构期间虚函数表只代表当前层级。

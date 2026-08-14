@@ -14,10 +14,8 @@ namespace transport {
 // =============================================================================
 // ConditionNotifier（CyberRT 原生移植版：System V SHM + 轮询）
 //
-// 本文件是 eventfd+epoll 版本的同接口替代实现，用于性能对比。
-// 主线（master）保留 eventfd+epoll 版本作为简历亮点；
-// 本分支（feature/cyber-native-notifier）移植 CyberRT 原生方案，
-// 在 Phase 5 benchmark 中作为基线进行对比。
+// 本项目只保留 CyberRT 的 System V SHM Indicator 通知职责，不再维护
+// eventfd+epoll 对照实现或独立性能基准。
 //
 // 机制：
 //   - 使用 System V 共享内存（shmget/shmat）承载一个 Indicator 结构
@@ -30,7 +28,7 @@ namespace transport {
 //   - Fd() 返回 -1：本方案没有可注册进 epoll 的文件描述符
 //   - 唤醒路径：必须由后台线程/协程主动调用 Listen() 轮询，
 //     而非由 epoll_wait 优雅唤醒挂起协程
-//   - 这是本分支与主线在简历叙事上的核心差异点
+//   - 当前主干由 ShmDispatcher 后台线程执行有界 Listen 轮询
 //
 // ReadableInfo 简化：CyberRT 的 ReadableInfo 含 host_id/block_index/channel_id
 // 并支持序列化；本移植保留三字段但简化为 POD 结构，不做序列化（跨进程

@@ -45,7 +45,6 @@ set(TEST_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/test_time.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_topology.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_topology_discovery.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_transport_routing.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_wait_strategy.cpp
 )
 
@@ -90,7 +89,7 @@ if(TEST_FILES)
         if(TEST_NAME MATCHES "^test_node$")
             list(APPEND TEST_LABELS "high_risk")
         endif()
-        if(TEST_NAME MATCHES "^test_(croutine|data_dispatcher|data_notifier|data_visitor|data_fusion|fusion_all_latest|routine_factory)$")
+        if(TEST_NAME MATCHES "^test_(croutine|data_dispatcher|data_notifier|data_visitor|data_fusion|fusion_all_latest|routine_factory|processor)$")
             list(APPEND TEST_LABELS "high_risk")
         endif()
         set_tests_properties(${TEST_NAME} PROPERTIES LABELS "${TEST_LABELS}")

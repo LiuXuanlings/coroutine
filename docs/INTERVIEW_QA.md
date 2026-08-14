@@ -94,6 +94,22 @@ MC-603 冻结的底层 SHM 回归保留兼容特化，不属于 Hybrid 或后续
 动态字段的 Protobuf 恢复；混合角色断言同一 Writer 向本地和跨进程 Reader 各投递一次，
 并在远端 Leave 后停止 SHM 扇出。项目仍不包含 RTPS 数据面或跨主机数据连接。
 
+### 为什么 Hybrid 不能持状态锁调用 INTRA Transmit 或后端 Disable？
+
+INTRA 是同步路径，`Transmit` 可能在当前发布线程直接进入用户回调；Receiver 的 Disable
+还可能等待已经开始的回调结束。如果 Hybrid 持有自己的状态锁调用这些路径，回调内关闭
+Writer、Reader 或 Node 会回入同一对象，形成自死锁或跨线程等待环。当前实现只在锁内维护
+对端集合和后端期望状态，实际分发、Enable、Disable 均在锁外执行；原子协调标志保证并发
+拓扑变化最终收敛。这里保留的是 CyberRT 生命周期分层，不是新增调度优化。
+
+### 为什么正式 Protobuf SHM 两端必须使用一致段布局？
+
+POSIX SHM 的块大小由第一个创建同名段的进程写入共享 State。若 Reader 默认创建 1 KiB，
+Writer 却按 64 KiB 假设发送，同一 Channel 的能力就会取决于启动顺序。原生 CyberRT 用
+`ShmConf` 按消息大小分档并支持容量不足时重建；MiniCyber 为控制范围，不恢复完整动态
+分档，而是让正式 Protobuf Reader/Writer 都请求 64 KiB/4 块，并在既存布局更小时明确
+初始化失败。它解决确定性和可诊断性，但不宣传动态扩容能力。
+
 ### Node 为什么要为每个端点填充完整的 RoleAttributes？
 
 原生 CyberRT 的 `NodeChannelImpl::FillInAttr` 在创建 Reader/Writer 时填入主机、进程、

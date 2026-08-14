@@ -14,6 +14,7 @@
 #include "minicyber/proto/role_attributes.pb.h"
 #include "minicyber/topology/topology_manager.h"
 #include "minicyber/transport/receiver/shm_receiver.h"
+#include "minicyber/transport/shm/posix_segment.h"
 #include "minicyber/transport/transport.h"
 #include "minicyber/transport/transmitter/shm_transmitter.h"
 
@@ -96,6 +97,54 @@ TEST_F(HybridTransportTest, SameProcUsesOriginalSharedPtr) {
   rx->Disable();
 }
 
+TEST_F(HybridTransportTest, IntraCallbackCanDisableTransmitter) {
+  const std::string channel = "/hybrid/reentrant_tx_shutdown";
+  const auto writer = MakeRole(channel, "reentrant_writer", ::getpid(), 1101);
+  const auto reader = MakeRole(channel, "reentrant_reader", ::getpid(), 1102);
+
+  std::shared_ptr<minicyber::transport::HybridTransmitter<RoleAttributes>> tx;
+  std::atomic<int> callbacks{0};
+  auto rx = Transport::CreateHybridReceiver<RoleAttributes>(
+      reader, [&](const std::shared_ptr<RoleAttributes>&) {
+        callbacks.fetch_add(1, std::memory_order_release);
+        tx->Disable();
+      });
+  tx = Transport::CreateHybridTransmitter<RoleAttributes>(writer);
+  ASSERT_TRUE(TopologyManager::Instance()->Join(minicyber::proto::ROLE_WRITER,
+                                                 writer));
+  ASSERT_TRUE(TopologyManager::Instance()->Join(minicyber::proto::ROLE_READER,
+                                                 reader));
+
+  EXPECT_TRUE(tx->Transmit(std::make_shared<RoleAttributes>()));
+  EXPECT_EQ(callbacks.load(std::memory_order_acquire), 1);
+  EXPECT_FALSE(tx->enabled());
+  rx->Disable();
+}
+
+TEST_F(HybridTransportTest, IntraCallbackCanDisableReceiver) {
+  const std::string channel = "/hybrid/reentrant_rx_shutdown";
+  const auto writer = MakeRole(channel, "reentrant_writer", ::getpid(), 1201);
+  const auto reader = MakeRole(channel, "reentrant_reader", ::getpid(), 1202);
+
+  std::shared_ptr<minicyber::transport::HybridReceiver<RoleAttributes>> rx;
+  std::atomic<int> callbacks{0};
+  rx = Transport::CreateHybridReceiver<RoleAttributes>(
+      reader, [&](const std::shared_ptr<RoleAttributes>&) {
+        callbacks.fetch_add(1, std::memory_order_release);
+        rx->Disable();
+      });
+  auto tx = Transport::CreateHybridTransmitter<RoleAttributes>(writer);
+  ASSERT_TRUE(TopologyManager::Instance()->Join(minicyber::proto::ROLE_WRITER,
+                                                 writer));
+  ASSERT_TRUE(TopologyManager::Instance()->Join(minicyber::proto::ROLE_READER,
+                                                 reader));
+
+  EXPECT_TRUE(tx->Transmit(std::make_shared<RoleAttributes>()));
+  EXPECT_EQ(callbacks.load(std::memory_order_acquire), 1);
+  EXPECT_FALSE(rx->enabled());
+  tx->Disable();
+}
+
 TEST_F(HybridTransportTest, DiffProcSerializesProtobufWithDynamicFields) {
   const std::string channel = "/hybrid/shm";
   CleanupChannel(channel);
@@ -120,7 +169,7 @@ TEST_F(HybridTransportTest, DiffProcSerializesProtobufWithDynamicFields) {
   auto message = std::make_shared<RoleAttributes>();
   message->set_node_name("serialized-object");
   message->set_message_type("minicyber.test.DynamicPayload");
-  message->set_proto_desc(std::string("nested\0protobuf\1bytes", 21));
+  message->set_proto_desc(std::string(2048, 'p'));
   ASSERT_TRUE(tx->Transmit(message));
   ASSERT_TRUE(WaitFor(received, 1));
   ASSERT_NE(delivered, nullptr);
@@ -195,6 +244,24 @@ TEST_F(HybridTransportTest, ProtobufShmDeliversEmptyMessage) {
 
   transmitter.Disable();
   receiver.Disable();
+  CleanupChannel(channel);
+}
+
+TEST_F(HybridTransportTest,
+       ProtobufReceiverRejectsIncompatibleExistingSegment) {
+  const std::string channel = "/hybrid/incompatible_segment";
+  CleanupChannel(channel);
+  const uint64_t channel_id = Transport::ChannelNameToId(channel);
+  minicyber::transport::PosixSegment small_segment(channel_id, 1024, 4);
+  ASSERT_TRUE(small_segment.Open());
+
+  ShmReceiver<RoleAttributes> receiver(
+      channel_id, [](const std::shared_ptr<RoleAttributes>&) {});
+  receiver.Enable();
+  EXPECT_FALSE(receiver.enabled());
+
+  receiver.Disable();
+  small_segment.Destroy();
   CleanupChannel(channel);
 }
 

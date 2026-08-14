@@ -1,6 +1,7 @@
 #ifndef MINICYBER_TRANSPORT_TRANSMITTER_HYBRID_TRANSMITTER_H_
 #define MINICYBER_TRANSPORT_TRANSMITTER_HYBRID_TRANSMITTER_H_
 
+#include <atomic>
 #include <mutex>
 #include <type_traits>
 #include <unordered_map>
@@ -45,18 +46,23 @@ class HybridTransmitter : public Transmitter<M> {
   }
 
   void Enable() override {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (this->enabled_) return;
-    this->enabled_ = true;
-    ReconcileBackendsLocked();
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (this->enabled_) return;
+      this->enabled_ = true;
+      UpdateDesiredBackendsLocked();
+    }
+    ReconcileBackends();
   }
 
   void Disable() override {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!this->enabled_) return;
-    this->enabled_ = false;
-    intra_->Disable();
-    shm_->Disable();
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!this->enabled_) return;
+      this->enabled_ = false;
+      UpdateDesiredBackendsLocked();
+    }
+    ReconcileBackends();
   }
 
   void Enable(const RoleAttributes& opposite_attr) {
@@ -68,14 +74,24 @@ class HybridTransmitter : public Transmitter<M> {
   }
 
   bool Transmit(const MessagePtr& msg) override {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!this->enabled_ || msg == nullptr) return false;
+    bool use_intra = false;
+    bool use_shm = false;
+    bool no_opposite = false;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!this->enabled_ || msg == nullptr) return false;
+      use_intra = intra_desired_;
+      use_shm = shm_desired_;
+      no_opposite = opposite_.empty();
+    }
+    // INTRA 会在当前发布线程同步进入用户回调。这里不能持有 Hybrid 状态锁，
+    // 否则回调内关闭 Writer/Node 会回入 Disable 并自死锁。
     bool delivered = false;
-    if (intra_enabled_) delivered = intra_->Transmit(msg) || delivered;
-    if (shm_enabled_) delivered = shm_->Transmit(msg) || delivered;
+    if (use_intra) delivered = intra_->Transmit(msg) || delivered;
+    if (use_shm) delivered = shm_->Transmit(msg) || delivered;
     // CyberRT 的 HybridTransmitter 对“无当前对端”也保持发布接口成功；
     // 路由是否有读者由 HasReader 在 Node 层观察。
-    return delivered || opposite_.empty();
+    return delivered || no_opposite;
   }
 
   bool HasReader() const {
@@ -122,17 +138,18 @@ class HybridTransmitter : public Transmitter<M> {
     const Relation relation = RelationFor(opposite);
     if (relation != SAME_PROC && relation != DIFF_PROC) return;
     const uint64_t id = RoleId(opposite);
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (join) {
-      if (opposite_.emplace(id, relation).second) {
-        ReconcileBackendsLocked();
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (join && opposite_.emplace(id, relation).second) {
+        UpdateDesiredBackendsLocked();
+      } else if (!join && opposite_.erase(id) != 0) {
+        UpdateDesiredBackendsLocked();
       }
-      return;
     }
-    if (opposite_.erase(id) != 0) ReconcileBackendsLocked();
+    ReconcileBackends();
   }
 
-  void ReconcileBackendsLocked() {
+  void UpdateDesiredBackendsLocked() {
     bool same_proc = false;
     bool diff_proc = false;
     for (const auto& item : opposite_) {
@@ -140,19 +157,47 @@ class HybridTransmitter : public Transmitter<M> {
       diff_proc = diff_proc || item.second == DIFF_PROC;
     }
     if (!this->enabled_) {
-      intra_enabled_ = false;
-      shm_enabled_ = false;
+      intra_desired_ = false;
+      shm_desired_ = false;
       return;
     }
-    if (same_proc != intra_enabled_) {
-      intra_enabled_ = same_proc;
-      if (intra_enabled_) intra_->Enable();
-      else intra_->Disable();
-    }
-    if (diff_proc != shm_enabled_) {
-      shm_enabled_ = diff_proc;
-      if (shm_enabled_) shm_->Enable();
-      else shm_->Disable();
+    intra_desired_ = same_proc;
+    shm_desired_ = diff_proc;
+  }
+
+  void ReconcileBackends() {
+    bool expected = false;
+    if (!reconciling_.compare_exchange_strong(expected, true)) return;
+    for (;;) {
+      enum class Action {
+        NONE,
+        ENABLE_INTRA,
+        DISABLE_INTRA,
+        ENABLE_SHM,
+        DISABLE_SHM
+      };
+      Action action = Action::NONE;
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (intra_applied_ != intra_desired_) {
+          intra_applied_ = intra_desired_;
+          action = intra_applied_ ? Action::ENABLE_INTRA : Action::DISABLE_INTRA;
+        } else if (shm_applied_ != shm_desired_) {
+          shm_applied_ = shm_desired_;
+          action = shm_applied_ ? Action::ENABLE_SHM : Action::DISABLE_SHM;
+        }
+      }
+      if (action == Action::ENABLE_INTRA) intra_->Enable();
+      else if (action == Action::DISABLE_INTRA) intra_->Disable();
+      else if (action == Action::ENABLE_SHM) shm_->Enable();
+      else if (action == Action::DISABLE_SHM) shm_->Disable();
+      else {
+        reconciling_.store(false, std::memory_order_release);
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (intra_applied_ == intra_desired_ && shm_applied_ == shm_desired_) return;
+        expected = false;
+        if (!reconciling_.compare_exchange_strong(expected, true)) return;
+      }
     }
   }
 
@@ -162,8 +207,11 @@ class HybridTransmitter : public Transmitter<M> {
   std::shared_ptr<IntraTransmitter<M>> intra_;
   std::shared_ptr<ShmTransmitter<M>> shm_;
   topology::TopologyManager::ChangeConnection listener_;
-  bool intra_enabled_ = false;
-  bool shm_enabled_ = false;
+  std::atomic<bool> reconciling_{false};
+  bool intra_desired_ = false;
+  bool shm_desired_ = false;
+  bool intra_applied_ = false;
+  bool shm_applied_ = false;
 };
 
 }  // namespace transport
