@@ -171,7 +171,8 @@ TEST(TransportRoutingTest, TopologyChangesDoNotSplitLocalEndpoints) {
 TEST(TransportRoutingTest, ExplicitShmTransmitterRemainsAvailable) {
   const std::string CH = "/tr/explicit_shm";
   UnlinkShm("minicyber_" + std::to_string(Transport::ChannelNameToId(CH)));
-  auto tx = std::make_shared<ShmTransmitter>(Transport::ChannelNameToId(CH));
+  auto tx = std::make_shared<ShmTransmitter<std::string>>(
+      Transport::ChannelNameToId(CH));
   tx->Enable();
   EXPECT_TRUE(tx->enabled());
   tx->Disable();

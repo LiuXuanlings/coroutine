@@ -4,8 +4,15 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <type_traits>
+
+#include <google/protobuf/message.h>
+
+#include "minicyber/proto/role_attributes.pb.h"
+#include "minicyber/transport/receiver/hybrid_receiver.h"
 #include "minicyber/transport/receiver/intra_receiver.h"
 #include "minicyber/transport/receiver/receiver.h"
+#include "minicyber/transport/transmitter/hybrid_transmitter.h"
 #include "minicyber/transport/transmitter/intra_transmitter.h"
 #include "minicyber/transport/transmitter/transmitter.h"
 
@@ -64,6 +71,29 @@ class Transport {
     auto rx = std::make_shared<IntraReceiver<T>>(channel_id, msg_listener);
 
     if (rx) rx->Enable();
+    return rx;
+  }
+
+  // MC-607 的动态入口：RoleAttributes 是发现层的唯一连接键。Hybrid 在
+  // 创建后订阅 ChannelManager 变更，不依据端点创建瞬间的静态拓扑决定后端。
+  template <typename T>
+  static std::shared_ptr<HybridTransmitter<T>> CreateHybridTransmitter(
+      const proto::RoleAttributes& attr) {
+    static_assert(std::is_base_of<google::protobuf::Message, T>::value,
+                  "HybridTransport messages must derive from google::protobuf::Message");
+    auto tx = std::make_shared<HybridTransmitter<T>>(attr);
+    tx->Enable();
+    return tx;
+  }
+
+  template <typename T>
+  static std::shared_ptr<HybridReceiver<T>> CreateHybridReceiver(
+      const proto::RoleAttributes& attr,
+      const typename Receiver<T>::MessageListener& msg_listener) {
+    static_assert(std::is_base_of<google::protobuf::Message, T>::value,
+                  "HybridTransport messages must derive from google::protobuf::Message");
+    auto rx = std::make_shared<HybridReceiver<T>>(attr, msg_listener);
+    rx->Enable();
     return rx;
   }
 };

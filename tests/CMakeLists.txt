@@ -21,6 +21,7 @@ set(TEST_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/test_data_notifier.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_data_visitor.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_fusion_all_latest.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_hybrid_transport.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_intra_dispatcher.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_intra_receiver.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_intra_transmitter.cpp
@@ -82,6 +83,9 @@ if(TEST_FILES)
         if(TEST_NAME MATCHES "^test_topology_discovery$")
             list(APPEND TEST_LABELS "high_risk" "cross_process")
         endif()
+        if(TEST_NAME MATCHES "^test_hybrid_transport$")
+            list(APPEND TEST_LABELS "high_risk" "cross_process")
+        endif()
         set_tests_properties(${TEST_NAME} PROPERTIES LABELS "${TEST_LABELS}")
     endforeach()
 endif()
@@ -98,5 +102,5 @@ add_custom_target(check_stress
 
 add_custom_target(check_cross_process
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L cross_process
-    DEPENDS test_condition_notifier test_posix_segment test_posix_segment_signal test_shm_dispatcher test_shm_transmitter test_topology_discovery
+    DEPENDS test_condition_notifier test_posix_segment test_posix_segment_signal test_shm_dispatcher test_shm_transmitter test_topology_discovery test_hybrid_transport
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR})

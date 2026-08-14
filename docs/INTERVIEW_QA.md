@@ -61,7 +61,22 @@ INTRA 只在同进程传递同一个 `shared_ptr`，可证明对象身份不变�
 
 同一个 Writer 可能同时面对本进程 Audit Reader 和外部 Sink Reader。最终
 HybridTransport 按每个对端并行维护连接：同进程走 INTRA，其他同机进程走 SHM；它
-不是创建端的一次性全局二选一，也不允许重复投递。该能力待 MC-607 至 MC-608 完成。
+不是创建端的一次性全局二选一，也不允许重复投递。MC-607 已由
+`HybridTransmitter`/`HybridReceiver` 订阅 ChannelManager 的角色变化：同一类对端
+只启用一个后端，最后一个对端 Leave 才停用该后端；MC-608 再把该能力接入
+Protobuf-only Node API 和端点 Join/Leave 生命周期。
+
+### HybridTransport 如何保证跨进程数据不退化为普通对象 memcpy？
+
+Hybrid 的公开模板以 `static_assert` 限定 `google::protobuf::Message` 派生类型。
+INTRA 直接把原 `shared_ptr` 分发给本进程 Reader；SHM 只写 `SerializeToString` 的字节，
+接收端用 `ParseFromString` 构造新的消息对象。`ShmDispatcher` 在释放 SHM 块前复制本次
+字节并对注册监听器维护在途计数，注销后不会再回调已关闭的 Receiver。字符串收发器仅为
+MC-603 冻结的底层 SHM 回归保留兼容特化，不属于 Hybrid 或后续 Channel 正式 API。
+
+验证是 `test_hybrid_transport`：纯 INTRA 断言指针身份不变；纯 SHM 断言含 `bytes`
+动态字段的 Protobuf 恢复；混合角色断言同一 Writer 向本地和跨进程 Reader 各投递一次，
+并在远端 Leave 后停止 SHM 扇出。项目仍不包含 RTPS 数据面或跨主机数据连接。
 
 ### FastRTPS 在项目中承担什么角色？
 
@@ -106,8 +121,8 @@ Local 让晚加入订阅者获得仍由 Publisher 保存的历史，Keep All(dep
 MC-604 把递归 GLOB 改为显式源清单，建立系统 FastRTPS 必需依赖和 Scheduler Protobuf
 骨架；MC-605 将 Time、Duration、Rate 收拢到 `minicyber::time`，SensorSource 可用 Rate
 表达输入节拍而不恢复 Timer；MC-606 建立同机 Channel 控制面、ChannelManager 状态层和
-双向跨进程 Join/Leave 证据。HybridTransport、Protobuf-only Node 和完整业务链仍分别属于
-MC-607 以后，不能把这些计划能力提前说成已实现。
+双向跨进程 Join/Leave 证据；MC-607 已建立 Protobuf Hybrid 扇出。Protobuf-only Node
+和完整业务链仍分别属于 MC-608 以后，不能把这些计划能力提前说成已实现。
 
 ## 插件、范围和可靠性
 
