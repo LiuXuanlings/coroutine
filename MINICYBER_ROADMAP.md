@@ -6,12 +6,35 @@
 
 - 当前分支：`development`
 - 当前阶段：第二次重构，准备阶段
-- 当前任务：MC-601
+- 当前任务：MC-602
 - 当前状态：待开始
 - 唯一状态事实源：[`docs/refactor/00_进度记录.md`](docs/refactor/00_进度记录.md)
 - 唯一任务执行方案：[`docs/refactor/01_实施方案.md`](docs/refactor/01_实施方案.md)
 
 收到“执行 MC-601”或其他指定任务时，Agent 不需要重新向用户确认已经在基线中定稿的需求；应按本文阅读顺序取得上下文，核对进度后独立推进。只有源码事实与基线互相冲突、外部依赖缺失或任务会越过白名单时，才允许标记阻塞并提问。
+
+### 1.1 MC-601 冻结基线
+
+- 根级 `AGENTS.md` 已建立，后续会话必须先读取其中七条红线。
+- 当前分支为 `development`，MC-601 开始时的基线提交为 `ba548ea`；工作区无用户
+  未提交修改。
+- 当前构建依赖可发现 Protobuf，GoogleTest 使用本地
+  `/tmp/minicyber-googletest2` 覆盖；`cmake --find-package` 未找到
+  FastRTPS Config Package。当前 CMake 尚未引入 FastRTPS 门禁，该外部依赖风险
+  留给 MC-604 处理。
+- 当前 Debug 配置与全量编译通过。构建仍以递归 GLOB 编入全部
+  `include/minicyber/proto/**` 和 `src/**`，并自动构建 `examples/**`；这是
+  MC-603 清理和 MC-604 显式源列表的输入，不代表最终边界。
+- 当前生产基线包含 `bin/mainboard.cpp`、`src/{croutine,mainboard,scheduler,topology,transport}/**`、
+  `src/swap.S` 和 `include/minicyber/{base,common,component,croutine,data,mainboard,node,proto,scheduler,service,time,topology,transport}/**`。
+  其中 RPC、TimerComponent、旧本地 Topology、普通对象 Channel、同步 Component、
+  旧示例和旧性能入口均是后续任务的待删除或待重构对象。
+- MC-602 必须先从 `docs/refactor/baseline.md`、`docs/refactor/module_mapping.md`、
+  `docs/refactor/perf/**`、`docs/croutine/shared_from_this.md`、
+  `docs/scheduler/debug_vtable_hang.md`、`docs/transport/signal.md` 和
+  `docs/uml/**` 迁移仍有效事实到双手册，再删除这些离散资料与旧性能原始数据。
+  MC-603 再按任务卡删除 RPC、Timer、旧示例、旧 benchmark、旧脚本及其测试；
+  两项不得合并或倒置。
 
 ## 二、强制阅读顺序
 
