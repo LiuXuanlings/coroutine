@@ -16,47 +16,93 @@ thread_local Scheduler* Scheduler::t_scheduler_ = nullptr;
 
 bool SchedulerConf::FromProto(const ::minicyber::proto::SchedulerConf& proto,
                               SchedulerConf* conf) {
-  if (conf == nullptr || !proto.has_classic_conf()) {
+  if (conf == nullptr) {
     return false;
   }
 
   SchedulerConf parsed;
-  if (proto.has_policy() && proto.policy() != "classic") {
+  parsed.policy = proto.has_policy() ? proto.policy() : "classic";
+  if (parsed.policy != "classic" && parsed.policy != "choreography") {
     return false;
   }
-  parsed.policy = "classic";
-  for (const auto& proto_group : proto.classic_conf().groups()) {
-    if (proto_group.name().empty()) {
-      return false;
-    }
-    ClassicGroupConf group;
-    group.name = proto_group.name();
-    group.processor_num = proto_group.processor_num();
-    group.affinity = proto_group.affinity();
-    if (proto_group.has_processor_policy()) {
-      group.processor_policy = proto_group.processor_policy();
-    }
-    group.processor_prio = proto_group.processor_prio();
-    try {
-      if (!proto_group.cpuset().empty()) {
-        ParseCpuset(proto_group.cpuset(), &group.cpuset);
-      }
-    } catch (const std::invalid_argument&) {
-      return false;
-    }
-    for (const auto& proto_task : proto_group.tasks()) {
-      if (proto_task.name().empty()) {
+  try {
+    if (parsed.policy == "classic") {
+      if (!proto.has_classic_conf()) {
         return false;
       }
-      ClassicTaskConf task;
-      task.name = proto_task.name();
-      task.priority = proto_task.prio();
-      task.group_name = group.name;
-      group.tasks.push_back(std::move(task));
+      for (const auto& proto_group : proto.classic_conf().groups()) {
+        if (proto_group.name().empty()) {
+          return false;
+        }
+        ClassicGroupConf group;
+        group.name = proto_group.name();
+        group.processor_num = proto_group.processor_num();
+        group.affinity = proto_group.affinity();
+        if (proto_group.has_processor_policy()) {
+          group.processor_policy = proto_group.processor_policy();
+        }
+        group.processor_prio = proto_group.processor_prio();
+        if (!proto_group.cpuset().empty()) {
+          ParseCpuset(proto_group.cpuset(), &group.cpuset);
+        }
+        for (const auto& proto_task : proto_group.tasks()) {
+          if (proto_task.name().empty()) {
+            return false;
+          }
+          ClassicTaskConf task;
+          task.name = proto_task.name();
+          task.priority = proto_task.prio();
+          task.group_name = group.name;
+          group.tasks.push_back(std::move(task));
+        }
+        parsed.classic_groups.push_back(std::move(group));
+      }
+      if (parsed.classic_groups.empty()) {
+        return false;
+      }
+    } else {
+      if (!proto.has_choreography_conf()) {
+        return false;
+      }
+      const auto& choreo = proto.choreography_conf();
+      parsed.choreography_processor_num = choreo.choreography_processor_num();
+      if (parsed.choreography_processor_num == 0 ||
+          choreo.pool_processor_num() == 0) {
+        return false;
+      }
+      parsed.choreography_affinity = choreo.choreography_affinity();
+      if (choreo.has_choreography_processor_policy()) {
+        parsed.choreography_processor_policy =
+            choreo.choreography_processor_policy();
+      }
+      parsed.choreography_processor_prio =
+          choreo.choreography_processor_prio();
+      parsed.pool_processor_num = choreo.pool_processor_num();
+      parsed.pool_affinity = choreo.pool_affinity();
+      if (choreo.has_pool_processor_policy()) {
+        parsed.pool_processor_policy = choreo.pool_processor_policy();
+      }
+      parsed.pool_processor_prio = choreo.pool_processor_prio();
+      if (!choreo.choreography_cpuset().empty()) {
+        ParseCpuset(choreo.choreography_cpuset(),
+                    &parsed.choreography_cpuset);
+      }
+      if (!choreo.pool_cpuset().empty()) {
+        ParseCpuset(choreo.pool_cpuset(), &parsed.pool_cpuset);
+      }
+      for (const auto& proto_task : choreo.tasks()) {
+        if (proto_task.name().empty()) {
+          return false;
+        }
+        ChoreographyTaskConf task;
+        task.name = proto_task.name();
+        task.priority = proto_task.prio();
+        task.has_processor = proto_task.has_processor();
+        task.processor_id = task.has_processor ? proto_task.processor() : -1;
+        parsed.choreography_tasks.push_back(std::move(task));
+      }
     }
-    parsed.classic_groups.push_back(std::move(group));
-  }
-  if (parsed.classic_groups.empty()) {
+  } catch (const std::invalid_argument&) {
     return false;
   }
   *conf = std::move(parsed);
@@ -95,15 +141,42 @@ void Scheduler::CreateProcessors(const SchedulerConf& conf) {
       proc_num = static_cast<uint32_t>(sysconf(_SC_NPROCESSORS_ONLN));
       if (proc_num == 0) proc_num = 1;
     }
+    choreography_processor_count_ = proc_num;
+    for (const auto& task : conf.choreography_tasks) {
+      choreography_tasks_[task.name] = task;
+    }
+
+    SchedulerConf choreography_conf;
+    choreography_conf.affinity = conf.choreography_affinity;
+    choreography_conf.cpuset = conf.choreography_cpuset;
+    choreography_conf.processor_policy = conf.choreography_processor_policy;
+    choreography_conf.processor_prio = conf.choreography_processor_prio;
     for (uint32_t i = 0; i < proc_num; ++i) {
       auto ctx = std::make_shared<ChoreographyContext>();
       auto proc = std::make_shared<Processor>();
       proc->SetScheduler(this);
       proc->BindContext(ctx);
-      ApplyThreadPolicy(conf, i, proc.get());
+      ApplyThreadPolicy(choreography_conf, i, proc.get());
       contexts_.push_back(ctx);
       processors_.push_back(proc);
     }
+
+    pool_processor_count_ = conf.pool_processor_num;
+    SchedulerConf pool_conf;
+    pool_conf.affinity = conf.pool_affinity;
+    pool_conf.cpuset = conf.pool_cpuset;
+    pool_conf.processor_policy = conf.pool_processor_policy;
+    pool_conf.processor_prio = conf.pool_processor_prio;
+    for (uint32_t i = 0; i < pool_processor_count_; ++i) {
+      auto ctx = std::make_shared<ClassicContext>(DEFAULT_GROUP_NAME);
+      auto proc = std::make_shared<Processor>();
+      proc->SetScheduler(this);
+      proc->BindContext(ctx);
+      ApplyThreadPolicy(pool_conf, i, proc.get());
+      contexts_.push_back(ctx);
+      processors_.push_back(proc);
+    }
+    has_choreography_pool_ = pool_processor_count_ != 0;
     return;
   }
 
@@ -185,8 +258,25 @@ uint64_t Scheduler::CreateTask(const std::function<void()>& func,
   } else if (policy_ == "choreography") {
     target = 0;
   }
-  cr->set_processor_id(policy_ == "choreography" ? static_cast<int>(target) : -1);
-  if (policy_ == "classic") {
+  if (policy_ == "choreography") {
+    const auto* configured = FindChoreographyTask(name);
+    int requested_processor = processor_id;
+    if (configured != nullptr) {
+      cr->set_priority(configured->priority);
+      if (configured->has_processor) {
+        requested_processor = configured->processor_id;
+      }
+    }
+    if (IsChoreographyProcessor(requested_processor)) {
+      target = static_cast<uint32_t>(requested_processor);
+      cr->set_processor_id(requested_processor);
+    } else {
+      // 未指定或越出定向区的任务统一进入 MC-610 的 Classic 公共组。
+      cr->set_processor_id(-1);
+      cr->set_group_name(DEFAULT_GROUP_NAME);
+    }
+  } else {
+    cr->set_processor_id(-1);
     const auto* group = FindClassicGroup(name);
     if (group == nullptr) {
       return 0;
@@ -269,11 +359,29 @@ const ClassicGroupConf* Scheduler::FindClassicGroup(
 
 bool Scheduler::Enqueue(const std::shared_ptr<CRoutine>& cr, uint32_t target) {
   if (policy_ == "choreography") {
-    return std::static_pointer_cast<ChoreographyContext>(contexts_.at(target))
-        ->Enqueue(cr);
+    if (IsChoreographyProcessor(cr->processor_id())) {
+      return std::static_pointer_cast<ChoreographyContext>(contexts_.at(target))
+          ->Enqueue(cr);
+    }
+    if (!has_choreography_pool_) {
+      return false;
+    }
+    ClassicContext::Enqueue(cr);
+    return true;
   }
   ClassicContext::Enqueue(cr);
   return true;
+}
+
+const ChoreographyTaskConf* Scheduler::FindChoreographyTask(
+    const std::string& name) const {
+  const auto it = choreography_tasks_.find(name);
+  return it == choreography_tasks_.end() ? nullptr : &it->second;
+}
+
+bool Scheduler::IsChoreographyProcessor(int processor_id) const {
+  return policy_ == "choreography" && processor_id >= 0 &&
+         static_cast<size_t>(processor_id) < choreography_processor_count_;
 }
 
 // ----------------------------------------------------------------------
@@ -308,8 +416,7 @@ bool Scheduler::NotifyTask(uint64_t crid) {
     cr->SetUpdateFlag();
   }
 
-  if (policy_ == "choreography" && cr->processor_id() >= 0 &&
-      static_cast<size_t>(cr->processor_id()) < contexts_.size()) {
+  if (IsChoreographyProcessor(cr->processor_id())) {
     std::static_pointer_cast<ChoreographyContext>(
         contexts_.at(static_cast<size_t>(cr->processor_id())))
         ->Notify();
@@ -358,6 +465,8 @@ void Scheduler::Shutdown() {
     for (const auto& group : classic_groups_) {
       ClassicContext::RemoveGroup(group.name);
     }
+  } else if (has_choreography_pool_) {
+    ClassicContext::RemoveGroup(DEFAULT_GROUP_NAME);
   }
 
   {

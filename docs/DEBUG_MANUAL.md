@@ -241,6 +241,38 @@ MC-608 全量测试曾出现 `ConditionNotifierTest.ForkCrossProcessNotify` 子�
 父子进程退出码、notifier SHM 初始状态和清理结果，并用事件条件而非扩大 sleep 判断是否为
 通知初始化、残留资源或测试编排问题。在 MC-617 收口前，它保持“未确认问题”状态。
 
+### MC-611 旧测试对象 ABI 不一致导致的 `stack smashing`
+
+**触发环境与最小复现**：扩展 `SchedulerConf` 头布局、但只增量重编译
+`test_scheduler_choreography` 和 `test_scheduler_classic` 后，执行高风险调度门禁：
+
+```bash
+ctest --test-dir build/debug --output-on-failure --repeat until-fail:20 \
+  -R '^test_(scheduler_choreography|scheduler_classic|processor|classic_context|routine_factory)$'
+```
+
+首次运行在 `test_routine_factory` 退出码 8 时出现 `*** stack smashing detected ***`。
+该轮 5 项中 1 项失败，失败率为 1/1；异常发生在旧对象仍按扩展前的
+`SchedulerConf` 大小和布局访问栈对象时。
+
+**排查步骤与证据**：对比公共头和目标文件后，确认 `test_routine_factory` 对象没有因
+头布局变更而重编译；随后执行完整 Debug 构建及定向复跑：
+
+```bash
+cmake --build build/debug -j2
+ctest --test-dir build/debug --output-on-failure --repeat until-fail:20 \
+  -R '^test_routine_factory$'
+```
+
+完整重编译退出码 0，`test_routine_factory` 随后连续 20/20 通过。没有观察到同一失败
+在新对象上的复现，因此该条目保持“未确认问题”而非产品逻辑回归；归属为 MC-611
+构建/ABI 收口，后续任务不得把它当作调度运行时故障。
+
+**根因、修复边界与经验**：根因是公共配置结构扩展后的陈旧测试对象 ABI 不一致，
+不是 Scheduler 线程安全或关闭顺序。修复边界仅是完整重编译受影响目标，没有加入
+运行时兼容层或改变 `SchedulerConf` 语义。修改公开头文件中的结构布局后，必须在高风险
+复跑前执行完整构建，避免旧对象污染结果。
+
 **构造期虚调用历史问题**：旧 IOManager 在基类构造期间启动工作线程，线程进入
 基类 `run()` 而非派生类实现；停止时主线程卡在 `pthread_join`，工作线程等待
 `futex` 或 `epoll_wait`。根因是构造和析构期间虚函数表只代表当前层级。

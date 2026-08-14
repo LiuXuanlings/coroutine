@@ -75,6 +75,9 @@ class Scheduler {
   void CreateProcessors(const SchedulerConf& conf);
   bool Enqueue(const std::shared_ptr<CRoutine>& cr, uint32_t target);
   const ClassicGroupConf* FindClassicGroup(const std::string& name) const;
+  const ChoreographyTaskConf* FindChoreographyTask(
+      const std::string& name) const;
+  bool IsChoreographyProcessor(int processor_id) const;
 
   // 应用 CPU 亲和性与调度策略
   void ApplyThreadPolicy(const SchedulerConf& conf, size_t proc_idx,
@@ -104,6 +107,11 @@ class Scheduler {
   std::atomic<uint64_t> next_task_id_{1};
   std::unordered_map<std::string, ClassicTaskConf> classic_tasks_;
   std::vector<ClassicGroupConf> classic_groups_;
+  std::unordered_map<std::string, ChoreographyTaskConf>
+      choreography_tasks_;
+  size_t choreography_processor_count_ = 0;
+  size_t pool_processor_count_ = 0;
+  bool has_choreography_pool_ = false;
   std::string policy_ = "classic";
 
   std::atomic<bool> stop_{false};

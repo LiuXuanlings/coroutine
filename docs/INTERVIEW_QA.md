@@ -247,3 +247,24 @@ Processor 从第 19 级到第 0 级统一扫描决定。
 验证由 `test_scheduler_classic` 的 Protobuf 配置映射和共享组任务、
 `test_processor` 的完整候选集优先级顺序，以及 `test_routine_factory` 的通知唤醒覆盖；
 三者均已纳入 `high_risk`，并与 `test_classic_context` 连续运行 20 轮通过。
+
+### Choreography 为什么要同时保留定向区和 Classic 公共池？
+
+原生 Choreography 为配置了 `processor_id` 的任务建立定向执行上下文，同时保留未绑定
+任务可进入的调度组。MC-611 按 `choreography_processor_num` 创建定向 Processor，按
+`pool_processor_num` 创建 Classic 公共池；显式且有效的 Processor 编号只进入定向区，
+未配置或越界编号统一进入公共池的共享多级队列。这样保留目标处理器亲和职责，又复用
+MC-610 的 Classic 队列语义，没有复制第二套优先级队列或把错误配置轮询到定向区。
+
+数据到达仍通过 `Scheduler::NotifyTask` 回到任务创建时的原路由：定向任务唤醒其
+`ChoreographyContext`，公共池任务唤醒 Classic 公共组。`test_scheduler_choreography`
+覆盖线程归属、越界回退和两条 DATA_WAIT 唤醒路径，并与 Classic 高风险测试连续 20 轮
+通过。SchedulerFactory 只接受 `classic` 和 `choreography`，未知策略直接拒绝，避免配置
+错误伪装成另一种调度语义。
+
+### 为什么修改 SchedulerConf 后必须完整重编译？
+
+`SchedulerConf` 是 Scheduler 与测试/调用方共享的公开 C++ 结构。MC-611 增加 Choreography
+双区字段会改变对象布局；若只重编译部分目标，旧对象按原布局访问新栈对象，可能表现为
+`stack smashing`，这不是可接受的 ABI 兼容策略。一次旧对象失败后，完整 Debug 构建和
+`test_routine_factory` 连续 20 轮通过，证明问题归属于构建收口而非运行时调度逻辑。

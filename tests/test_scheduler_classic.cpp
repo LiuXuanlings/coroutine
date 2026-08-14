@@ -191,6 +191,42 @@ TEST(SchedulerConfTest, ParsesClassicGroupsAndTasksFromProtobuf) {
   EXPECT_EQ(parsed_group.tasks.front().group_name, "perception");
 }
 
+TEST(SchedulerConfTest, ParsesChoreographyDualZonesFromProtobuf) {
+  proto::SchedulerConf proto_conf;
+  proto_conf.set_policy("choreography");
+  auto* choreo = proto_conf.mutable_choreography_conf();
+  choreo->set_choreography_processor_num(2);
+  choreo->set_pool_processor_num(1);
+  choreo->set_choreography_cpuset("0-1");
+  choreo->set_pool_cpuset("2");
+  auto* task = choreo->add_tasks();
+  task->set_name("directed_task");
+  task->set_processor(1);
+  task->set_prio(15);
+
+  SchedulerConf conf;
+  ASSERT_TRUE(SchedulerConf::FromProto(proto_conf, &conf));
+  EXPECT_EQ(conf.policy, "choreography");
+  EXPECT_EQ(conf.choreography_processor_num, 2u);
+  EXPECT_EQ(conf.pool_processor_num, 1u);
+  EXPECT_EQ(conf.choreography_cpuset, (std::vector<int>{0, 1}));
+  EXPECT_EQ(conf.pool_cpuset, (std::vector<int>{2}));
+  ASSERT_EQ(conf.choreography_tasks.size(), 1u);
+  EXPECT_TRUE(conf.choreography_tasks.front().has_processor);
+  EXPECT_EQ(conf.choreography_tasks.front().processor_id, 1);
+  EXPECT_EQ(conf.choreography_tasks.front().priority, 15u);
+}
+
+TEST(SchedulerConfTest, RejectsEmptyChoreographyZoneFromProtobuf) {
+  proto::SchedulerConf proto_conf;
+  proto_conf.set_policy("choreography");
+  auto* choreo = proto_conf.mutable_choreography_conf();
+  choreo->set_choreography_processor_num(1);
+
+  SchedulerConf conf;
+  EXPECT_FALSE(SchedulerConf::FromProto(proto_conf, &conf));
+}
+
 TEST(SchedulerTest, ClassicGroupSharesProcessorsAndConfiguredTaskQueue) {
   SchedulerConf conf;
   ClassicGroupConf group;
