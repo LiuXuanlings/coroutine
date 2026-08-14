@@ -5,8 +5,8 @@
 ## 一、当前指针
 
 - 当前分支：`development`
-- 当前阶段：第二次重构，基础设施改造阶段
-- 当前任务：MC-613
+- 当前阶段：第二次重构，业务模块改造阶段
+- 当前任务：MC-614
 - 当前状态：待开始
 - 唯一状态事实源：[`docs/refactor/00_进度记录.md`](docs/refactor/00_进度记录.md)
 - 唯一任务执行方案：[`docs/refactor/01_实施方案.md`](docs/refactor/01_实施方案.md)
@@ -30,8 +30,9 @@
   单/双输入 DataVisitor、AllLatest 和 RoutineFactory 数据协程链；MC-610 已恢复
   Classic 共享调度组并接回 DataVisitorBase 唤醒；MC-611 已完成 Choreography 定向
   Processor、Classic 公共池、任务回退和原路由唤醒；MC-612 已将单/双通道 Component
-  接入 DataVisitor、RoutineFactory 和 Scheduler，补齐回调内关闭与 SHM 数据协程分流。
-  下一步为 MC-613。
+  接入 DataVisitor、RoutineFactory 和 Scheduler，补齐回调内关闭与 SHM 数据协程分流；
+  MC-613 已完成独立 Scheduler 配置、真实 `.so` 加载水位回滚和主线程有序退出。
+  下一步为 MC-614。
 - MC-602 必须先从 `docs/refactor/baseline.md`、`docs/refactor/module_mapping.md`、
   `docs/refactor/perf/**`、`docs/croutine/shared_from_this.md`、
   `docs/scheduler/debug_vtable_hang.md`、`docs/transport/signal.md` 和

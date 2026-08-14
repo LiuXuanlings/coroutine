@@ -342,6 +342,28 @@ SHM Protobuf 边界。`test_component` 与 `test_hybrid_transport` 各连续 5 �
 已解码副本注入 INTRA 的普通端点总线；数据协程 Buffer 与 Transport 回调必须维持独立订阅
 类别。
 
+### 动态库卸载后残留 ComponentFactory 创建函数
+
+**风险与最小复现**：若 `.so` 的静态注册器仅在 `dlopen` 时向核心工厂登记 CreatorFunc，
+`dlclose` 后注册表仍可能保存指向已卸载代码段的 lambda。下一次 `Create` 会跳转到无效地址；
+若先 `dlclose` 再销毁 Component，虚析构和 `Shutdown` 也会落入已卸载库。
+
+**定位与修复边界**：检查 `ModuleController::RollbackTo` 的水位、组件销毁位置和
+`ComponentFactory` 注册表。MC-613 将回滚固定为“逆序 Shutdown -> 销毁 shared_ptr -> 逆序
+dlclose”，并让注册器析构时注销类名；核心工厂进程常驻，避免 dlclose 时的跨 DSO 静态析构顺序。
+这不实现热重载或并发卸载，只保证 mainboard 的串行加载边界。
+
+**回归命令与结果**：
+
+```bash
+cmake --build build/debug -j2 --target mainboard test_module_controller
+ctest --test-dir build/debug --output-on-failure -R '^test_module_controller$'
+```
+
+测试构建最小插件 `.so`，断言真实注册创建及 `I -> S -> D -> U`；未知类加载失败仅回滚
+本次水位，已加载组件保持可用。进程级用同一 DAG 搭配 Classic/Choreography 配置，等待初始化
+痕迹后发送 SIGTERM，两个子进程均退出码 0。
+
 ## 七、证据来源
 
 本初稿迁移自首轮 `00_进度记录.md`、`baseline.md`、`module_mapping.md`、

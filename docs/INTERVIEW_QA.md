@@ -300,3 +300,25 @@ dlopen 期间的静态注册器会写入插件私有表，mainboard 无法创建
 `ComponentFactory::Instance` 的定义移入 `minicyber_core`；组件仅引用该导出符号，配合
 MC-613 要求的 `RTLD_GLOBAL` 后共享唯一表。真实 dlopen/dlclose 的加载水位回滚仍由
 MC-613 验收，当前任务只固定其必要 ABI 前提。
+
+### mainboard 为什么要求独立 Scheduler 配置且必须先创建 Scheduler？
+
+`cyber_ref/cyber/mainboard/module_argument.cc` 将启动参数职责与模块加载分离。MC-613
+把 MiniCyber 收敛为唯一 `-d` DAG 和唯一 `-s` Scheduler 文本配置：先解析 Protobuf，交给
+`SchedulerFactory` 拒绝非法策略或空 Choreography 分区，随后才加载 DAG。这样同一业务 DAG
+只替换 Classic/Choreography 配置，不会复制业务图或让 Component 初始化落到默认 Scheduler。
+
+### dlclose 前为什么必须 Shutdown、销毁组件并注销工厂条目？
+
+`cyber_ref` 的 ClassLoader 在组件生命周期结束后才卸载库。MC-613 的
+`ModuleController::RollbackTo` 以本次加载水位为界，逆序执行 Shutdown、销毁 `shared_ptr`、
+再 `dlclose`；插件注册器析构时从核心库唯一 `ComponentFactory` 注销 CreatorFunc，避免后续
+Create 跳到已经卸载的代码段。测试 `.so` 记录 `I -> S -> D -> U`，并覆盖未知类失败时不伤害
+先前水位。它不等同于 MC-615 的真实业务插件或 DAG。
+
+### SIGINT/SIGTERM 为什么不能直接调用 C++ 清理逻辑？
+
+信号处理器只能写 `sig_atomic_t` 通知，不能触碰 mutex、堆、日志、Transport 或 Scheduler。
+MC-613 由主线程在通知后按 Component、Transport/Discovery、Scheduler 的顺序关闭，确保已卸载
+`.so` 不会再被发现或传输回调触达。进程级测试在 Classic 和 Choreography 配置下均等待插件真实
+初始化后发送 SIGTERM，并确认有界退出及 `I -> S -> D -> U` 顺序。

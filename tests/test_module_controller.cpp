@@ -1,447 +1,179 @@
 #include <gtest/gtest.h>
 
-#include <atomic>
-#include <chrono>
+#include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
-#include <memory>
 #include <string>
-#include <thread>
 #include <vector>
+
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include <google/protobuf/text_format.h>
 
-#include "minicyber/component/component.h"
-#include "minicyber/component/component_factory.h"
 #include "minicyber/mainboard/module_controller.h"
-#include "minicyber/node/node.h"
-#include "minicyber/scheduler/scheduler.h"
 #include "minicyber/proto/dag_conf.pb.h"
 
-// =============================================================================
-// ModuleController 单测
-//
-// 测试策略：
-//   1. 不依赖 dlopen（构建独立 .so 增加测试复杂度，收益有限）
-//      使用 module_library="" 的 ModuleConfig，跳过 dlopen 路径，
-//      直接验证工厂实例化 + Initialize 链路。
-//      MINICYBER_REGISTER_COMPONENT 宏在测试二进制启动时即完成静态注册。
-//
-//   2. DAG 文件解析测试：写入临时 .dag 文本 proto，ParseDagFile 验证字段。
-//
-//   3. 错误路径：未注册类名、不存在的 .so、缺失 DAG 文件。
-//
-//   4. 端到端：LoadAll → Writer 写数据 → Proc 被调用 → Clear。
-// =============================================================================
+#ifndef MINICYBER_TEST_PLUGIN_PATH
+#error "MINICYBER_TEST_PLUGIN_PATH must be provided by CMake"
+#endif
 
-using minicyber::component::ComponentFactory;
-using minicyber::mainboard::ModuleController;
-using minicyber::proto::ComponentConfig;
-using minicyber::proto::ComponentInfo;
-using minicyber::proto::DagConfig;
-using minicyber::proto::ModuleConfig;
+#ifndef MINICYBER_MAINBOARD_PATH
+#error "MINICYBER_MAINBOARD_PATH must be provided by CMake"
+#endif
 
 namespace {
-using TestMessage = minicyber::proto::RoleAttributes;
 
-TestMessage MakeMessage(const std::string& value) {
-  TestMessage message;
-  message.set_node_name(value);
-  return message;
-}
+using minicyber::mainboard::ModuleController;
+using minicyber::proto::DagConfig;
 
-minicyber::scheduler::Scheduler& TestScheduler() {
-  static minicyber::scheduler::SchedulerConf conf = [] {
-    minicyber::scheduler::SchedulerConf value;
-    value.thread_num = 1;
-    return value;
-  }();
-  static minicyber::scheduler::Scheduler scheduler(conf);
-  return scheduler;
-}
+constexpr char kPluginClass[] = "Mc613PluginComponent";
 
-// 测试用事件驱动组件
-class McTestComponent
-    : public minicyber::component::Component<TestMessage> {
- public:
-  static void ResetStats() {
-    init_count_.store(0, std::memory_order_relaxed);
-    proc_count_.store(0, std::memory_order_relaxed);
-    last_msg_.clear();
-  }
-  static int init_count() { return init_count_.load(std::memory_order_relaxed); }
-  static int proc_count() { return proc_count_.load(std::memory_order_relaxed); }
-  static const std::string& last_msg() { return last_msg_; }
-
- protected:
-  bool Init() override {
-    TestScheduler();
-    init_count_.fetch_add(1, std::memory_order_relaxed);
-    return true;
-  }
-  bool Proc(const std::shared_ptr<TestMessage>& msg) override {
-    last_msg_ = msg->node_name();
-    proc_count_.fetch_add(1, std::memory_order_relaxed);
-    return true;
-  }
-
- private:
-  static std::atomic<int> init_count_;
-  static std::atomic<int> proc_count_;
-  static std::string last_msg_;
-};
-
-std::atomic<int> McTestComponent::init_count_{0};
-std::atomic<int> McTestComponent::proc_count_{0};
-std::string McTestComponent::last_msg_;
-
-bool WaitForProcCount(int expected) {
-  for (int i = 0; i < 200; ++i) {
-    if (McTestComponent::proc_count() >= expected) return true;
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
-  return false;
-}
-
-// 第二个测试组件（验证多类共存）
-class McSecondComponent
-    : public minicyber::component::Component<TestMessage> {
- protected:
-  bool Init() override {
-    TestScheduler();
-    return true;
-  }
-  bool Proc(const std::shared_ptr<TestMessage>& msg) override {
-    (void)msg;
-    return true;
-  }
-};
-
-MINICYBER_REGISTER_COMPONENT(McTestComponent)
-MINICYBER_REGISTER_COMPONENT(McSecondComponent)
-
-// 辅助：写临时 .dag 文件
-std::string WriteTempDag(const std::string& content) {
-  char path[] = "/tmp/minicyber_test_XXXXXX.dag";
-  int fd = ::mkstemps(path, 4);
+std::string WriteTempFile(const std::string& suffix, const std::string& content) {
+  std::string pattern = "/tmp/minicyber_mc613_XXXXXX" + suffix;
+  std::vector<char> writable(pattern.begin(), pattern.end());
+  writable.push_back('\0');
+  const int fd = ::mkstemps(writable.data(), static_cast<int>(suffix.size()));
   if (fd < 0) return "";
   ::close(fd);
-  std::ofstream ofs(path);
-  ofs << content;
-  ofs.close();
+  const std::string path(writable.data());
+  std::ofstream output(path);
+  output << content;
   return path;
+}
+
+std::string ReadFile(const std::string& path) {
+  std::ifstream input(path);
+  return std::string((std::istreambuf_iterator<char>(input)),
+                     std::istreambuf_iterator<char>());
+}
+
+DagConfig MakeDag(const std::string& library, const std::string& class_name,
+                  const std::string& node_name) {
+  DagConfig dag;
+  auto* module = dag.add_module_config();
+  module->set_module_library(library);
+  auto* component = module->add_components();
+  component->set_class_name(class_name);
+  component->mutable_config()->set_name(node_name);
+  component->mutable_config()->add_readers()->set_channel("/mc613/test");
+  return dag;
+}
+
+bool WaitForPluginInitialization(pid_t child, const std::string& trace) {
+  for (int attempt = 0; attempt < 100; ++attempt) {
+    int status = 0;
+    const pid_t result = ::waitpid(child, &status, WNOHANG);
+    if (result == child) return false;
+    if (ReadFile(trace).find('I') != std::string::npos) return true;
+    ::usleep(10 * 1000);
+  }
+  return true;
+}
+
+int WaitForExit(pid_t child) {
+  int status = 0;
+  EXPECT_EQ(::waitpid(child, &status, 0), child);
+  return status;
 }
 
 }  // namespace
 
-// =============================================================================
-// 基础：空 DAG 列表
-// =============================================================================
-
-TEST(ModuleControllerTest, LoadAllEmptyDagList) {
+TEST(ModuleControllerTest, RejectsEmptyModuleLibrary) {
   ModuleController controller({});
-  EXPECT_TRUE(controller.LoadAll());
+  EXPECT_FALSE(controller.LoadModule(MakeDag("", kPluginClass, "empty_library")));
   EXPECT_EQ(controller.ComponentCount(), 0u);
   EXPECT_EQ(controller.LibraryCount(), 0u);
-  controller.Clear();
 }
 
-// =============================================================================
-// LoadModule：使用已注册的组件（module_library="" 跳过 dlopen）
-// =============================================================================
-
-TEST(ModuleControllerTest, LoadModuleInProcessComponent) {
-  McTestComponent::ResetStats();
-
-  DagConfig dag;
-  ModuleConfig* mc = dag.add_module_config();
-  mc->set_module_library("");  // 不 dlopen
-  ComponentInfo* ci = mc->add_components();
-  ci->set_class_name("McTestComponent");
-  ComponentConfig* cc = ci->mutable_config();
-  cc->set_name("mc_test_node");
-  cc->add_readers()->set_channel("/mc_test_channel");
+TEST(ModuleControllerTest, DlopenRegistersComponentAndClearOrdersShutdownDestroyUnload) {
+  const std::string trace = WriteTempFile(".trace", "");
+  ASSERT_FALSE(trace.empty());
+  ASSERT_EQ(::setenv("MINICYBER_MC613_PLUGIN_TRACE", trace.c_str(), 1), 0);
 
   ModuleController controller({});
-  ASSERT_TRUE(controller.LoadModule(dag));
+  ASSERT_TRUE(controller.LoadModule(
+      MakeDag(MINICYBER_TEST_PLUGIN_PATH, kPluginClass, "plugin_node")));
   EXPECT_EQ(controller.ComponentCount(), 1u);
-  EXPECT_EQ(controller.LibraryCount(), 0u);
-  EXPECT_EQ(McTestComponent::init_count(), 1);
+  EXPECT_EQ(controller.LibraryCount(), 1u);
+  EXPECT_EQ(ReadFile(trace), "I");
 
   controller.Clear();
   EXPECT_EQ(controller.ComponentCount(), 0u);
-}
-
-// =============================================================================
-// LoadModule：未注册类名 → 返回 false
-// =============================================================================
-
-TEST(ModuleControllerTest, LoadModuleUnknownClassName) {
-  DagConfig dag;
-  ModuleConfig* mc = dag.add_module_config();
-  mc->set_module_library("");
-  ComponentInfo* ci = mc->add_components();
-  ci->set_class_name("NonExistentClassXYZ");
-  ci->mutable_config()->set_name("bad_node");
-
-  ModuleController controller({});
-  EXPECT_FALSE(controller.LoadModule(dag));
-  // 失败后 component_list_ 可能为空或包含部分，但 Clear 应安全
-  controller.Clear();
-}
-
-TEST(ModuleControllerTest, RejectsIncompleteComponentDagEntry) {
-  DagConfig dag;
-  auto* component = dag.add_module_config()->add_components();
-  component->set_class_name("McTestComponent");
-  component->mutable_config()->set_name("incomplete_component");
-
-  ModuleController controller({});
-  EXPECT_FALSE(controller.LoadModule(dag));
-  EXPECT_EQ(controller.ComponentCount(), 0u);
-}
-
-TEST(ModuleControllerTest, ParsePreservesReaderOptionFields) {
-  const std::string dag_content =
-      "module_config {\n"
-      "  module_library: \"\"\n"
-      "  components {\n"
-      "    class_name: \"McTestComponent\"\n"
-      "    config {\n"
-      "      name: \"rich_proto_node\"\n"
-      "      config_file_path: \"component.conf\"\n"
-      "      flag_file_path: \"component.flags\"\n"
-      "      readers {\n"
-      "        channel: \"/rich_proto\"\n"
-      "        pending_queue_size: 3\n"
-      "        qos_profile { depth: 3 reliability: RELIABILITY_BEST_EFFORT }\n"
-      "      }\n"
-      "    }\n"
-      "  }\n"
-      "}\n";
-  DagConfig dag;
-  ASSERT_TRUE(google::protobuf::TextFormat::ParseFromString(dag_content, &dag));
-  const auto& reader = dag.module_config(0).components(0).config().readers(0);
-  EXPECT_EQ(reader.channel(), "/rich_proto");
-  EXPECT_EQ(reader.pending_queue_size(), 3u);
-  EXPECT_EQ(reader.qos_profile().depth(), 3u);
-  EXPECT_EQ(reader.qos_profile().reliability(),
-            minicyber::proto::RELIABILITY_BEST_EFFORT);
-}
-
-// =============================================================================
-// LoadModule：不存在的 .so → 返回 false
-// =============================================================================
-
-TEST(ModuleControllerTest, LoadModuleNonExistentLibrary) {
-  DagConfig dag;
-  ModuleConfig* mc = dag.add_module_config();
-  mc->set_module_library("/nonexistent/path/libfoo.so");
-  ComponentInfo* ci = mc->add_components();
-  ci->set_class_name("McTestComponent");
-  ci->mutable_config()->set_name("x");
-  ci->mutable_config()->add_readers()->set_channel("/x");
-
-  ModuleController controller({});
-  EXPECT_FALSE(controller.LoadModule(dag));
   EXPECT_EQ(controller.LibraryCount(), 0u);
-  controller.Clear();
+  EXPECT_EQ(ReadFile(trace), "ISDU");
+  ::unsetenv("MINICYBER_MC613_PLUGIN_TRACE");
+  ::unlink(trace.c_str());
 }
 
-// =============================================================================
-// LoadAll：从文件路径加载
-// =============================================================================
+TEST(ModuleControllerTest, FailedLoadRollsBackOnlyCurrentWatermark) {
+  const std::string trace = WriteTempFile(".trace", "");
+  ASSERT_FALSE(trace.empty());
+  ASSERT_EQ(::setenv("MINICYBER_MC613_PLUGIN_TRACE", trace.c_str(), 1), 0);
 
-TEST(ModuleControllerTest, LoadAllFromDagFile) {
-  McTestComponent::ResetStats();
-
-  std::string dag_content =
-      "module_config {\n"
-      "  module_library: \"\"\n"
-      "  components {\n"
-      "    class_name: \"McTestComponent\"\n"
-      "    config {\n"
-      "      name: \"file_loaded_node\"\n"
-      "      readers { channel: \"/mc_file_channel\" }\n"
-      "    }\n"
-      "  }\n"
-      "}\n";
-  std::string path = WriteTempDag(dag_content);
-  ASSERT_FALSE(path.empty());
-
-  ModuleController controller({path});
-  ASSERT_TRUE(controller.LoadAll());
+  ModuleController controller({});
+  ASSERT_TRUE(controller.LoadModule(
+      MakeDag(MINICYBER_TEST_PLUGIN_PATH, kPluginClass, "kept_component")));
+  EXPECT_FALSE(controller.LoadModule(
+      MakeDag(MINICYBER_TEST_PLUGIN_PATH, "UnknownPluginClass", "bad_component")));
   EXPECT_EQ(controller.ComponentCount(), 1u);
-  EXPECT_EQ(McTestComponent::init_count(), 1);
+  EXPECT_EQ(controller.LibraryCount(), 1u);
+  EXPECT_EQ(ReadFile(trace), "I");
 
   controller.Clear();
-  ::unlink(path.c_str());
+  EXPECT_EQ(ReadFile(trace), "ISDU");
+  ::unsetenv("MINICYBER_MC613_PLUGIN_TRACE");
+  ::unlink(trace.c_str());
 }
 
-// =============================================================================
-// LoadAll：DAG 文件不存在 → 返回 false
-// =============================================================================
-
-TEST(ModuleControllerTest, LoadAllNonExistentDagFile) {
-  ModuleController controller({"/nonexistent/path/missing.dag"});
-  EXPECT_FALSE(controller.LoadAll());
-  controller.Clear();
-}
-
-// =============================================================================
-// LoadAll：多个 DAG 路径
-// =============================================================================
-
-TEST(ModuleControllerTest, LoadAllMultipleDagPaths) {
-  McTestComponent::ResetStats();
-
-  std::string dag1 =
-      "module_config {\n"
-      "  module_library: \"\"\n"
-      "  components {\n"
-      "    class_name: \"McTestComponent\"\n"
-      "    config { name: \"n1\" readers { channel: \"/c1\" } }\n"
-      "  }\n"
-      "}\n";
-  std::string dag2 =
-      "module_config {\n"
-      "  module_library: \"\"\n"
-      "  components {\n"
-      "    class_name: \"McSecondComponent\"\n"
-      "    config { name: \"n2\" readers { channel: \"/c2\" } }\n"
-      "  }\n"
-      "}\n";
-  std::string p1 = WriteTempDag(dag1);
-  std::string p2 = WriteTempDag(dag2);
-  ASSERT_FALSE(p1.empty());
-  ASSERT_FALSE(p2.empty());
-
-  ModuleController controller({p1, p2});
-  ASSERT_TRUE(controller.LoadAll());
-  EXPECT_EQ(controller.ComponentCount(), 2u);
-
-  controller.Clear();
-  ::unlink(p1.c_str());
-  ::unlink(p2.c_str());
-}
-
-TEST(ModuleControllerTest, LoadAllFailureRollsBackEarlierDag) {
-  const std::string valid_dag =
-      "module_config { components { class_name: \"McTestComponent\" "
-      "config { name: \"rollback_first\" readers { channel: \"/rollback_first\" } } } }\n";
-  const std::string invalid_dag =
-      "module_config { components { class_name: \"UnknownRollbackClass\" "
-      "config { name: \"rollback_second\" readers { channel: \"/rollback_second\" } } } }\n";
-  const std::string first = WriteTempDag(valid_dag);
-  const std::string second = WriteTempDag(invalid_dag);
-  ASSERT_FALSE(first.empty());
-  ASSERT_FALSE(second.empty());
-
-  ModuleController controller({first, second});
+TEST(ModuleControllerTest, LoadAllRejectsMissingLibraryAndRollsBack) {
+  const std::string dag_path = WriteTempFile(
+      ".dag", "module_config { components { class_name: \"" +
+                  std::string(kPluginClass) +
+                  "\" config { name: \"missing_library\" readers { channel: \"/x\" } } } }\n");
+  ASSERT_FALSE(dag_path.empty());
+  ModuleController controller({dag_path});
   EXPECT_FALSE(controller.LoadAll());
   EXPECT_EQ(controller.ComponentCount(), 0u);
   EXPECT_EQ(controller.LibraryCount(), 0u);
-  ::unlink(first.c_str());
-  ::unlink(second.c_str());
+  ::unlink(dag_path.c_str());
 }
 
-TEST(ModuleControllerTest, LoadModuleFailureRollsBackEarlierComponent) {
-  DagConfig dag;
-  auto* module = dag.add_module_config();
-  auto* valid = module->add_components();
-  valid->set_class_name("McTestComponent");
-  valid->mutable_config()->set_name("rollback_module_first");
-  valid->mutable_config()->add_readers()->set_channel("/rollback_module_first");
-  auto* invalid = module->add_components();
-  invalid->set_class_name("UnknownRollbackClass");
-  invalid->mutable_config()->set_name("rollback_module_second");
-  invalid->mutable_config()->add_readers()->set_channel("/rollback_module_second");
+TEST(MainboardTest, UsesOneDagWithClassicAndChoreographyConfigurations) {
+  const std::string dag_path = WriteTempFile(
+      ".dag", "module_config { module_library: \"" +
+                  std::string(MINICYBER_TEST_PLUGIN_PATH) + "\" components { class_name: \"" +
+                  std::string(kPluginClass) +
+                  "\" config { name: \"mainboard_plugin\" readers { channel: \"/x\" } } } }\n");
+  const std::string classic_path = WriteTempFile(
+      ".conf", "policy: \"classic\" classic_conf { groups { name: \"default_grp\" processor_num: 1 } }\n");
+  const std::string choreography_path = WriteTempFile(
+      ".conf", "policy: \"choreography\" choreography_conf { choreography_processor_num: 1 pool_processor_num: 1 }\n");
+  ASSERT_FALSE(dag_path.empty());
+  ASSERT_FALSE(classic_path.empty());
+  ASSERT_FALSE(choreography_path.empty());
 
-  ModuleController controller({});
-  EXPECT_FALSE(controller.LoadModule(dag));
-  EXPECT_EQ(controller.ComponentCount(), 0u);
-  EXPECT_EQ(controller.LibraryCount(), 0u);
-}
-
-// =============================================================================
-// 端到端：LoadAll → Writer 写数据 → Proc 被调用 → Clear
-// =============================================================================
-
-TEST(ModuleControllerTest, EndToEndDataDelivery) {
-  McTestComponent::ResetStats();
-
-  std::string dag_content =
-      "module_config {\n"
-      "  module_library: \"\"\n"
-      "  components {\n"
-      "    class_name: \"McTestComponent\"\n"
-      "    config { name: \"e2e_node\" readers { channel: \"/e2e_channel\" } }\n"
-      "  }\n"
-      "}\n";
-  std::string path = WriteTempDag(dag_content);
-  ASSERT_FALSE(path.empty());
-
-  ModuleController controller({path});
-  ASSERT_TRUE(controller.LoadAll());
-  EXPECT_EQ(McTestComponent::init_count(), 1);
-
-  // 创建 Writer 发布消息
-  minicyber::node::Node pub_node("e2e_publisher");
-  auto writer = pub_node.CreateWriter<TestMessage>("/e2e_channel");
-  ASSERT_NE(writer, nullptr);
-
-  std::string msg("hello from mainboard test");
-  EXPECT_TRUE(writer->Write(MakeMessage(msg)));
-  // MC-612 后 Writer 只负责 Dispatch/Notify；Proc 由 Processor 的协程
-  // 消费，必须通过有界条件等待，不能沿用同步回调断言。
-  ASSERT_TRUE(WaitForProcCount(1));
-  EXPECT_EQ(McTestComponent::last_msg(), msg);
-
-  controller.Clear();
-  ::unlink(path.c_str());
-}
-
-// =============================================================================
-// Clear：重复调用安全（幂等）
-// =============================================================================
-
-TEST(ModuleControllerTest, ClearIdempotent) {
-  McTestComponent::ResetStats();
-  DagConfig dag;
-  ModuleConfig* mc = dag.add_module_config();
-  mc->set_module_library("");
-  ComponentInfo* ci = mc->add_components();
-  ci->set_class_name("McTestComponent");
-  ci->mutable_config()->set_name("idem");
-  ci->mutable_config()->add_readers()->set_channel("/idem");
-
-  ModuleController controller({});
-  ASSERT_TRUE(controller.LoadModule(dag));
-  controller.Clear();
-  controller.Clear();  // 二次调用不应崩溃
-  EXPECT_EQ(controller.ComponentCount(), 0u);
-  EXPECT_EQ(controller.LibraryCount(), 0u);
-}
-
-// =============================================================================
-// 析构函数自动清理
-// =============================================================================
-
-TEST(ModuleControllerTest, DestructorAutoClears) {
-  McTestComponent::ResetStats();
-  DagConfig dag;
-  ModuleConfig* mc = dag.add_module_config();
-  mc->set_module_library("");
-  ComponentInfo* ci = mc->add_components();
-  ci->set_class_name("McTestComponent");
-  ci->mutable_config()->set_name("dtor");
-  ci->mutable_config()->add_readers()->set_channel("/dtor");
-
-  {
-    ModuleController controller({});
-    ASSERT_TRUE(controller.LoadModule(dag));
-    EXPECT_EQ(controller.ComponentCount(), 1u);
-    // 出作用域 → ~ModuleController() 调用 Clear()
+  for (const std::string* config : {&classic_path, &choreography_path}) {
+    const std::string trace = WriteTempFile(".trace", "");
+    ASSERT_FALSE(trace.empty());
+    const pid_t child = ::fork();
+    ASSERT_NE(child, -1);
+    if (child == 0) {
+      ::setenv("MINICYBER_MC613_PLUGIN_TRACE", trace.c_str(), 1);
+      ::execl(MINICYBER_MAINBOARD_PATH, MINICYBER_MAINBOARD_PATH, "-d",
+              dag_path.c_str(), "-s", config->c_str(), nullptr);
+      _exit(127);
+    }
+    ASSERT_TRUE(WaitForPluginInitialization(child, trace));
+    ASSERT_EQ(::kill(child, SIGTERM), 0);
+    const int status = WaitForExit(child);
+    EXPECT_TRUE(WIFEXITED(status));
+    EXPECT_EQ(WEXITSTATUS(status), 0);
+    EXPECT_EQ(ReadFile(trace), "ISDU");
+    ::unlink(trace.c_str());
   }
-  SUCCEED();  // 到这里说明析构未崩溃
+  ::unlink(dag_path.c_str());
+  ::unlink(classic_path.c_str());
+  ::unlink(choreography_path.c_str());
 }

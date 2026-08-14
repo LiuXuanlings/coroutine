@@ -84,10 +84,32 @@ class ComponentFactory {
    * @param creator    构造组件的函数对象
    */
   bool Register(const std::string& class_name, CreatorFunc creator) {
+    return Register(class_name, std::move(creator), nullptr);
+  }
+
+  // owner 由 `.so` 内的静态注册器传入。覆盖同名类时，旧库卸载只能撤销
+  // 自己的注册，不能删除后加载库的 CreatorFunc。
+  bool Register(const std::string& class_name, CreatorFunc creator,
+                const void* owner) {
     if (class_name.empty() || !creator) return false;
     std::lock_guard<std::mutex> lock(mutex_);
-    registry_[class_name] = std::move(creator);
+    registry_[class_name] = Entry{std::move(creator), owner};
     return true;
+  }
+
+  /**
+   * @brief 移除即将卸载动态库注册的创建函数
+   *
+   * 对齐 CyberRT ClassLoader 的卸载所有权：`dlclose` 后工厂不能保留指向
+   * 已卸载 `.so` 代码段的 CreatorFunc。注册器析构发生在库仍可执行时，先
+   * 注销再卸载；这不是面向生产的静态预注册回退路径。
+   */
+  void Unregister(const std::string& class_name, const void* owner) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = registry_.find(class_name);
+    if (it != registry_.end() && it->second.owner == owner) {
+      registry_.erase(it);
+    }
   }
 
   /**
@@ -111,7 +133,7 @@ class ComponentFactory {
       if (it == registry_.end()) {
         return nullptr;
       }
-      creator = it->second;
+      creator = it->second.creator;
     }
     return creator ? creator() : nullptr;
   }
@@ -134,8 +156,13 @@ class ComponentFactory {
   ComponentFactory(const ComponentFactory&) = delete;
   ComponentFactory& operator=(const ComponentFactory&) = delete;
 
+  struct Entry {
+    CreatorFunc creator;
+    const void* owner = nullptr;
+  };
+
   std::mutex mutex_;
-  std::unordered_map<std::string, CreatorFunc> registry_;
+  std::unordered_map<std::string, Entry> registry_;
 };
 
 }  // namespace component
@@ -190,7 +217,11 @@ class ComponentFactory {
           #ClassName,                                                     \
           []() -> ::minicyber::component::ComponentBase* {                \
             return new ClassName();                                       \
-          });                                                             \
+          }, this);                                                        \
+    }                                                                     \
+    ~ComponentRegistrar_##ClassName##_##Counter() {                       \
+      ::minicyber::component::ComponentFactory::Instance()->Unregister(   \
+          #ClassName, this);                                               \
     }                                                                     \
   };                                                                      \
   static ComponentRegistrar_##ClassName##_##Counter                       \

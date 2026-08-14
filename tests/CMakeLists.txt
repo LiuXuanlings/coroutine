@@ -49,6 +49,10 @@ set(TEST_FILES
 )
 
 # 如果没有测试文件，则跳过
+add_library(test_module_controller_plugin SHARED
+    ${CMAKE_CURRENT_SOURCE_DIR}/module_controller_test_plugin.cpp)
+target_link_libraries(test_module_controller_plugin PRIVATE minicyber_core)
+
 if(TEST_FILES)
     # 为每个 .cpp 文件生成一个独立的可执行测试程序
     foreach(TEST_SRC ${TEST_FILES})
@@ -64,6 +68,12 @@ if(TEST_FILES)
             dl
             minicyber_core
         )
+        if(TEST_NAME STREQUAL "test_module_controller")
+            add_dependencies(${TEST_NAME} mainboard test_module_controller_plugin)
+            target_compile_definitions(${TEST_NAME} PRIVATE
+                MINICYBER_TEST_PLUGIN_PATH="$<TARGET_FILE:test_module_controller_plugin>"
+                MINICYBER_MAINBOARD_PATH="$<TARGET_FILE:mainboard>")
+        endif()
         
         # 注册到 ctest
         add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
@@ -94,6 +104,9 @@ if(TEST_FILES)
         endif()
         if(TEST_NAME MATCHES "^test_component$")
             list(APPEND TEST_LABELS "high_risk")
+        endif()
+        if(TEST_NAME STREQUAL "test_module_controller")
+            list(APPEND TEST_LABELS "high_risk" "integration")
         endif()
         if(TEST_NAME MATCHES "^test_scheduler_choreography$")
             list(APPEND TEST_LABELS "high_risk")

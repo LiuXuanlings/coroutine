@@ -159,12 +159,6 @@ set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
 # ---------------------------------------------------------
-# 添加测试子目录
-# ---------------------------------------------------------
-enable_testing()
-add_subdirectory(tests)
-
-# ---------------------------------------------------------
 # mainboard 启动入口 (bin/)
 # ---------------------------------------------------------
 # mainboard 是 MiniCyber 的标准化启动程序，读取 DAG 配置并通过 dlopen 加载
@@ -177,3 +171,11 @@ target_link_libraries(mainboard minicyber_core minicyber_proto
                       ${Protobuf_LIBRARIES} pthread dl)
 set_target_properties(mainboard PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
+# ---------------------------------------------------------
+# 添加测试子目录
+# ---------------------------------------------------------
+# MC-613 的真实 dlopen 测试插件需要引用 mainboard 的目标文件路径，因此
+# mainboard 必须在 tests 子目录之前声明。
+enable_testing()
+add_subdirectory(tests)
