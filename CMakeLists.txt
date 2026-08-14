@@ -121,6 +121,7 @@ set(MINICYBER_CORE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/croutine.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/croutine/detail/routine_context.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/mainboard/module_controller.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/service_discovery/channel_manager.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/scheduler/common/pin_thread.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/scheduler/policy/choreography_context.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/scheduler/policy/classic_context.cpp

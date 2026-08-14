@@ -33,9 +33,8 @@ struct Snapshot {
 //   - 支持延迟启动：BindContext() 时通过 std::call_once 创建线程
 //   - Stop() 优雅退出：通知 context Shutdown，join 线程
 //
-// 与原 Scheduler 的区别：
-//   原 Scheduler 持有线程池 + 全局队列；Processor 是"单线程 + 单上下文"，
-//   多个 Processor 组成工作窃取调度器（Step 10）。
+// Processor 是“单线程 + 单上下文”，只执行 Context 返回的协程，不自行决定
+// 跨组路由；ClassicContext 的最终共享队列语义由 MC-610 收口。
 // ----------------------------------------------------------------------
 class Processor {
  public:

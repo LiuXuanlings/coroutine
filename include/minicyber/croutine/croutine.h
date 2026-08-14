@@ -52,7 +52,7 @@ class CRoutine : public std::enable_shared_from_this<CRoutine> {
   RoutineState Resume();
 
   // ----------------------------------------------------------------------
-  // 工作窃取锁（Work-Stealing Lock）
+  // 协程执行所有权
   // ----------------------------------------------------------------------
   // Acquire() 尝试获取执行权，返回 true 表示成功。
   // 用于 ClassicContext::NextRoutine() 防止同一协程被多个 Processor 同时执行。
@@ -121,7 +121,7 @@ class CRoutine : public std::enable_shared_from_this<CRoutine> {
   bool is_main_;
   RoutineState state_;
 
-  // 工作窃取锁：test_and_set 返回 true 表示已被占用
+  // 执行所有权：test_and_set 返回 true 表示已被占用
   std::atomic_flag lock_ = ATOMIC_FLAG_INIT;
   // 异步通知标志：clear 后 UpdateState 会将 DATA_WAIT/IO_WAIT 转为 READY
   std::atomic_flag updated_ = ATOMIC_FLAG_INIT;

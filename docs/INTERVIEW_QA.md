@@ -72,6 +72,43 @@ MC-606 以私有 CDR 字节序列承载 Protobuf `ChangeMsg`，使两个同机�
 Writer/Reader Join 和 Leave；Participant 离场监听会清除该进程残留角色。CDR 封装只服务
 控制 Topic，不改变数据面边界。
 
+### 为什么不能把所有拓扑状态继续放在 TopologyManager？
+
+原生 CyberRT 的 TopologyManager 负责总编排，具体 Channel 角色由 ChannelManager 管理。
+MiniCyber 即使裁剪 NodeManager 和 ServiceManager，也应保留这一职责边界。当前
+ChannelManager 是 Writer/Reader/Node 状态唯一所有者，负责幂等应用 Join/Leave、查询快照
+和按进程清理；TopologyManager 只负责 Participant、控制消息校验和 ChangeListener 生命周期。
+这样 MC-607/608 只消费一个发现快照，不会出现本地表与控制面表互相矛盾。
+
+### 为什么拓扑 Topic 使用 Reliable、Transient Local 和 Keep All？
+
+这组配置对齐原生 `QOS_PROFILE_TOPO_CHANGE`。Reliable 降低控制变更丢失风险，Transient
+Local 让晚加入订阅者获得仍由 Publisher 保存的历史，Keep All(depth=10) 避免紧邻的 Join
+和 Leave 被压缩成一个最终样本。它服务的是低频控制面，不代表业务数据都应使用相同 QoS，
+也不意味着项目开放 RTPS 数据传输。
+
+### 为什么过滤本进程 FastRTPS 回环消息？
+
+本地 Join/Leave 需要立即写入 ChannelManager 并通知监听器，同时还要广播给其他进程。
+若本进程 Subscriber 再消费自己的控制样本，同一个操作会通知两次。以 host 和 PID 过滤
+自回环，使本地一次操作精确产生一次事件；远端进程仍正常接收广播。ChannelManager 的
+幂等 Apply 是第二层防御，但不能用“最终状态没重复”掩盖监听器重复执行。
+
+### 为什么 Protobuf 字段和枚举删除后不能重新连续编号？
+
+字段编号和枚举值是序列化协议契约，不是源码显示顺序。MiniCyber 裁剪原生字段时仍要保留
+原编号，例如 `CHANGE_CHANNEL=2`、`ROLE_WRITER=2`、`ROLE_READER=3`，SchedulerConf 的
+`routine_num` 从 2 开始。重排后同名消息在二进制层会被解释为其他字段，破坏与原生配置和
+历史数据的兼容。删除项应留空或 `reserved`，不能为了美观压缩编号。
+
+### MC-604 至 MC-606 分别建立了哪些可验证边界？
+
+MC-604 把递归 GLOB 改为显式源清单，建立系统 FastRTPS 必需依赖和 Scheduler Protobuf
+骨架；MC-605 将 Time、Duration、Rate 收拢到 `minicyber::time`，SensorSource 可用 Rate
+表达输入节拍而不恢复 Timer；MC-606 建立同机 Channel 控制面、ChannelManager 状态层和
+双向跨进程 Join/Leave 证据。HybridTransport、Protobuf-only Node 和完整业务链仍分别属于
+MC-607 以后，不能把这些计划能力提前说成已实现。
+
 ## 插件、范围和可靠性
 
 ### 为什么强制业务组件使用 `.so + dlopen`？

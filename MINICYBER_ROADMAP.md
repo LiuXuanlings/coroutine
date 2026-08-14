@@ -6,27 +6,27 @@
 
 - 当前分支：`development`
 - 当前阶段：第二次重构，基础设施改造阶段
-- 当前任务：MC-604
+- 当前任务：MC-607
 - 当前状态：待开始
 - 唯一状态事实源：[`docs/refactor/00_进度记录.md`](docs/refactor/00_进度记录.md)
 - 唯一任务执行方案：[`docs/refactor/01_实施方案.md`](docs/refactor/01_实施方案.md)
 
 收到“执行 MC-601”或其他指定任务时，Agent 不需要重新向用户确认已经在基线中定稿的需求；应按本文阅读顺序取得上下文，核对进度后独立推进。只有源码事实与基线互相冲突、外部依赖缺失或任务会越过白名单时，才允许标记阻塞并提问。
 
-### 1.1 MC-601 冻结基线
+### 1.1 MC-601 至 MC-606 已交付基线
 
-- 根级 `AGENTS.md` 已建立，后续会话必须先读取其中七条红线。
-- 当前分支为 `development`，MC-601 开始时的基线提交为 `ba548ea`；工作区无用户
-  未提交修改。
-- 当前构建依赖可发现 Protobuf，GoogleTest 使用本地
-  `/tmp/minicyber-googletest2` 覆盖；`cmake --find-package` 未找到
-  FastRTPS Config Package。当前 CMake 尚未引入 FastRTPS 门禁，该外部依赖风险
-  留给 MC-604 处理。
+- 根级 `AGENTS.md` 已建立，后续会话必须先读取其中十条红线。
+- MC-601 至 MC-603 已完成接力基线、知识迁移和白名单外物理清理。
+- MC-604 已完成显式生产/Proto/测试源列表、Scheduler 配置骨架及系统 FastRTPS
+  必需依赖门禁；当前系统实际导出 target 为 `fastrtps`。
+- MC-605 已完成 `time::Time`、`time::Duration`、`time::Rate` 职责分离。
+- MC-606 已完成 FastRTPS Channel Join/Leave 控制面、原生字段编号、独立
+  `ChannelManager` 状态层、控制 Topic 原生 QoS、回环去重和确定性跨进程测试。
 - MC-603 已完成 RPC、TimerComponent、旧示例、旧 benchmark、旧脚本及其专属测试的物理删除；
   Debug 重新配置、全量构建和黑名单扫描均通过。当前精确留存清单记录在
   `docs/refactor/00_进度记录.md`，是 MC-604 显式源列表的唯一输入。
-- 构建仍以递归 GLOB 编入全部 `include/minicyber/proto/**` 和 `src/**`；MC-604 必须将其
-  改为显式列表并加入系统 FastRTPS 门禁，不能恢复已删除路径。
+- MC-607 只接收上述发现快照并恢复 INTRA/SHM HybridTransport；不得提前迁移
+  MC-608 Node API，也不得引入 RTPS 数据面。
 - MC-602 必须先从 `docs/refactor/baseline.md`、`docs/refactor/module_mapping.md`、
   `docs/refactor/perf/**`、`docs/croutine/shared_from_this.md`、
   `docs/scheduler/debug_vtable_hang.md`、`docs/transport/signal.md` 和
@@ -80,6 +80,21 @@
 7. **台账纪律**：开始任务前先把 00 中该任务标为“进行中”；完成后填写真实验证与 Commit，再标为“已完成”。
 8. **工作区保护**：现有未提交修改默认属于用户；只按路径暂存当前任务文件，不得回退或覆盖无关修改。
 9. **不重复澄清**：02/03 已明确的决策不再询问用户。只有新事实导致不可兼容的二选一时才提问。
+10. **意图注释门禁**：新增或实质改动的公开 API、协议字段、并发状态机、资源所有权、
+    失败回滚和关闭顺序必须写中文意图注释，说明关键不变量和原生职责位置；注释解释
+    “为什么”和边界，不逐行复述语法。
+11. **知识增量门禁**：每个生产代码任务必须在同一 Commit 增量更新
+    `INTERVIEW_QA.md`；重大排错还要以完整时间线更新 `DEBUG_MANUAL.md`，不得等待
+    MC-621/MC-622 集中补写。
+12. **联动收口门禁**：每任务结束必须同步 Roadmap、00、04、05 的任务指针和产物状态；
+    01/02/03 即使无需修改，也要在 00 记录逐份检查结果。完成证据必须包含完整 40 位
+    Commit SHA、subject 和远端同步结果。
+
+### 3.1 调试记录最低结构
+
+重大问题条目必须依次包含：触发环境与最小复现、原始现象、按时间排序的排查步骤、
+候选假设及排除证据、实际工具命令、关键输出、证据结论、根因、修复边界、回归结果和
+可迁移经验。只记录“根因 + 修复”不满足交付要求。
 
 ## 四、项目终局定位
 

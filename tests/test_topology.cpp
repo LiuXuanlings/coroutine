@@ -155,13 +155,13 @@ TEST(TopologyManagerTest, JoinLeaveTracksReadersSnapshotsAndChangeListeners) {
   EXPECT_EQ(topo->GetReaders(channel).size(), 1U);
   EXPECT_EQ(topo->GetWriters(channel).size(), 1U);
   EXPECT_EQ(topo->GetRelation(channel, getpid()), minicyber::SAME_PROC);
-  EXPECT_GE(joins.load(), 2);
+  EXPECT_EQ(joins.load(), 2);
 
   ASSERT_TRUE(topo->Leave(minicyber::proto::ROLE_READER, reader));
   EXPECT_FALSE(topo->HasReader(channel));
   ASSERT_TRUE(topo->Leave(minicyber::proto::ROLE_WRITER, writer));
   EXPECT_FALSE(topo->HasWriter(channel));
-  EXPECT_GE(leaves.load(), 2);
+  EXPECT_EQ(leaves.load(), 2);
 
   topo->RemoveChangeListener(connection);
   const int callback_count = joins.load() + leaves.load();

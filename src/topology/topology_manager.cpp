@@ -5,10 +5,11 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
+#include <exception>
 #include <functional>
+#include <iostream>
 #include <limits>
 #include <mutex>
-#include <sstream>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -22,6 +23,7 @@
 #include <fastrtps/attributes/ParticipantAttributes.h>
 #include <fastrtps/attributes/PublisherAttributes.h>
 #include <fastrtps/attributes/SubscriberAttributes.h>
+#include <fastrtps/qos/QosPolicies.h>
 #include <fastrtps/participant/ParticipantListener.h>
 #include <fastrtps/publisher/Publisher.h>
 #include <fastrtps/subscriber/SampleInfo.h>
@@ -30,6 +32,7 @@
 #include <fastcdr/Cdr.h>
 #include <fastcdr/FastBuffer.h>
 
+#include "minicyber/service_discovery/channel_manager.h"
 #include "minicyber/time/time.h"
 
 namespace minicyber {
@@ -46,14 +49,6 @@ constexpr uint32_t kCdrSequenceLengthSize = 4;
 std::string LocalHostName() {
   char name[256] = {};
   return gethostname(name, sizeof(name) - 1) == 0 ? name : "unknown";
-}
-
-uint64_t RoleKey(const proto::RoleAttributes& attr) {
-  if (attr.has_id()) {
-    return attr.id();
-  }
-  return std::hash<std::string>{}(attr.node_name() + attr.channel_name()) ^
-         static_cast<uint64_t>(attr.process_id());
 }
 
 bool ParseParticipantName(const std::string& name, std::string* host_name,
@@ -169,7 +164,13 @@ class ControlParticipant {
   ControlParticipant(Callback callback, ParticipantLeaveCallback participant_leave_callback)
       : callback_(std::move(callback)),
         participant_listener_(std::move(participant_leave_callback)),
-        subscriber_listener_(callback_) {}
+        subscriber_listener_([this](const proto::ChangeMsg& msg) {
+          // 本地状态已在 Publish 前提交；过滤 DDS 自回环，确保监听器只收到
+          // 一次事件。
+          if (!IsSelfMessage(msg)) {
+            callback_(msg);
+          }
+        }) {}
   ~ControlParticipant() { Shutdown(); }
 
   bool Start() {
@@ -178,36 +179,57 @@ class ControlParticipant {
       return true;
     }
 
-    eprosima::fastrtps::ParticipantAttributes attributes;
-    eprosima::fastrtps::Domain::getDefaultParticipantAttributes(attributes);
-    attributes.domainId = 80;
-    attributes.rtps.setName((std::string(kParticipantNamePrefix) + LocalHostName() + "+" +
-                             std::to_string(getpid())).c_str());
-    participant_ = eprosima::fastrtps::Domain::createParticipant(
-        attributes, &participant_listener_);
-    if (participant_ == nullptr) {
-      return false;
-    }
+    try {
+      eprosima::fastrtps::ParticipantAttributes attributes;
+      eprosima::fastrtps::Domain::getDefaultParticipantAttributes(attributes);
+      attributes.domainId = 80;
+      attributes.rtps.setName((std::string(kParticipantNamePrefix) + LocalHostName() + "+" +
+                               std::to_string(getpid())).c_str());
+      participant_ = eprosima::fastrtps::Domain::createParticipant(
+          attributes, &participant_listener_);
+      if (participant_ == nullptr) {
+        return false;
+      }
 
-    type_ = std::make_unique<ChangeMsgType>();
-    if (!eprosima::fastrtps::Domain::registerType(participant_, type_.get())) {
-      ShutdownLocked();
-      return false;
-    }
+      type_ = std::make_unique<ChangeMsgType>();
+      if (!eprosima::fastrtps::Domain::registerType(participant_, type_.get())) {
+        ShutdownLocked();
+        return false;
+      }
 
-    eprosima::fastrtps::PublisherAttributes publisher_attributes;
-    eprosima::fastrtps::Domain::getDefaultPublisherAttributes(publisher_attributes);
-    publisher_attributes.topic.topicName = kControlTopic;
-    publisher_attributes.topic.topicDataType = kControlType;
-    publisher_ = eprosima::fastrtps::Domain::createPublisher(participant_, publisher_attributes);
+      // 原生拓扑 QoS 使用可靠传输和本地持久化，保证晚加入进程能重放
+      // 端点状态。
+      eprosima::fastrtps::PublisherAttributes publisher_attributes;
+      eprosima::fastrtps::Domain::getDefaultPublisherAttributes(publisher_attributes);
+      publisher_attributes.qos.m_reliability.kind =
+          eprosima::fastrtps::RELIABLE_RELIABILITY_QOS;
+      publisher_attributes.qos.m_durability.kind =
+          eprosima::fastrtps::TRANSIENT_LOCAL_DURABILITY_QOS;
+      publisher_attributes.topic.historyQos.kind = eprosima::fastrtps::KEEP_ALL_HISTORY_QOS;
+      publisher_attributes.topic.historyQos.depth = 10;
+      publisher_attributes.topic.topicName = kControlTopic;
+      publisher_attributes.topic.topicDataType = kControlType;
+      publisher_ = eprosima::fastrtps::Domain::createPublisher(participant_, publisher_attributes);
 
-    eprosima::fastrtps::SubscriberAttributes subscriber_attributes;
-    eprosima::fastrtps::Domain::getDefaultSubscriberAttributes(subscriber_attributes);
-    subscriber_attributes.topic.topicName = kControlTopic;
-    subscriber_attributes.topic.topicDataType = kControlType;
-    subscriber_ = eprosima::fastrtps::Domain::createSubscriber(
-        participant_, subscriber_attributes, &subscriber_listener_);
-    if (publisher_ == nullptr || subscriber_ == nullptr) {
+      eprosima::fastrtps::SubscriberAttributes subscriber_attributes;
+      eprosima::fastrtps::Domain::getDefaultSubscriberAttributes(subscriber_attributes);
+      subscriber_attributes.qos.m_reliability.kind =
+          eprosima::fastrtps::RELIABLE_RELIABILITY_QOS;
+      subscriber_attributes.qos.m_durability.kind =
+          eprosima::fastrtps::TRANSIENT_LOCAL_DURABILITY_QOS;
+      subscriber_attributes.topic.historyQos.kind = eprosima::fastrtps::KEEP_ALL_HISTORY_QOS;
+      subscriber_attributes.topic.historyQos.depth = 10;
+      subscriber_attributes.topic.topicName = kControlTopic;
+      subscriber_attributes.topic.topicDataType = kControlType;
+      subscriber_ = eprosima::fastrtps::Domain::createSubscriber(
+          participant_, subscriber_attributes, &subscriber_listener_);
+      if (publisher_ == nullptr || subscriber_ == nullptr) {
+        ShutdownLocked();
+        return false;
+      }
+    } catch (const std::exception& error) {
+      std::cerr << "Topology control participant startup failed: " << error.what()
+                << std::endl;
       ShutdownLocked();
       return false;
     }
@@ -270,6 +292,8 @@ class ControlParticipant {
   };
 
   void ShutdownLocked() {
+    // Participant 拥有 Publisher/Subscriber；按 FastRTPS 所有权一次移除，
+    // 随后清空借用指针。
     if (participant_ != nullptr) {
       eprosima::fastrtps::Domain::removeParticipant(participant_);
       participant_ = nullptr;
@@ -277,6 +301,13 @@ class ControlParticipant {
     publisher_ = nullptr;
     subscriber_ = nullptr;
     type_.reset();
+  }
+
+  bool IsSelfMessage(const proto::ChangeMsg& msg) const {
+    return msg.has_role_attr() && msg.role_attr().has_process_id() &&
+           msg.role_attr().process_id() == getpid() &&
+           msg.role_attr().has_host_name() &&
+           msg.role_attr().host_name() == LocalHostName();
   }
 
   Callback callback_;
@@ -319,9 +350,6 @@ class TopologyManager::Impl {
     std::vector<std::shared_ptr<Listener>> listeners_to_remove;
     {
       std::lock_guard<std::mutex> lock(mutex);
-      writers.clear();
-      readers.clear();
-      nodes.clear();
       for (const auto& entry : listeners) {
         listeners_to_remove.push_back(entry.second);
       }
@@ -330,6 +358,7 @@ class TopologyManager::Impl {
     for (const auto& listener : listeners_to_remove) {
       DeactivateListener(listener);
     }
+    channel_manager.Clear();
   }
 
   bool Join(proto::RoleType role_type, const proto::RoleAttributes& attr) {
@@ -361,48 +390,14 @@ class TopologyManager::Impl {
       return;
     }
 
-    {
-      std::lock_guard<std::mutex> lock(mutex);
-      auto& roles = msg.role_type() == proto::ROLE_WRITER ? writers : readers;
-      auto& channel_roles = roles[msg.role_attr().channel_name()];
-      const auto key = RoleKey(msg.role_attr());
-      if (msg.operate_type() == proto::OPT_JOIN) {
-        channel_roles[key] = msg.role_attr();
-        nodes[msg.role_attr().node_name()] = msg.role_attr().process_id();
-      } else {
-        channel_roles.erase(key);
-        if (channel_roles.empty()) {
-          roles.erase(msg.role_attr().channel_name());
-        }
-      }
+    if (channel_manager.Apply(msg)) {
+      Notify(msg);
     }
-    Notify(msg);
   }
 
   void OnParticipantLeave(const std::string& host, pid_t process_id) {
-    std::vector<proto::ChangeMsg> leaves;
-    {
-      std::lock_guard<std::mutex> lock(mutex);
-      auto remove_roles = [&](auto& roles, proto::RoleType role_type) {
-        for (auto channel = roles.begin(); channel != roles.end();) {
-          auto& channel_roles = channel->second;
-          for (auto role = channel_roles.begin(); role != channel_roles.end();) {
-            if (role->second.host_name() == host &&
-                role->second.process_id() == process_id) {
-              leaves.push_back(MakeChange(proto::OPT_LEAVE, role_type, role->second));
-              role = channel_roles.erase(role);
-            } else {
-              ++role;
-            }
-          }
-          channel = channel_roles.empty() ? roles.erase(channel) : std::next(channel);
-        }
-      };
-      remove_roles(writers, proto::ROLE_WRITER);
-      remove_roles(readers, proto::ROLE_READER);
-    }
-    for (const auto& msg : leaves) {
-      Notify(msg);
+    for (const auto& role : channel_manager.RemoveProcess(host, process_id)) {
+      Notify(MakeChange(proto::OPT_LEAVE, role.role_type, role.attr));
     }
   }
 
@@ -426,6 +421,8 @@ class TopologyManager::Impl {
   }
 
   void Notify(const proto::ChangeMsg& msg) {
+    // CaptureListeners 先增加 in-flight，RemoveChangeListener 才能等待
+    // 已捕获回调安全退出。
     for (const auto& listener : CaptureListeners()) {
       TopologyManager::ChangeFunc callback;
       {
@@ -433,9 +430,17 @@ class TopologyManager::Impl {
         callback = listener->callback;
       }
       executing_listeners.push_back(listener.get());
-      callback(msg);
+      try {
+        callback(msg);
+      } catch (const std::exception& error) {
+        std::cerr << "Topology change listener failed: " << error.what() << std::endl;
+      } catch (...) {
+        std::cerr << "Topology change listener failed with an unknown exception"
+                  << std::endl;
+      }
       executing_listeners.pop_back();
       {
+        // 即使业务监听器抛异常，也必须归还 in-flight，否则注销会永久等待。
         std::lock_guard<std::mutex> lock(listener->mutex);
         --listener->in_flight;
         if (listener->in_flight == 0) {
@@ -451,26 +456,6 @@ class TopologyManager::Impl {
     if (!IsExecuting(listener.get())) {
       listener->idle.wait(lock, [&listener] { return listener->in_flight == 0; });
     }
-  }
-
-  bool HasRole(const std::unordered_map<std::string,
-                                       std::unordered_map<uint64_t, proto::RoleAttributes>>& roles,
-               const std::string& channel_name) const {
-    std::lock_guard<std::mutex> lock(mutex);
-    const auto it = roles.find(channel_name);
-    return it != roles.end() && !it->second.empty();
-  }
-
-  std::vector<proto::RoleAttributes> Snapshot(
-      const std::unordered_map<std::string,
-                               std::unordered_map<uint64_t, proto::RoleAttributes>>& roles,
-      const std::string& channel_name) const {
-    std::lock_guard<std::mutex> lock(mutex);
-    std::vector<proto::RoleAttributes> result;
-    const auto it = roles.find(channel_name);
-    if (it == roles.end()) return result;
-    for (const auto& role : it->second) result.push_back(role.second);
-    return result;
   }
 
   proto::ChangeMsg MakeChange(proto::OperateType operation,
@@ -505,12 +490,10 @@ class TopologyManager::Impl {
 
   const std::string host_name;
   mutable std::mutex mutex;
-  std::unordered_map<std::string, std::unordered_map<uint64_t, proto::RoleAttributes>> writers;
-  std::unordered_map<std::string, std::unordered_map<uint64_t, proto::RoleAttributes>> readers;
-  std::unordered_map<std::string, pid_t> nodes;
   std::unordered_map<uint64_t, std::shared_ptr<Listener>> listeners;
   std::atomic<uint64_t> next_listener_id{1};
   ControlParticipant participant;
+  service_discovery::ChannelManager channel_manager;
 
  private:
   static thread_local std::vector<const Listener*> executing_listeners;
@@ -535,16 +518,16 @@ bool TopologyManager::Leave(proto::RoleType type, const proto::RoleAttributes& a
   return impl_->Leave(type, attr);
 }
 bool TopologyManager::HasReader(const std::string& channel_name) const {
-  return impl_->HasRole(impl_->readers, channel_name);
+  return impl_->channel_manager.HasReader(channel_name);
 }
 bool TopologyManager::HasWriter(const std::string& channel_name) const {
-  return impl_->HasRole(impl_->writers, channel_name);
+  return impl_->channel_manager.HasWriter(channel_name);
 }
 std::vector<proto::RoleAttributes> TopologyManager::GetReaders(const std::string& name) const {
-  return impl_->Snapshot(impl_->readers, name);
+  return impl_->channel_manager.GetReaders(name);
 }
 std::vector<proto::RoleAttributes> TopologyManager::GetWriters(const std::string& name) const {
-  return impl_->Snapshot(impl_->writers, name);
+  return impl_->channel_manager.GetWriters(name);
 }
 Relation TopologyManager::GetRelation(const std::string& name, pid_t process_id) const {
   const auto writers = GetWriters(name);
@@ -584,8 +567,7 @@ void TopologyManager::RemoveChangeListener(ChangeConnection connection) {
   Impl::DeactivateListener(listener);
 }
 void TopologyManager::AddNode(const std::string& name, pid_t process_id) {
-  std::lock_guard<std::mutex> lock(impl_->mutex);
-  impl_->nodes[name] = process_id;
+  impl_->channel_manager.AddNode(name, process_id);
 }
 void TopologyManager::AddChannelWriter(const std::string& channel, const std::string& node,
                                        pid_t process_id) {
@@ -598,29 +580,10 @@ void TopologyManager::AddChannelReader(const std::string& channel, const std::st
                                      impl_->MakeCompatRole(channel, node, process_id)));
 }
 bool TopologyManager::HasNode(const std::string& name, pid_t process_id) const {
-  std::lock_guard<std::mutex> lock(impl_->mutex);
-  const auto it = impl_->nodes.find(name);
-  return it != impl_->nodes.end() && it->second == process_id;
+  return impl_->channel_manager.HasNode(name, process_id);
 }
 std::string TopologyManager::DumpGraph() const {
-  decltype(impl_->writers) writers;
-  {
-    std::lock_guard<std::mutex> lock(impl_->mutex);
-    writers = impl_->writers;
-  }
-  std::ostringstream stream;
-  stream << "digraph minicyber_topology {\n";
-  for (const auto& writer : writers) {
-    const auto readers = GetReaders(writer.first);
-    for (const auto& writer_role : writer.second) {
-      for (const auto& reader : readers) {
-        stream << "  \"" << writer_role.second.node_name() << "\" -> \""
-               << reader.node_name() << "\" [label=\"" << writer.first << "\"];\n";
-      }
-    }
-  }
-  stream << "}\n";
-  return stream.str();
+  return impl_->channel_manager.DumpGraph();
 }
 
 }  // namespace topology

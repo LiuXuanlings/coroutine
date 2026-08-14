@@ -142,6 +142,55 @@ cmake --build build/debug -j2 --target test_topology test_topology_discovery
 ctest --test-dir build/debug --output-on-failure -R '^test_(topology|topology_discovery)$'
 ```
 
+### MC-606 发现时序问题完整排查实录
+
+**触发环境与最小复现**：Linux x86_64、FastRTPS 2.5，同一 GoogleTest 中 fork Writer
+和 Reader 两个进程。原测试在 Participant 启动后固定等待 800 ms，再让两端 Join；质量
+评审将断言改为双向发现、`DIFF_PROC` 和显式 Leave 后，执行重复测试：
+
+```bash
+ctest --test-dir build/debug --output-on-failure \
+  -R '^test_(topology|topology_discovery)$' --repeat until-fail:10
+```
+
+**原始现象**：失败时 Reader 退出码 11，表示从未在稳定状态观察到 Writer Join；Writer
+随后退出码 13，表示一直等待 Reader Leave。单次运行可能通过，因此不能用“偶尔通过”
+作为完成证据。
+
+**排查时间线**：
+
+1. 首先核对 `cyber_ref/cyber/transport/qos/qos_profile_conf.cc`，发现原生
+   `QOS_PROFILE_TOPO_CHANGE` 是 Reliable、Transient Local、Keep All、depth 10；当前实现
+   使用 FastRTPS 默认 QoS，晚加入端点没有可靠重放保证。
+2. 先补 Reliable 和 Transient Local。候选假设是“只缺可靠性和持久性”；重复测试仍会
+   出现 Join 很快被 Leave 覆盖，证明该假设不完整。
+3. 补齐 Keep All(depth=10)，排除历史缓存只保留最终状态的风险；双进程同时 Join 时仍有
+   偶发失败，说明 QoS 是必要条件，但测试仍把端点匹配完成误当成 `Start()` 的同步后置条件。
+4. 删除固定 800 ms，增加管道事件：Reader 完成本地 Join 后通知父进程，父进程再允许
+   Writer Join。这消除了“进程已启动”等于“控制端点已匹配”的错误假设。
+5. 此时仍出现 Reader 在一次 100 ms 轮询之间连续处理 Writer Join 和 Leave，最终表中已无
+   Writer。检查退出码 11/13 后确认这不是 Join 丢失，而是测试只采样最终状态，遗漏短暂事件。
+6. 在 Reader Join 前注册 ChangeListener，记录 Writer Join/Leave；Reader 观察到 Join 并
+   校验 `HasWriter` 与 `DIFF_PROC` 后，通过第二条管道确认 Writer 才允许 Leave。最终状态和
+   事件序列均被确定性验证。
+
+**工具与关键证据**：构建时受限环境的 ccache 默认目录只读，使用
+`CCACHE_DIR=/tmp/minicyber-ccache` 和 `CCACHE_TEMPDIR=/tmp/minicyber-ccache-tmp`；沙箱内
+FastRTPS 曾报告 `getifaddrs/open: Operation not permitted`，这是网络接口权限限制，必须在
+允许访问本机接口的环境复跑，不能归因为产品代码。最终 `test_topology_discovery` 连续 10
+轮通过，单轮约 0.66 至 0.97 秒。
+
+**根因与修复边界**：根因由两部分组成：控制 Topic 未显式对齐原生 QoS，以及测试缺少
+跨进程事件握手、把异步事件压缩成一次最终状态轮询。修复还过滤本进程 FastRTPS 回环，
+避免本地 `OnChange` 与控制消息自回环产生重复通知。没有引入 RTPS 数据面，也没有用扩大
+超时或固定 sleep 掩盖竞态。
+
+**剩余回归责任**：当前覆盖双向 Join、`DIFF_PROC`、显式 Leave、回环去重和监听回收；
+Participant 异常退出、晚加入、启动失败回滚及监听器并发注销由 MC-617 专项收口。
+
+**可迁移经验**：异步发现测试要分别证明“事件确实发生”和“最终状态正确”。启动完成、
+端点匹配完成、历史样本重放完成是三个不同阶段，应使用有界事件协议表达因果关系。
+
 ## 六、调度启动、关闭和动态库
 
 **构造期虚调用历史问题**：旧 IOManager 在基类构造期间启动工作线程，线程进入
