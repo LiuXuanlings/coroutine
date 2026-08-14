@@ -33,8 +33,8 @@ class DataVisitor<M0, NullType> : public DataVisitorBase {
   explicit DataVisitor(const VisitorConfig& config)
       : buffer_(config.channel_id,
                 std::make_shared<BufferType>(config.queue_size)) {
-    DataDispatcher<M0>::Instance()->AddBuffer(buffer_);
-    data_notifier_->AddNotifier(buffer_.channel_id(), notifier_);
+    DataDispatcher<M0>::Instance()->AddBuffer(buffer_, true);
+    data_notifier_->AddNotifier(buffer_.channel_id(), notifier_, true);
   }
 
   ~DataVisitor() {
@@ -72,11 +72,11 @@ class DataVisitor : public DataVisitorBase {
         secondary_(secondary_config.channel_id,
                    std::make_shared<SecondaryBufferType>(secondary_config.queue_size)),
         fusion_(std::make_unique<fusion::AllLatest<M0, M1>>(primary_, secondary_)) {
-    DataDispatcher<M0>::Instance()->AddBuffer(primary_);
-    DataDispatcher<M1>::Instance()->AddBuffer(secondary_);
+    DataDispatcher<M0>::Instance()->AddBuffer(primary_, true);
+    DataDispatcher<M1>::Instance()->AddBuffer(secondary_, true);
     // AllLatest 已在 primary_ 的 Fill 回调中安装融合；DataDispatcher 在 Fill
     // 后才 Notify，因此这里的唤醒回调总在融合队列填充之后执行。
-    data_notifier_->AddNotifier(primary_.channel_id(), notifier_);
+    data_notifier_->AddNotifier(primary_.channel_id(), notifier_, true);
   }
 
   ~DataVisitor() {

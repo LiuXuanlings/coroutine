@@ -268,3 +268,35 @@ MC-610 的 Classic 队列语义，没有复制第二套优先级队列或把错�
 双区字段会改变对象布局；若只重编译部分目标，旧对象按原布局访问新栈对象，可能表现为
 `stack smashing`，这不是可接受的 ABI 兼容策略。一次旧对象失败后，完整 Debug 构建和
 `test_routine_factory` 连续 20 轮通过，证明问题归属于构建收口而非运行时调度逻辑。
+
+## Component 协程执行
+
+### Component 为什么不能在 Reader 回调中直接调用 Proc？
+
+原生 CyberRT 的 reality mode 由 `DataVisitor` 订阅 Channel、`RoutineFactory` 创建数据
+协程、Scheduler 注册 notifier 唤醒；Reader 端点本身不拥有业务执行线程。MC-612 保留这条
+职责链：单/双输入 Component 先完成 `Init` 和无同步 callback 的 Reader 创建，再按 Reader
+的 Channel id 创建 DataVisitor 和 RoutineFactory，最后向 Scheduler 提交任务。发布线程只
+执行 `Dispatch -> DataNotifier -> Scheduler::NotifyTask`，Proc 只在 Processor 的
+`CRoutine::Resume` 中运行。
+
+双输入的首 Reader 是 AllLatest 主驱动，次输入只填充最新值；没有次输入时首输入不会融合，
+不把它伪装为时间戳严格对齐。`test_component` 同时验证 Proc 线程不同于发布线程、首输入
+驱动，以及 Component 自身 Proc 中关闭可有界返回。
+
+### Component 如何关闭，为什么这个顺序不能交换？
+
+MC-612 的 ComponentBase 固定为“禁止新 Proc -> RemoveTask 解除 Visitor 唤醒 -> 注销
+Reader -> Clear 释放业务 Writer/资源 -> 关闭 Node”。先注销 Reader 会留下已注册的
+DataVisitor notifier，发布线程可能仍唤醒已拆除的任务；先释放 Writer 又可能在业务资源
+失效后继续运行 Proc。Scheduler 移除当前 Proc 时识别当前 CRoutine，不等待它自己的
+`Acquire`，避免 `Proc -> Shutdown -> RemoveTask` 自等待。该顺序是 Component 生命周期
+边界，不改变 MC-613 才负责的 `.so` 加载、回滚和 `dlclose` 所有权。
+
+### 为什么 ComponentFactory::Instance 必须在核心库中定义？
+
+函数局部静态对象若定义在头文件内，主程序和每个组件 `.so` 都可能得到各自的注册表，
+dlopen 期间的静态注册器会写入插件私有表，mainboard 无法创建组件。MC-612 将
+`ComponentFactory::Instance` 的定义移入 `minicyber_core`；组件仅引用该导出符号，配合
+MC-613 要求的 `RTLD_GLOBAL` 后共享唯一表。真实 dlopen/dlclose 的加载水位回滚仍由
+MC-613 验收，当前任务只固定其必要 ABI 前提。

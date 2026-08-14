@@ -120,11 +120,16 @@ bool ChoreographyContext::RemoveCRoutine(uint64_t crid) {
     }
     cr->Stop();
     // 等待正在执行的 Processor Release，避免 erase 时 use-after-free
-    while (!cr->Acquire()) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    const bool removing_current = CRoutine::GetCurrentRoutine() == cr.get();
+    if (!removing_current) {
+      while (!cr->Acquire()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
     }
     cr_queue_.erase(it);// ⚠️ 销毁队列中的shared_ptr副本
-    cr->Release();          // ✅ 依靠局部cr保持对象存活，安全调用
+    if (!removing_current) {
+      cr->Release();          // 依靠局部cr保持对象存活，安全调用
+    }
     return true;
   }
   return false;

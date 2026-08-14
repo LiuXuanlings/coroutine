@@ -2,12 +2,15 @@
 #define MINICYBER_COMPONENT_COMPONENT_BASE_H_
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "minicyber/data/data_visitor_base.h"
 #include "minicyber/proto/component_conf.pb.h"
 #include "minicyber/node/node.h"
+#include "minicyber/scheduler/scheduler.h"
 
 // =============================================================================
 // MiniCyber Component Framework — ComponentBase 生命周期抽象
@@ -16,12 +19,9 @@
 //   Initialize / Shutdown 生命周期。业务开发者只需继承 Component<T> 并重写
 //   Init() 和 Proc(), 框架自动管理 Node 创建、Reader 注册和资源释放。
 //
-// 与 CyberRT 的差异（Step 29）：
-//   1. 去掉了 gflags 依赖（flag_file_path 不处理 gflags 加载）
-//   2. 去掉了 scheduler::RemoveTask（Phase 7 再加入）
-//   3. 去掉了 class_loader / common::WorkRoot / common::GetAbsolutePath
-//      （这些是 CyberRT 的 ClassLoader 和文件工具，MiniCyber 暂不需要）
-//   4. GetProtoConfig 为 Stub 实现（需要 text_format 解析时再开启）
+// 与 CyberRT 的裁剪边界：去掉 gflags、class_loader 和 WorkRoot；保留
+// Component 任务由 Scheduler 持有的生命周期，并将 RemoveTask 放在 Reader
+// 注销之前，确保 DATA_WAIT 唤醒不会再触达已关闭组件。
 //
 // 命名空间：minicyber::component 与 node / scheduler / data 层隔离
 // =============================================================================
@@ -92,7 +92,7 @@ using minicyber::proto::ComponentConfig;
  * 继承层次：
  *   ComponentBase                    ← 生命周期、Node 引用、配置路径
  *     ├── Component<M0>              ← 单通道事件驱动组件
- *     └── Component<M0, M1>          ← 双通道融合组件（Phase 7）
+ *     └── Component<M0, M1>          ← 双通道融合组件
  *
  * 典型使用流程（由 mainboard 的 ModuleController 驱动）：
  *   1. dlopen 加载 .so → 静态注册 MINICYBER_REGISTER_COMPONENT 宏
@@ -117,28 +117,27 @@ class ComponentBase : public std::enable_shared_from_this<ComponentBase> {
   /**
    * @brief 组件关闭（幂等）
    *
-   * 关闭顺序严格遵守：
-   *   1. is_shutdown_.exchange(true) — 原子检查 + 设置，防止重入
-   *   2. Clear() — 派生类自定义清理（虚函数派发）
-   *   3. 遍历 readers_ 逐个 Shutdown — 停止数据接收
-   *   4. readers_.clear() — 释放 Reader 资源
-   *
-   * 不在此处调用 scheduler::RemoveTask() 的原因：
-   *   MiniCyber 当前的 Scheduler 没有 RemoveTask 接口（因为任务是和 Processor
-   *   生命周期绑定的）。当 Shutdown 被调用后，Processor 循环会在下一次迭代
-   *   发现协程已 FINISHED 后自动清理。这个设计差异在 Phase 7 引入 Choreography
-   *   调度时会重新审视。
+   * 关闭顺序严格遵守原生 ComponentBase 的所有权边界：先禁止新的业务处理，
+   * 再移除 Scheduler 任务和 DataVisitor 唤醒闭包，随后注销 Reader/Transport，
+   * 最后调用 Clear 释放业务 Writer，并关闭 Node。RemoveTask 对当前 Proc 的
+   * 自关闭不会等待自身持有的协程执行权，避免回调线程形成等待环。
    */
   virtual void Shutdown() {
     if (is_shutdown_.exchange(true, std::memory_order_acq_rel)) {
       return;  // 第二次调用直接跳过
     }
-    Clear();
+    StopRoutine();
 
     for (auto& reader : readers_) {
       reader->Shutdown();
     }
     readers_.clear();
+
+    Clear();
+    if (node_) {
+      node_->Shutdown();
+      node_.reset();
+    }
   }
 
   /**
@@ -213,16 +212,38 @@ class ComponentBase : public std::enable_shared_from_this<ComponentBase> {
     }
   }
 
+  // Component 持有 RoutineFactory 的 DataVisitor，直到任务移除完成；否则
+  // 发布线程可能在 Reader 关闭期间仍通过 notifier 触达已销毁的 Scheduler。
+  void AttachRoutine(scheduler::Scheduler* scheduler, uint64_t task_id,
+                     std::shared_ptr<data::DataVisitorBase> visitor) {
+    scheduler_ = scheduler;
+    scheduler_task_id_ = task_id;
+    data_visitor_ = std::move(visitor);
+  }
+
   // Initialize 失败时回收已经创建的本地端点，但保留对象可重试初始化。
   void CleanupInitializationFailure() {
-    Clear();
+    StopRoutine();
     for (auto& reader : readers_) reader->Shutdown();
     readers_.clear();
+    Clear();
     if (node_) {
       node_->Shutdown();
       node_.reset();
     }
   }
+
+ private:
+  void StopRoutine() {
+    if (scheduler_ != nullptr && scheduler_task_id_ != 0) {
+      scheduler_->RemoveTask(scheduler_task_id_);
+    }
+    scheduler_ = nullptr;
+    scheduler_task_id_ = 0;
+    data_visitor_.reset();
+  }
+
+ protected:
 
   // ==========================================================================
   // 成员变量
@@ -239,6 +260,11 @@ class ComponentBase : public std::enable_shared_from_this<ComponentBase> {
 
   /// 类型擦除的 Reader 集合：Shutdown 时统一清理
   std::vector<std::shared_ptr<ReaderBase>> readers_;
+
+  /// Component 协程的唯一调度所有权；关闭时先摘除任务再注销 Reader。
+  scheduler::Scheduler* scheduler_ = nullptr;
+  uint64_t scheduler_task_id_ = 0;
+  std::shared_ptr<data::DataVisitorBase> data_visitor_;
 };
 
 }  // namespace component

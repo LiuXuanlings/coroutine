@@ -151,11 +151,17 @@ bool ClassicContext::RemoveCRoutine(const std::shared_ptr<CRoutine>& cr) {
   }
   auto target = *it;
   target->Stop();
-  while (!target->Acquire()) {
-    std::this_thread::sleep_for(std::chrono::microseconds(1));
+  const bool removing_current =
+      CRoutine::GetCurrentRoutine() == target.get();
+  if (!removing_current) {
+    while (!target->Acquire()) {
+      std::this_thread::sleep_for(std::chrono::microseconds(1));
+    }
   }
   queue.erase(it);
-  target->Release();
+  if (!removing_current) {
+    target->Release();
+  }
   return true;
 }
 

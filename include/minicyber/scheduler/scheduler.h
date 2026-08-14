@@ -61,6 +61,11 @@ class Scheduler {
   // 通知指定任务数据已就绪，唤醒 DATA_WAIT/IO_WAIT
   bool NotifyTask(uint64_t crid);
 
+  // 移除由 RoutineFactory 创建的任务。调用方先解除数据唤醒所有权，再让
+  // 调度上下文移除队列项；若调用发生在该 CRoutine 自身的 Proc 内，不等待
+  // 自己持有的 Acquire，避免 Component 回调内 Shutdown 形成自等待。
+  bool RemoveTask(uint64_t crid);
+
   // 停止所有 Processor 并清理资源
   void Shutdown();
 
@@ -94,7 +99,7 @@ class Scheduler {
   struct RoutineWakeState {
     std::mutex mutex;
     Scheduler* scheduler = nullptr;
-    uint64_t task_id = 0;
+    std::atomic<uint64_t> task_id{0};
   };
   std::mutex routine_wake_mtx_;
   std::vector<std::shared_ptr<RoutineWakeState>> routine_wake_states_;

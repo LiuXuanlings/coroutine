@@ -150,6 +150,11 @@ class ShmReceiver : public Receiver<M> {
         this->channel_id_, [this](const std::string& payload) {
           auto msg = std::make_shared<M>();
           if (msg->ParseFromString(payload)) {
+            // INTRA 已由 IntraDispatcher 注入同一数据总线；SHM 在此完成
+            // Protobuf 重建后也必须先分发给 DataVisitor，再通知普通 Reader
+            // 观察回调，保证 Component 的 DATA_WAIT 链不依赖同步 Proc。
+            data::DataDispatcher<M>::Instance()->DispatchFromShm(
+                this->channel_id_, msg);
             this->OnNewMessage(msg);
           }
         });

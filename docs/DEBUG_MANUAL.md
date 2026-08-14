@@ -287,6 +287,61 @@ ctest --test-dir build/debug --output-on-failure --repeat until-fail:20 \
 进入唯一工厂、组件初始化、回滚水位和 Shutdown 顺序。MC-613 会移除空
 `module_library` 的生产绕过路径。
 
+### MC-612 将 Component 改为协程执行后遗留同步断言
+
+**触发环境与最小复现**：完成 Component 的 `DataVisitor -> RoutineFactory -> Scheduler`
+接入后，执行：
+
+```bash
+ctest --test-dir build/debug --output-on-failure \
+  -R '^(test_component|test_component_base|test_component_factory|test_module_controller)$'
+```
+
+`test_module_controller` 的 `EndToEndDataDelivery` 首次失败，CTest 退出码为 8；4 项中 1 项
+失败，失败率 1/1。失败断言是 Writer::Write 返回后 `McTestComponent::proc_count()` 仍为 0，
+旧测试却期待同步等于 1。
+
+**排查时间线与候选假设**：先重建 Component、Scheduler 与 ModuleController 目标，排除头
+文件修改后的陈旧对象 ABI；再检查 `Writer::Write`、INTRA Dispatcher、DataNotifier 和
+RoutineFactory 调用链，确认发布线程现在只执行 `Dispatch -> NotifyTask`，而 Proc 必须等待
+Processor 从 `DATA_WAIT` 转为 READY 后 Resume。随后检查 Component 测试，Proc 所在线程与
+发布线程不同且双输入首通道驱动均已通过，排除消息未进入 DataVisitor 或 Scheduler 未启动。
+
+**根因、修复与回归**：根因是 ModuleController 测试沿用了 MC-612 前的同步 Proc 语义，不是
+数据丢失或调度死锁。将断言改为两秒有界的条件等待，不使用固定 sleep；生产 Component
+行为没有增加同步回退。修复后上述 4 项测试全部通过，且：
+
+```bash
+ctest --test-dir build/debug --output-on-failure --repeat until-fail:20 \
+  -R '^test_component$'
+```
+
+连续 20 轮通过。后续 MC-617 应保留这条“发布线程不等于 Proc 线程”和回调内关闭门禁；不得
+再次把 Write 返回时点当作业务处理完成时点。
+
+### MC-612 的 SHM Component 分发误投递到 INTRA 回调
+
+**触发环境与最小复现**：为使跨进程 SHM 解码后的 Protobuf 进入 Component 的
+DataVisitor，最初直接调用通用 `DataDispatcher<M>::Dispatch`。在稳定 Debug 构建执行
+`ctest --test-dir build/debug --output-on-failure` 时，
+`HybridTransportTest.MixedOppositesFanOutWithoutDuplicateDelivery` 失败；测试进程退出码为
+8，8 项中 1 项失败，失败率 1/1，完整集为 43/44。
+
+**原始现象与排查时间线**：本地 Hybrid Reader 收到了 SHM 解码产生的新 `shared_ptr`，而非
+Writer 原始对象，计数从期望的 1 变为 2。先检查 Hybrid 的 per-opposite 连接集合，确认
+同机 Reader 和跨进程 Reader 的连接关系没有重复建立；再追踪 `ShmReceiver ->
+DataDispatcher -> DataNotifier`，发现通用 Dispatcher 同时持有 IntraReceiver 的 Buffer 与
+DataVisitor Buffer，SHM 副本因此被错误送回本进程 INTRA 回调。候选“SHM 自身重复通知”被
+指针身份和该静态路由证据排除。
+
+**修复边界与回归**：DataDispatcher/DataNotifier 增加仅由 DataVisitor 显式登记的 SHM
+投递分支；ShmReceiver 反序列化后只填充这些 Visitor Buffer 并唤醒协程，普通 Reader 仍仅由
+ShmReceiver 的原始回调投递一次。修复没有改变 Hybrid per-opposite 路由、INTRA 零拷贝或
+SHM Protobuf 边界。`test_component` 与 `test_hybrid_transport` 各连续 5 轮通过，随后在没有
+并行构建的稳定产物上完整 CTest 44/44 通过。经验是不能因为 Component 需要接收 SHM，就把
+已解码副本注入 INTRA 的普通端点总线；数据协程 Buffer 与 Transport 回调必须维持独立订阅
+类别。
+
 ## 七、证据来源
 
 本初稿迁移自首轮 `00_进度记录.md`、`baseline.md`、`module_mapping.md`、

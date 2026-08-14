@@ -426,6 +426,68 @@ bool Scheduler::NotifyTask(uint64_t crid) {
   return true;
 }
 
+bool Scheduler::RemoveTask(uint64_t crid) {
+  if (crid == 0) {
+    return false;
+  }
+
+  std::shared_ptr<CRoutine> cr;
+  {
+    std::lock_guard<std::mutex> lock(id_cr_mtx_);
+    const auto it = id_cr_.find(crid);
+    if (it == id_cr_.end()) {
+      return false;
+    }
+    cr = it->second;
+  }
+
+  // 先撤销 DataVisitor -> Scheduler 的唤醒闭包。这里不持有状态锁等待
+  // Scheduler，避免发布线程正在回调时与组件自身关闭形成锁环。
+  std::vector<std::shared_ptr<RoutineWakeState>> removed_states;
+  {
+    std::lock_guard<std::mutex> lock(routine_wake_mtx_);
+    auto it = routine_wake_states_.begin();
+    while (it != routine_wake_states_.end()) {
+      if ((*it)->task_id == crid) {
+        removed_states.push_back(*it);
+        it = routine_wake_states_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+  for (const auto& state : removed_states) {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    state->scheduler = nullptr;
+  }
+
+  std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mtx_);
+  if (stop_.load()) {
+    std::lock_guard<std::mutex> lock(id_cr_mtx_);
+    id_cr_.erase(crid);
+    return true;
+  }
+
+  // Stop 先禁止下一次 Resume；上下文随后从就绪队列摘除，保证队列不再
+  // 持有组件协程。上下文实现会识别“当前协程就是待移除协程”的情况，
+  // 因而回调内 Shutdown 不会等待自身释放 Acquire。
+  cr->Stop();
+  bool removed = false;
+  if (IsChoreographyProcessor(cr->processor_id()) &&
+      static_cast<size_t>(cr->processor_id()) < contexts_.size()) {
+    removed = std::static_pointer_cast<ChoreographyContext>(
+                  contexts_.at(static_cast<size_t>(cr->processor_id())))
+                  ->RemoveCRoutine(crid);
+  } else {
+    removed = ClassicContext::RemoveCRoutine(cr);
+  }
+  {
+    std::lock_guard<std::mutex> lock(id_cr_mtx_);
+    id_cr_.erase(crid);
+  }
+  return removed;
+}
+
 // ----------------------------------------------------------------------
 // Shutdown: 停止所有 Processor 并清理
 // ----------------------------------------------------------------------

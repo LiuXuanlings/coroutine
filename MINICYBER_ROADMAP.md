@@ -6,7 +6,7 @@
 
 - 当前分支：`development`
 - 当前阶段：第二次重构，基础设施改造阶段
-- 当前任务：MC-612
+- 当前任务：MC-613
 - 当前状态：待开始
 - 唯一状态事实源：[`docs/refactor/00_进度记录.md`](docs/refactor/00_进度记录.md)
 - 唯一任务执行方案：[`docs/refactor/01_实施方案.md`](docs/refactor/01_实施方案.md)
@@ -29,8 +29,9 @@
   Protobuf-only Node API、RoleAttributes、`HasReader` 和端点生命周期；MC-609 已恢复
   单/双输入 DataVisitor、AllLatest 和 RoutineFactory 数据协程链；MC-610 已恢复
   Classic 共享调度组并接回 DataVisitorBase 唤醒；MC-611 已完成 Choreography 定向
-  Processor、Classic 公共池、任务回退和原路由唤醒，不得引入 RTPS 数据面。下一步为
-  MC-612。
+  Processor、Classic 公共池、任务回退和原路由唤醒；MC-612 已将单/双通道 Component
+  接入 DataVisitor、RoutineFactory 和 Scheduler，补齐回调内关闭与 SHM 数据协程分流。
+  下一步为 MC-613。
 - MC-602 必须先从 `docs/refactor/baseline.md`、`docs/refactor/module_mapping.md`、
   `docs/refactor/perf/**`、`docs/croutine/shared_from_this.md`、
   `docs/scheduler/debug_vtable_hang.md`、`docs/transport/signal.md` 和

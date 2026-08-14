@@ -1,10 +1,12 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <fstream>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <google/protobuf/text_format.h>
@@ -13,6 +15,7 @@
 #include "minicyber/component/component_factory.h"
 #include "minicyber/mainboard/module_controller.h"
 #include "minicyber/node/node.h"
+#include "minicyber/scheduler/scheduler.h"
 #include "minicyber/proto/dag_conf.pb.h"
 
 // =============================================================================
@@ -47,6 +50,16 @@ TestMessage MakeMessage(const std::string& value) {
   return message;
 }
 
+minicyber::scheduler::Scheduler& TestScheduler() {
+  static minicyber::scheduler::SchedulerConf conf = [] {
+    minicyber::scheduler::SchedulerConf value;
+    value.thread_num = 1;
+    return value;
+  }();
+  static minicyber::scheduler::Scheduler scheduler(conf);
+  return scheduler;
+}
+
 // 测试用事件驱动组件
 class McTestComponent
     : public minicyber::component::Component<TestMessage> {
@@ -62,6 +75,7 @@ class McTestComponent
 
  protected:
   bool Init() override {
+    TestScheduler();
     init_count_.fetch_add(1, std::memory_order_relaxed);
     return true;
   }
@@ -81,11 +95,22 @@ std::atomic<int> McTestComponent::init_count_{0};
 std::atomic<int> McTestComponent::proc_count_{0};
 std::string McTestComponent::last_msg_;
 
+bool WaitForProcCount(int expected) {
+  for (int i = 0; i < 200; ++i) {
+    if (McTestComponent::proc_count() >= expected) return true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  return false;
+}
+
 // 第二个测试组件（验证多类共存）
 class McSecondComponent
     : public minicyber::component::Component<TestMessage> {
  protected:
-  bool Init() override { return true; }
+  bool Init() override {
+    TestScheduler();
+    return true;
+  }
   bool Proc(const std::shared_ptr<TestMessage>& msg) override {
     (void)msg;
     return true;
@@ -367,8 +392,9 @@ TEST(ModuleControllerTest, EndToEndDataDelivery) {
 
   std::string msg("hello from mainboard test");
   EXPECT_TRUE(writer->Write(MakeMessage(msg)));
-  // 同步回调路径，Write 返回时 Proc 应已执行
-  EXPECT_EQ(McTestComponent::proc_count(), 1);
+  // MC-612 后 Writer 只负责 Dispatch/Notify；Proc 由 Processor 的协程
+  // 消费，必须通过有界条件等待，不能沿用同步回调断言。
+  ASSERT_TRUE(WaitForProcCount(1));
   EXPECT_EQ(McTestComponent::last_msg(), msg);
 
   controller.Clear();

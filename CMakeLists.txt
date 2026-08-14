@@ -118,6 +118,7 @@ target_include_directories(minicyber_proto
 # 构建核心库
 # ---------------------------------------------------------
 set(MINICYBER_CORE_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/component/component_factory.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/croutine.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/croutine/detail/routine_context.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/mainboard/module_controller.cpp

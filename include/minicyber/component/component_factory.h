@@ -12,8 +12,8 @@
 // =============================================================================
 // MiniCyber Component Framework — ComponentFactory 与注册宏
 //
-// 设计目标：提供通过类名字符串动态实例化 Component 的能力，为 Phase 6
-//   mainboard 的 DAG 解析 + dlopen 动态加载铺平道路。
+// 设计目标：提供通过类名字符串动态实例化 Component 的能力，为 MC-613 的
+//   mainboard DAG 解析与 dlopen 动态加载提供唯一注册表。
 //
 // 与 CyberRT 的差异：
 //   CyberRT 使用 Poco 库实现的完整 ClassLoader 体系，包括：
@@ -22,11 +22,9 @@
 //     - relative_class_loaders_ 管理（支持多 Loader 拥有/释放）
 //     - class_loader_utility 全局注册中心
 //
-//   MiniCyber 简化为：
-//     - 单例工厂 + unordered_map<string, CreatorFunc>
-//     - 不追踪 .so 路径（mainboard 不卸载 .so，留待后续扩展）
-//     - 不区分 Loader（所有组件注册到全局一张表）
-//     - 使用 __COUNTER__ 而非完整的编译时类型萃取
+//   MiniCyber 只保留单例工厂 + unordered_map<string, CreatorFunc>；Instance
+//   定义在 minicyber_core，而不是头文件内联静态变量，保证主进程和以
+//   RTLD_GLOBAL 加载的组件 .so 解析到同一注册表。
 //
 // 静态初始化 + dlopen 机制（面试核心考点）：
 //   1. 用户代码在 .cpp 中使用 MINICYBER_REGISTER_COMPONENT(MyComponent)
@@ -74,10 +72,7 @@ class ComponentFactory {
    * 这意味着即使多个 .so 的 dlopen 同时触发静态初始化并调用
    * Instance。
    */
-  static ComponentFactory* Instance() {
-    static ComponentFactory inst;
-    return &inst;
-  }
+  static ComponentFactory* Instance();
 
   /**
    * @brief 注册组件类
