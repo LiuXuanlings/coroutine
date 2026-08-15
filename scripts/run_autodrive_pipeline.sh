@@ -72,6 +72,7 @@ sink_pid=""
 mainboard_pid=""
 source_pid=""
 ready_file="${output_dir}/control_sink.ready"
+warmup_ready_file="${output_dir}/control_sink_warmup.ready"
 mainboard_evidence="${output_dir}/mainboard_evidence.txt"
 sink_evidence="${output_dir}/control_sink_evidence.txt"
 cleanup() {
@@ -100,8 +101,9 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-rm -f "$ready_file" "${output_dir}/metrics.txt"
-sink_args=(--messages "$messages" --timeout-ms "$timeout_ms" --ready-file "$ready_file")
+rm -f "$ready_file" "$warmup_ready_file" "${output_dir}/metrics.txt"
+sink_args=(--messages "$messages" --timeout-ms "$timeout_ms" \
+  --ready-file "$ready_file" --warmup-ready-file "$warmup_ready_file")
 if (( metrics_enabled != 0 )); then
   sink_args+=(--metrics --output "${output_dir}/metrics.txt")
 fi
@@ -135,7 +137,8 @@ done
 # Source 在进程内继续等待两个远端输入 Reader Join；结合上方 Sink 的下游 Join
 # 事实，使放行覆盖完整拓扑而不复制业务 DAG 或引入经验等待。
 "$sensor_source" --messages "$messages" --frequency "$frequency" \
-  --ready-timeout-ms "$timeout_ms" --await-shutdown \
+  --ready-timeout-ms "$timeout_ms" --sink-warmup-file "$warmup_ready_file" \
+  --await-shutdown \
   >"${output_dir}/sensor_source.log" 2>&1 &
 source_pid=$!
 

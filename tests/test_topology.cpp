@@ -231,3 +231,18 @@ TEST(TopologyManagerTest, ShutdownClearsAll) {
   EXPECT_FALSE(topo->IsSameProc("/ch/shutdown"));
   EXPECT_FALSE(topo->HasNode("w", kPidA));
 }
+
+TEST(TopologyManagerTest, StartupFailureRollsBackEveryFastRTPSStep) {
+  auto* topology = TopologyManager::Instance();
+  topology->Shutdown();
+
+  for (const char* step : {"participant", "type", "publisher", "subscriber"}) {
+    ASSERT_EQ(setenv("MINICYBER_TEST_TOPOLOGY_START_FAIL", step, 1), 0);
+    EXPECT_FALSE(topology->Start()) << step;
+    topology->Shutdown();
+
+    ASSERT_EQ(unsetenv("MINICYBER_TEST_TOPOLOGY_START_FAIL"), 0);
+    EXPECT_TRUE(topology->Start()) << step;
+    topology->Shutdown();
+  }
+}

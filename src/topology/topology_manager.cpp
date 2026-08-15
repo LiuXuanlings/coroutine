@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <functional>
@@ -81,6 +82,18 @@ bool IsChannelRole(proto::RoleType role_type) {
 
 bool IsChannelOperation(proto::OperateType operate_type) {
   return operate_type == proto::OPT_JOIN || operate_type == proto::OPT_LEAVE;
+}
+
+bool ShouldInjectStartupFailure(const char* step) {
+#if defined(MINICYBER_ENABLE_TEST_FAILURES)
+  // 故障门禁只在 Debug 核心库中编译，不扩张 TopologyManager 公开 API，也不改变
+  // Release 控制面。测试用它稳定覆盖 FastRTPS 分步创建后的逆序回滚。
+  const char* requested = std::getenv("MINICYBER_TEST_TOPOLOGY_START_FAIL");
+  return requested != nullptr && std::strcmp(requested, step) == 0;
+#else
+  static_cast<void>(step);
+  return false;
+#endif
 }
 
 class ChangeMsgType final : public eprosima::fastrtps::TopicDataType {
@@ -180,6 +193,9 @@ class ControlParticipant {
     }
 
     try {
+      if (ShouldInjectStartupFailure("participant")) {
+        return false;
+      }
       eprosima::fastrtps::ParticipantAttributes attributes;
       eprosima::fastrtps::Domain::getDefaultParticipantAttributes(attributes);
       attributes.domainId = 80;
@@ -191,12 +207,20 @@ class ControlParticipant {
         return false;
       }
 
+      if (ShouldInjectStartupFailure("type")) {
+        ShutdownLocked();
+        return false;
+      }
       type_ = std::make_unique<ChangeMsgType>();
       if (!eprosima::fastrtps::Domain::registerType(participant_, type_.get())) {
         ShutdownLocked();
         return false;
       }
 
+      if (ShouldInjectStartupFailure("publisher")) {
+        ShutdownLocked();
+        return false;
+      }
       // 原生拓扑 QoS 使用可靠传输和本地持久化，保证晚加入进程能重放
       // 端点状态。
       eprosima::fastrtps::PublisherAttributes publisher_attributes;
@@ -211,6 +235,10 @@ class ControlParticipant {
       publisher_attributes.topic.topicDataType = kControlType;
       publisher_ = eprosima::fastrtps::Domain::createPublisher(participant_, publisher_attributes);
 
+      if (ShouldInjectStartupFailure("subscriber")) {
+        ShutdownLocked();
+        return false;
+      }
       eprosima::fastrtps::SubscriberAttributes subscriber_attributes;
       eprosima::fastrtps::Domain::getDefaultSubscriberAttributes(subscriber_attributes);
       subscriber_attributes.qos.m_reliability.kind =

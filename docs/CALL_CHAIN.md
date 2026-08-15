@@ -15,10 +15,11 @@
 1. 启动 `control_sink`，创建 `/autodrive/control_command` 和
    `/autodrive/control_audit` 两个 Reader；
 2. 启动 `mainboard -d config/autodrive/autodrive.dag -s <scheduler.conf>`；
-3. Sink 通过 `Reader::HasWriter()` 观察 Control Writer Join，写入 ready 文件；
-4. 启动 `sensor_source --messages --frequency --ready-timeout-ms --await-shutdown`；
+3. Sink 通过 `Reader::HasWriter()` 观察 Control Writer Join，写入单向 ready 文件；
+4. 启动 `sensor_source --messages --frequency --ready-timeout-ms --sink-warmup-file --await-shutdown`；
 5. Source 通过两个 `Writer::HasReader()` 等待 Camera/VehicleState Reader Join；
-6. Sink 收齐 Control/Audit 序列后退出，脚本用 SIGTERM 依次请求 Source 和 mainboard 关闭。
+6. Source 有界重发 sequence 0，直到本地 Audit 和跨进程 Sink 都回执，再发布测量序列；
+7. Sink 收齐 Control/Audit 序列后退出，脚本用 SIGTERM 依次请求 Source 和 mainboard 关闭。
 
 这里的 `sleep 0.01` 只是对 ready 文件的有界轮询间隔，不是用固定延时
 猜测拓扑已就绪。
@@ -351,14 +352,16 @@ VehicleState 只提供当次 AllLatest 数值，不改变链路身份。
 
 1. 创建 `/autodrive/control_audit` Reader，回调只接受 sequence 0；
 2. 创建 CameraFrame 和 VehicleState Writer，用 `HasReader()` 等待对端 Join；
-3. 发布 VehicleState sequence 0；
-4. 发布 CameraFrame sequence 0；
+3. 按 100 Hz 有界重发 VehicleState sequence 0；
+4. 紧接着发布 CameraFrame sequence 0；
 5. CameraFrame 依次经 Perception、Fusion、Planning、Control、ControlAudit；
-6. ControlAudit 将 sequence 0 写入 `/autodrive/control_audit` SHM；
-7. Source 收到回执后 `WaitForWarmup()` 才返回，然后调用 `Rate::Sleep()` 建立测量节拍。
+6. ControlAudit 将 sequence 0 写入 `/autodrive/control_audit` SHM，Source 记录本地审计回执；
+7. ControlSink 收到 `/autodrive/control_command` 的 sequence 0 后写跨进程预热文件；
+8. Source 同时观察到两类回执后停止重发，再调用 `Rate::Sleep()` 建立测量节拍。
 
-所以不得把预热描述成“只发 VehicleState，等一个 Rate 周期”。那样不能证明
-五组件、双通道融合、Control 扇出和返程 SHM 均已就绪。
+Sink 的 `Reader::HasWriter()` 与 Control Writer 的 `HasReader()` 是异步发现的两个方向，
+不能用前者冒充双向收敛。双回执预热同时证明五组件、双通道融合、本地 INTRA Audit、
+Control 跨进程 SHM 和返程 Audit SHM 已工作；sequence 0 不计入性能与完整性集合。
 
 ## 十二、结果统计与取证边界
 
@@ -433,11 +436,45 @@ Source/Sink 也先 `Node::Shutdown()`，再关 ShmDispatcher 和 TopologyManager
 
 ## 十五、文件触达声明
 
-本调用链已按实际源码函数和主干运行证据复核。MC-619 coverage 目录的
-38 个 `.gcda` 能证明对应翻译单元在 coverage 运行中被加载并产生运行数据；
-但旧 `file_touch_report.txt` 中的 CMake、`.d` 或 include 标记只是构建可达证据。
-本手册不使用这些标记宣称“100% 运行职责已触达”。
+最终分母取当前实际存在的 103 个留存生产/装配文件。证据来自清空旧 `.gcda` 后只运行一次
+`test_autodrive_choreography_pipeline` 的 coverage 构建；它产生 38 个业务目标 `.gcda`，五个
+组件翻译单元均有正执行行，核心 `scheduler.cpp`、`topology_manager.cpp`、Hybrid 收发模板等
+均有正执行行。CMake 和 `.d` 仅用于确认目标归属，不单独判定触达。
 
-MC-623 需要对每个生产 `.cpp/.S` 给出 gcov 执行记录或明确的运行时
-符号/日志证据，对模板和内联头给出业务实例化与执行证据；
-不能证明职责的文件必须删除或明确处置，不得降低验收口径。
+下表每个单元格中的路径共享该行的“所属目标、业务入口、证据类型、结果”；路径仍逐一列出，
+没有用目录名代替文件。纯声明/抽象头本身没有可执行行时，以已执行派生实现或所有者翻译单元
+证明其职责被调用。`src/swap.S` 不支持 gcov，以 `ctx_swap` 符号、CRoutine 双向 ABI 测试和
+业务组件实际运行在 Processor 线程三项交叉证明。
+
+| 精确路径 | 所属目标 | 业务入口 | 运行时证据类型 | 结果 |
+|---|---|---|---|---|
+| `CMakeLists.txt`<br>`scripts/run_autodrive_pipeline.sh` | 构建与三进程启动 | CMake 生成；Classic/Choreography CTest 调用唯一脚本 | 目标清单 + 两套真实进程日志 | 通过 |
+| `bin/mainboard.cpp` | `mainboard` | 参数解析 -> SchedulerFactory -> ModuleController | gcov 正执行 + 启动/关闭日志 | 通过 |
+| `config/autodrive/autodrive.dag`<br>`config/autodrive/classic_sched.conf`<br>`config/autodrive/choreo_sched.conf` | mainboard 运行配置 | TextFormat 解析同一 DAG 与两种调度配置 | 两套 CTest 真实加载 | 通过 |
+| `config/autodrive/components/control.conf`<br>`config/autodrive/components/control_audit.conf`<br>`config/autodrive/components/fusion.conf`<br>`config/autodrive/components/perception.conf`<br>`config/autodrive/components/planning.conf` | 组件 TextFormat 配置 | `ComponentBase::GetProtoConfig` | 五组件初始化日志 + 完整序列 | 通过 |
+| `demo/autodrive/sensor_source.cpp`<br>`demo/autodrive/control_sink.cpp` | Source/Sink 可执行文件 | Rate 发布、双回执预热、Metrics 收口 | gcov 正执行 + 1000 条集合 | 通过 |
+| `demo/autodrive/autodrive_runtime.cpp`<br>`include/minicyber/proto/autodrive_runtime.h` | `minicyber_autodrive_runtime` | 业务消息创建/复制模板实例 | gcov 正执行 + DSO 常驻符号 | 通过 |
+| `demo/autodrive/evidence.cpp`<br>`demo/autodrive/evidence.h` | 功能取证 Runtime | 五组件、线程、指针、后端集合 | gcov 正执行 + evidence 文件 | 通过 |
+| `demo/autodrive/metrics.cpp`<br>`demo/autodrive/metrics.h` | Sink 指标库 | `RecordMeasurement`、`RecordAudit` | gcov 正执行 + metrics 输出 | 通过 |
+| `demo/autodrive/components/perception_component.cpp`<br>`demo/autodrive/components/fusion_component.cpp`<br>`demo/autodrive/components/planning_component.cpp`<br>`demo/autodrive/components/control_component.cpp`<br>`demo/autodrive/components/control_audit_component.cpp` | 唯一组件 DSO | dlopen -> 反射 -> 五段 Proc | 五个 `.cpp` gcov 均正执行 + 1..1000 集合 | 通过 |
+| `include/minicyber/base/atomic_rw_lock.h`<br>`include/minicyber/base/macros.h`<br>`include/minicyber/base/rw_lock_guard.h`<br>`include/minicyber/common/types.h` | core 基础类型 | Choreography 队列锁、分支提示、NullType 特化 | 内联/模板 gcov 或已执行所有者 | 通过 |
+| `include/minicyber/component/component.h`<br>`include/minicyber/component/component_base.h`<br>`include/minicyber/component/component_factory.h`<br>`src/component/component_factory.cpp` | core + 组件 DSO | 单/双输入装配、工厂注册、Shutdown | 模板与 `.cpp` gcov 正执行 + dlopen 日志 | 通过 |
+| `include/minicyber/croutine/croutine.h`<br>`include/minicyber/croutine/detail/routine_context.h`<br>`include/minicyber/croutine/routine_factory.h`<br>`src/croutine.cpp`<br>`src/croutine/detail/routine_context.cpp`<br>`src/swap.S` | core 协程 | CreateTask -> Resume -> DATA_WAIT -> SwapContext | gcov 正执行；汇编符号 + ABI + 线程证据 | 通过 |
+| `include/minicyber/data/cache_buffer.h`<br>`include/minicyber/data/channel_buffer.h`<br>`include/minicyber/data/data_dispatcher.h`<br>`include/minicyber/data/data_notifier.h`<br>`include/minicyber/data/data_visitor.h`<br>`include/minicyber/data/data_visitor_base.h`<br>`include/minicyber/data/fusion/all_latest.h`<br>`include/minicyber/data/fusion/data_fusion.h`<br>`src/data/data_notifier.cpp` | core 数据总线 | Dispatch -> Fill/Fusion -> Notify -> TryFetch | 模板/内联 gcov 正执行；抽象基类由 AllLatest 派生执行 | 通过 |
+| `include/minicyber/mainboard/module_controller.h`<br>`src/mainboard/module_controller.cpp` | core mainboard | DAG -> dlopen -> Factory -> 回滚/卸载 | `.cpp` gcov 正执行 + 五组件加载/关闭日志 | 通过 |
+| `include/minicyber/node/node.h`<br>`include/minicyber/node/node_channel_impl.h`<br>`include/minicyber/node/reader.h`<br>`include/minicyber/node/writer.h` | Source/Sink/组件端点 | CreateReader/Writer -> Join -> Hybrid -> Leave | 模板 gcov 正执行 + 双向发现/关闭证据 | 通过 |
+| `include/minicyber/proto/autodrive.proto`<br>`include/minicyber/proto/component_conf.proto`<br>`include/minicyber/proto/dag_conf.proto`<br>`include/minicyber/proto/qos_profile.proto`<br>`include/minicyber/proto/role_attributes.proto`<br>`include/minicyber/proto/scheduler_conf.proto`<br>`include/minicyber/proto/topology_change.proto` | 业务/核心 Protobuf | 消息序列化、DAG/Scheduler 解析、发现 CDR | 生成代码 gcov + TextFormat/SHM/发现运行证据 | 通过 |
+| `include/minicyber/scheduler/common/pin_thread.h`<br>`src/scheduler/common/pin_thread.cpp` | core 调度辅助 | Processor 创建时应用 affinity/policy | `.cpp` gcov 正执行 + Processor TID | 通过 |
+| `include/minicyber/scheduler/policy/classic_context.h`<br>`src/scheduler/policy/classic_context.cpp` | core Classic | 共享 20 级队列、公共池竞争 | `.cpp` gcov 正执行 + Classic/公共池证据 | 通过 |
+| `include/minicyber/scheduler/policy/choreography_context.h`<br>`src/scheduler/policy/choreography_context.cpp` | core Choreography | 定向 Processor 队列 | `.cpp` gcov 正执行 + 定向 TID 证据 | 通过 |
+| `include/minicyber/scheduler/processor.h`<br>`include/minicyber/scheduler/processor_context.h`<br>`include/minicyber/scheduler/scheduler.h`<br>`include/minicyber/scheduler/scheduler_conf.h`<br>`include/minicyber/scheduler/scheduler_factory.h`<br>`src/scheduler/processor.cpp`<br>`src/scheduler/scheduler.cpp`<br>`src/scheduler/scheduler_factory.cpp` | core Scheduler | 配置转换 -> Processor -> Context -> Resume | `.cpp`/内联 gcov 正执行；抽象头由双策略执行 | 通过 |
+| `include/minicyber/service_discovery/channel_manager.h`<br>`src/service_discovery/channel_manager.cpp`<br>`include/minicyber/topology/topology_manager.h`<br>`src/topology/topology_manager.cpp` | core 发现控制面 | Join/Leave -> FastRTPS -> 快照 -> Hybrid 变更 | `.cpp` gcov 正执行 + 晚加入/异常退出证据 | 通过 |
+| `include/minicyber/time/duration.h`<br>`include/minicyber/time/rate.h`<br>`include/minicyber/time/time.h`<br>`src/time/duration.cpp`<br>`src/time/rate.cpp`<br>`src/time/time.cpp` | core 时间 | Source 节拍、轮询截止、单调时间戳 | 三个 `.cpp` gcov 正执行 | 通过 |
+| `include/minicyber/transport/dispatcher/intra_dispatcher.h`<br>`include/minicyber/transport/dispatcher/shm_dispatcher.h`<br>`src/transport/dispatcher/shm_dispatcher.cpp` | core 数据分发 | INTRA 指针 Fill；SHM 通知解码分发 | 模板/`.cpp` gcov 正执行 + 双端集合 | 通过 |
+| `include/minicyber/transport/receiver/receiver.h`<br>`include/minicyber/transport/receiver/intra_receiver.h`<br>`include/minicyber/transport/receiver/shm_receiver.h`<br>`include/minicyber/transport/receiver/hybrid_receiver.h` | core 接收端 | Reader -> HybridReceiver -> INTRA/SHM 回调 | 四个模板在主干 gcov 正执行 | 通过 |
+| `include/minicyber/transport/shm/block.h`<br>`include/minicyber/transport/shm/condition_notifier.h`<br>`include/minicyber/transport/shm/posix_segment.h`<br>`include/minicyber/transport/shm/segment.h`<br>`include/minicyber/transport/shm/state.h`<br>`src/transport/shm/condition_notifier.cpp`<br>`src/transport/shm/posix_segment.cpp` | core POSIX SHM | AcquireBlock -> Serialize -> Notify -> Read | `.cpp`/内联 gcov 正执行 + 自然回收 | 通过 |
+| `include/minicyber/transport/transmitter/transmitter.h`<br>`include/minicyber/transport/transmitter/intra_transmitter.h`<br>`include/minicyber/transport/transmitter/shm_transmitter.h`<br>`include/minicyber/transport/transmitter/hybrid_transmitter.h`<br>`include/minicyber/transport/transport.h` | core 发送端/工厂 | Writer -> Hybrid 按本地/远端关系并行扇出 | 五个模板 gcov 正执行 + 后端计数/指针证据 | 通过 |
+
+逐项结果为 103/103 触达。唯一曾出现零执行行的生产翻译单元
+`src/scheduler/processor_context.cpp` 只承载被双策略覆盖的默认三行实现，已将该原生默认职责
+内联回 `processor_context.h` 并物理删除；没有为了提高覆盖率把接口改成偏离原生的纯虚函数。

@@ -24,7 +24,7 @@ namespace node {
 //   3. 构造时自动向 TopologyManager 注册节点
 //
 // 用法：
-//   Node node("talker");
+//   Node node("perception");
 //   auto w = node.CreateWriter<MyProto>("/chatter");
 //   auto r = node.CreateReader<MyProto>("/chatter", [](msg) { ... });
 //

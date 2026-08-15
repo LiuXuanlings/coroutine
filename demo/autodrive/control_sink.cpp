@@ -39,6 +39,7 @@ struct ProgramArgs {
   bool check_shm_clean = false;
   std::string output_path;
   std::string ready_path;
+  std::string warmup_ready_path;
   std::string evidence_path;
   bool show_help = false;
   bool valid = true;
@@ -50,6 +51,7 @@ void PrintUsage(const char* program) {
   std::cerr << "Usage: " << program
             << " [--messages <count>] [--timeout-ms <ms>] [--metrics]"
                " [--output <metrics_path>] [--ready-file <path>]"
+               " [--warmup-ready-file <path>]"
                " [--evidence-file <path>]"
                " [--cleanup-shm] [--check-shm-clean]\n";
 }
@@ -89,6 +91,7 @@ ProgramArgs ParseArgs(int argc, char** argv) {
     }
     if ((argument != "--messages" && argument != "--timeout-ms" &&
          argument != "--output" && argument != "--ready-file" &&
+         argument != "--warmup-ready-file" &&
          argument != "--evidence-file") ||
         index + 1 >= argc) {
       args.valid = false;
@@ -102,6 +105,7 @@ ProgramArgs ParseArgs(int argc, char** argv) {
     }
     if (argument == "--output") args.output_path = value;
     if (argument == "--ready-file") args.ready_path = value;
+    if (argument == "--warmup-ready-file") args.warmup_ready_path = value;
     if (argument == "--evidence-file") args.evidence_path = value;
   }
   if (!args.output_path.empty() && !args.metrics) args.valid = false;
@@ -294,9 +298,15 @@ int main(int argc, char** argv) {
   auto reader = sink.CreateReader<minicyber::proto::ControlCommand>(
       "/autodrive/control_command",
       [&mutex, &received_cv, &metrics, &control_pointer,
-       collect_metrics = args.metrics](
+       collect_metrics = args.metrics,
+       warmup_ready_path = args.warmup_ready_path](
           const std::shared_ptr<minicyber::proto::ControlCommand>& command) {
-        if (command->source_sequence() == 0) return;
+        if (command->source_sequence() == 0) {
+          // 该文件只确认 sequence 0 已跨 SHM 到达 Sink，供 Source 区分
+          // 双向发现是否收敛；它不是数据面确认协议，也不计入性能样本。
+          WriteReadyFile(warmup_ready_path);
+          return;
+        }
         const uint64_t receive_time =
             minicyber::time::Time::MonoTime().ToNanosecond();
         std::lock_guard<std::mutex> lock(mutex);

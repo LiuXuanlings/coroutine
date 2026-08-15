@@ -98,10 +98,25 @@ TEST(CRoutineTest, YieldPreservesState) {
   EXPECT_EQ(cr->State(), minicyber::RoutineState::READY);
   EXPECT_EQ(observed_inside, minicyber::RoutineState::READY);
 
-  // 必须再次 Resume 让协程跑完，否则 MainFunc 中的 cur 永远冻结，
-  // 其栈上的 shared_ptr 不会析构，导致 CRoutine 对象泄漏。
+  // 再次 Resume 让该用例同时覆盖正常结束状态。
   cr->Resume();
   EXPECT_EQ(cr->State(), minicyber::RoutineState::FINISHED);
+}
+
+TEST(CRoutineTest, SuspendedRoutineDoesNotRetainItselfOnItsStack) {
+  minicyber::CRoutine::GetThis();
+  auto cr = std::make_shared<minicyber::CRoutine>([]() {
+    // 模拟 RoutineFactory 的长期 DATA_WAIT：回调尚未返回时外部所有者
+    // 仍必须可以安全销毁挂起协程，协程栈不能保存 self shared_ptr。
+    minicyber::CRoutine::Yield(minicyber::RoutineState::DATA_WAIT);
+  });
+  std::weak_ptr<minicyber::CRoutine> weak = cr;
+
+  cr->Resume();
+  ASSERT_EQ(cr->State(), minicyber::RoutineState::DATA_WAIT);
+  cr.reset();
+
+  EXPECT_TRUE(weak.expired());
 }
 
 // ----------------------------------------------------------------------

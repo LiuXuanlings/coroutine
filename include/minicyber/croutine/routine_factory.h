@@ -61,6 +61,9 @@ RoutineFactory CreateRoutineFactory(
         CRoutine::GetCurrentRoutine()->SetState(RoutineState::DATA_WAIT);
         if (visitor->TryFetch(message)) {
           procedure(message);
+          // 协程栈在 DATA_WAIT 时会被冻结，任务被移除不会展开该栈；让出前
+          // 必须释放最后一条消息，否则其 shared_ptr 会随挂起栈一起泄漏。
+          message.reset();
           CRoutine::Yield(RoutineState::READY);
         } else {
           CRoutine::Yield();
@@ -85,6 +88,8 @@ RoutineFactory CreateRoutineFactory(
         CRoutine::GetCurrentRoutine()->SetState(RoutineState::DATA_WAIT);
         if (visitor->TryFetch(primary_message, secondary_message)) {
           procedure(primary_message, secondary_message);
+          primary_message.reset();
+          secondary_message.reset();
           CRoutine::Yield(RoutineState::READY);
         } else {
           CRoutine::Yield();

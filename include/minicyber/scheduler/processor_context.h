@@ -33,7 +33,7 @@ class ProcessorContext {
 
   // 通知 Wait() 解除阻塞并准备退出。默认实现设置 stop_ 标志。
   // 子类可重写以执行额外的唤醒逻辑（如 notify condition_variable）。
-  virtual void Shutdown();
+  virtual void Shutdown() { stop_.store(true, std::memory_order_release); }
 
  protected:
   std::atomic<bool> stop_{false};

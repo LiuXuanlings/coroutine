@@ -159,6 +159,11 @@ foreach(path IN LISTS production_files)
   if(path STREQUAL "")
     continue()
   endif()
+  # 单任务提交前，git ls-files 仍会列出工作树中已物理删除的索引项；触达分母
+  # 必须是最终留存且实际存在的文件。提交后这些路径会自然退出 Git 清单。
+  if(NOT EXISTS "${SOURCE_DIR}/${path}")
+    continue()
+  endif()
   set(evidence "")
   if(path STREQUAL "CMakeLists.txt")
     set(evidence "explicit_build_definition")

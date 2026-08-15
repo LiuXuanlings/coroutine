@@ -453,14 +453,33 @@ ControlCommand 作为排空事实，再 SIGTERM 仍持有 Writer 的 Source，�
 这保持 Node 端点“Disable 后 Leave”的原有关闭职责；它不把发送确认伪装为 Transport 的可靠
 投递能力，也不以增大 SHM 块数掩盖生命周期顺序。
 
-### 为什么 Source 的两个输入 Reader Join 不足以放行整条管道？
+### 为什么 Source 的两个输入 Reader Join 和 Sink 的单向 Writer Join 仍不足以放行测量？
 
 它们只证明 SensorSource 可以向 Perception 和 Fusion 的输入端发送。ControlCommand 的
 Writer 与先启动的 ControlSink Reader 通过独立的异步 Join 收敛；在 Writer 尚未观察到对端时，
-既有 Hybrid API 允许 Write 成功返回但没有跨进程发送对象。MC-616 因此先让 ControlSink
-以 `Reader::HasWriter` 观察这个下游 Join，再写入有界 ready 条件给启动脚本；脚本确认后才
-启动 Source，Source 仍自行等待两个输入 Reader。这样每项放行都由对应的拓扑事实支撑，
-不是用经验 sleep 延长启动时间。
+既有 Hybrid API 允许 Write 成功返回但没有跨进程发送对象。ControlSink 的
+`Reader::HasWriter` 只证明 Sink 已看到 Writer；FastRTPS 的反向传播仍可能尚未让 Writer 的
+`HasReader` 成立。MC-623 的实际失败中，本地 Audit 收到 1..1000，而跨进程 Sink 只收到
+9..1000，正是这种双向收敛窗口。
+
+因此脚本先用单向 Join 放行“不计入测量的预热”，Source 再以 sequence 0 有界重试，直到
+本地 Audit 与跨进程 Sink 都回报收到，才发布 1..N。它用真实数据穿透证明 Writer 的 SHM
+后端已经工作，不以经验 sleep 猜测，也不把尽力而为 Transport 改造成可靠缓存或确认协议。
+
+### 为什么可以删除 `processor_context.cpp`，却不把 `Shutdown` 改成纯虚函数？
+
+逐文件运行审计发现该翻译单元只有 `ProcessorContext::Shutdown` 的默认实现，Classic 与
+Choreography 上下文都覆盖它，唯一主干不存在调用路径。原生 CyberRT 仍保留基类默认实现，
+所以项目没有为了覆盖率把接口改成纯虚并偏离原生职责，而是将三行默认实现内联到头文件，
+删除没有独立运行职责的空翻译单元。派生策略行为和公开调用契约均不改变。
+
+### 为什么挂起协程中的 `shared_ptr` 比普通线程栈更危险？
+
+普通函数退出或异常展开时会执行局部对象析构；被删除的 DATA_WAIT 协程却不会恢复到原栈做
+C++ 栈展开，整个私有栈会直接随 CRoutine 释放。因此协程栈上的 self shared_ptr 会形成自引用，
+消息 shared_ptr 也会保留最后一帧。MiniCyber 的 `MainFunc` 只用原生风格裸指针访问当前协程，
+其存活由 Processor 和 Scheduler 队列保证；RoutineFactory 在每次 Proc 后、Yield 前显式清空
+消息。ASAN 与 weak_ptr 定向测试共同验证这个所有权边界。
 
 ## MC-617 高风险边界
 

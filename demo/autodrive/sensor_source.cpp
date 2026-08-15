@@ -6,6 +6,7 @@
 #include <iostream>
 #include <mutex>
 #include <string>
+#include <unistd.h>
 
 #include "minicyber/node/node.h"
 #include "minicyber/proto/autodrive.pb.h"
@@ -23,6 +24,7 @@ struct ProgramArgs {
   uint64_t messages = 1000;
   double frequency = 100.0;
   uint64_t ready_timeout_ms = 30000;
+  std::string sink_warmup_path;
   bool await_shutdown = false;
   bool show_help = false;
   bool valid = true;
@@ -31,7 +33,8 @@ struct ProgramArgs {
 void PrintUsage(const char* program) {
   std::cerr << "Usage: " << program
             << " [--messages <count>] [--frequency <hz>]"
-               " [--ready-timeout-ms <ms>] [--await-shutdown]\n";
+               " [--ready-timeout-ms <ms>] [--sink-warmup-file <path>]"
+               " [--await-shutdown]\n";
 }
 
 bool ParseUnsigned(const std::string& value, uint64_t* result) {
@@ -73,7 +76,8 @@ ProgramArgs ParseArgs(int argc, char** argv) {
       continue;
     }
     if ((argument != "--messages" && argument != "--frequency" &&
-         argument != "--ready-timeout-ms") ||
+         argument != "--ready-timeout-ms" &&
+         argument != "--sink-warmup-file") ||
         index + 1 >= argc) {
       args.valid = false;
       return args;
@@ -86,6 +90,7 @@ ProgramArgs ParseArgs(int argc, char** argv) {
       args.valid = false;
       return args;
     }
+    if (argument == "--sink-warmup-file") args.sink_warmup_path = value;
   }
   return args;
 }
@@ -108,14 +113,13 @@ bool WaitForReaders(const std::shared_ptr<minicyber::node::Writer<
   return false;
 }
 
-bool WaitForWarmup(std::mutex* mutex, std::condition_variable* ready,
-                   bool* warmup_observed, uint64_t timeout_ms) {
-  std::unique_lock<std::mutex> lock(*mutex);
-  return ready->wait_for(lock, std::chrono::milliseconds(timeout_ms),
-                         [warmup_observed] {
-                           return *warmup_observed || g_shutdown_requested != 0;
-                         }) &&
-         *warmup_observed;
+bool AuditWarmupObserved(std::mutex* mutex, bool* warmup_observed) {
+  std::lock_guard<std::mutex> lock(*mutex);
+  return *warmup_observed;
+}
+
+bool SinkWarmupObserved(const std::string& path) {
+  return path.empty() || ::access(path.c_str(), F_OK) == 0;
 }
 
 void ShutdownRuntime(minicyber::node::Node* node) {
@@ -181,11 +185,34 @@ int main(int argc, char** argv) {
   warmup_camera.set_width(640);
   warmup_camera.set_height(480);
   warmup_camera.set_image_data(std::string(64, 'w'));
-  // sequence 0 必须真正穿过五个 Component 并从 Audit SHM 返回，
-  // 才能证明每层 DataVisitor 已消费首次“取最新”游标。
-  if (!vehicle_writer->Write(warmup) || !camera_writer->Write(warmup_camera) ||
-      !WaitForWarmup(&warmup_mutex, &warmup_ready, &warmup_observed,
-                     args.ready_timeout_ms)) {
+  // Reader::HasWriter 与 Writer::HasReader 是 FastRTPS 异步发现的两个方向，
+  // Sink 看见 Writer 不代表 Control Writer 已安装 SHM 后端。sequence 0 因此
+  // 作为不计入测量的幂等握手反复穿过完整链路，直到本地 Audit 和跨进程 Sink
+  // 都确认收到；重试由 Rate 控制并受总超时约束，不改变数据面的尽力而为语义。
+  const uint64_t warmup_deadline =
+      minicyber::time::Time::MonoTime().ToNanosecond() +
+      args.ready_timeout_ms * 1000000ULL;
+  minicyber::time::Rate warmup_rate(100.0);
+  bool warmup_complete = false;
+  while (g_shutdown_requested == 0 &&
+         minicyber::time::Time::MonoTime().ToNanosecond() < warmup_deadline) {
+    if (!vehicle_writer->Write(warmup) || !camera_writer->Write(warmup_camera)) {
+      break;
+    }
+    {
+      std::unique_lock<std::mutex> lock(warmup_mutex);
+      warmup_ready.wait_for(lock, std::chrono::milliseconds(5), [&warmup_observed] {
+        return warmup_observed || g_shutdown_requested != 0;
+      });
+    }
+    if (AuditWarmupObserved(&warmup_mutex, &warmup_observed) &&
+        SinkWarmupObserved(args.sink_warmup_path)) {
+      warmup_complete = true;
+      break;
+    }
+    warmup_rate.Sleep();
+  }
+  if (!warmup_complete) {
     std::cerr << "SensorSource did not observe the end-to-end warmup.\n";
     ShutdownRuntime(&source);
     return 3;

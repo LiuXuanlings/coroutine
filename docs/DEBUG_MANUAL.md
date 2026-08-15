@@ -833,6 +833,99 @@ ctest --test-dir build/debug --output-on-failure
 MC-623 在代码、脚本和配置均已提交且工作区干净的 Release 基线上重采。这样没有修改
 Transport、Scheduler 或业务算法，只隔离验证探针与性能样本。
 
+### MC-623 Choreography 首段 SHM 消息越过双向发现窗口
+
+**触发环境与原始失败**：最终 high-risk 门禁执行：
+
+```bash
+cmake --build build/debug -j2
+ctest --test-dir build/debug --output-on-failure -L high_risk
+```
+
+构建退出码为 0，CTest 退出码为 8，23 项中 22 项通过；唯一失败项
+`test_autodrive_choreography_pipeline` 的管道退出码为 3，本轮失败率 1/1。现场保存在
+`build/debug/autodrive-choreography-ctest-136b310f9c08`。Sink 记录
+`received=992 audit_received=1000 lost=8 audit_difference=8`，Control 序列为 9..1000，
+Audit 序列为 1..1000；mainboard 的五组件却都处理了 1..1000，且
+`control_intra_enabled_count=1000`、`control_shm_enabled_count=992`、
+`intra_pointer_identity_count=1000`。
+
+**排查链与被排除假设**：先比较 mainboard 与 Sink 的序列集合，确认 Component、AllLatest、
+CRoutine 调度和本地 INTRA Audit 没有丢失；再比较 Control Writer 每次写入时的后端状态，
+确认只有前 8 条尚未安装 SHM 后端。DAG 队列已覆盖验收窗口，Audit 又完整收到 1000 条，
+因此扩大队列、延长进程尾部生命周期和修改 SHM 块数都不能解释“只缺开头”。最后沿
+`Reader::HasWriter -> ChannelManager` 与 `Writer::HasReader -> ChannelManager` 分别检查，
+发现启动脚本只等前者：Sink 已观察到 Writer Join，并不原子地保证 Control Writer 也已观察到
+Sink Reader Join。FastRTPS 两侧发现是异步收敛的，原“单向 ready 等于下游完全就绪”假设错误。
+
+**修复边界**：不修改 HybridTransport 的尽力而为语义，不在无 Reader 时缓存业务消息，也不
+使用固定 sleep。sequence 0 继续作为不计入测量的幂等预热，但 Source 现在以 100 Hz 有界重发
+VehicleState/CameraFrame 0，直到同时观察到本地 Audit 回执和 ControlSink 跨 SHM 收到
+ControlCommand 0 后写出的启动文件，才发布 1..N。该文件只属于三进程启动协调，不是新增
+Channel 或数据面确认协议；总等待仍受 `--ready-timeout-ms` 约束。
+
+**回归**：首次修复复跑时业务数据已为 1000/1000，但文件审计仍把工作树已删除、Git 索引尚未
+提交的 `src/scheduler/processor_context.cpp` 当作留存文件，CTest 退出码仍为 8，失败率 1/1；
+审计分母改为“Git 生产清单中当前实际存在的文件”后执行：
+
+```bash
+ctest --test-dir build/debug --output-on-failure \
+  -R '^test_autodrive_choreography_pipeline$'
+```
+
+退出码为 0，1/1 通过，业务指标为完整 1000 条。最终 high-risk、全量 CTest、Sanitizer 和
+Release 性能结果继续记录在 MC-623 台账，不能用本次定向通过替代。
+
+### MC-623 ASAN 揭示挂起协程栈的两层所有权泄漏
+
+**触发命令与原始结果**：ASAN 配置成功后，最初误用不存在的 build preset：
+
+```bash
+cmake --preset asan && cmake --build --preset asan -j2
+```
+
+第二段退出码为 1，原因仅是仓库没有 build preset；改用
+`cmake --build build/asan -j2` 后构建退出码 0。随后执行：
+
+```bash
+ASAN_OPTIONS=detect_leaks=1:abort_on_error=1 \
+  ctest --test-dir build/asan --output-on-failure -L high_risk
+```
+
+首次为 18/23 通过、5/23 失败，三个定向用例和两套业务主干均在退出时报告
+`Scheduler::CreateTask` 分配的 CRoutine 泄漏，每个对象约 2 MiB。GDB 在 Processor 已退出、
+Classic 队列已移除而 `id_cr_` 尚未清空的位置检查控制块，确认每个任务仍有 2 个强引用；
+断点只观察到 Processor 主协程析构，业务 CRoutine 未析构。
+
+**定位过程与根因**：沿 `CreateTask -> CRoutine::Resume -> MainFunc -> RoutineFactory` 检查
+冻结栈上的局部对象。`MainFunc` 先取得 `shared_ptr cur`，再调用永不返回的数据消费循环；
+每次 DATA_WAIT 都把这个 self shared_ptr 冻结在自身栈上，外部队列和映射即使清空也无法释放
+对象。改为原生 `GetCurrentRoutine()` 裸指针后，2 MiB 泄漏消失，但 ASAN 继续报告最后一条
+单/双通道消息泄漏。第二层原因是 RoutineFactory 把消息 shared_ptr 声明在循环外，处理完成后
+未清空便 Yield；销毁挂起栈不会执行普通 C++ 栈展开，因此这些局部析构同样不会发生。
+
+**修复与回归**：`MainFunc` 在 Processor/队列外部所有权保护下只使用裸指针；RoutineFactory
+在每次成功 Proc 后、Yield 前显式 reset 单通道消息或双通道两个消息。新增
+`SuspendedRoutineDoesNotRetainItselfOnItsStack`，用 weak_ptr 直接断言挂起协程移除外部所有权后
+立即析构。修复过程中的一次 high-risk 复跑为 22/23，唯一失败的 `test_component` 是增量构建
+未重编译该模板实例；重建目标后定向 1/1 通过。最终同一 ASAN high-risk 命令为 23/23 通过，
+包含 Classic/Choreography 两套完整主干，未报告内存错误或泄漏。
+
+### MC-623 TSAN 宿主运行时限制
+
+`cmake --preset tsan && cmake --build build/tsan -j2` 配置和全量构建退出码为 0。最小运行：
+
+```bash
+TSAN_OPTIONS=halt_on_error=1 \
+  ctest --test-dir build/tsan --output-on-failure -R '^test_data_notifier$'
+```
+
+CTest 退出码为 8，1/1 失败，原始错误为
+`FATAL: ThreadSanitizer: unexpected memory mapping 0x5ed60820e000-0x5ed60822b000`。
+进程在测试体执行前 0.03 秒终止，因此该结果既不是产品竞态证据，也不能写成 TSAN 通过；
+最终结论仅为“TSAN 可构建，当前宿主不可运行”。并发正确性仍由 Debug/ASAN 的 Notifier、
+Topology listener、Scheduler 与完整主干门禁承担。
+
 ## 七、证据来源
 
 本文事实迁移自首轮 `00_进度记录.md`、`baseline.md`、`module_mapping.md`、

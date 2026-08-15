@@ -31,8 +31,8 @@ minicyber::proto::RoleAttributes MakeRole(const std::string& node_name,
   return attr;
 }
 
-bool WaitFor(const std::function<bool()>& predicate) {
-  for (int attempt = 0; attempt < 100; ++attempt) {
+bool WaitFor(const std::function<bool()>& predicate, int attempts = 100) {
+  for (int attempt = 0; attempt < attempts; ++attempt) {
     if (predicate()) return true;
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
@@ -192,4 +192,147 @@ TEST(TopologyDiscoveryTest, PropagatesSameHostJoinAndLeaveAcrossProcesses) {
   ASSERT_TRUE(WIFEXITED(reader_status));
   EXPECT_EQ(WEXITSTATUS(writer_status), 0);
   EXPECT_EQ(WEXITSTATUS(reader_status), 0);
+}
+
+TEST(TopologyDiscoveryTest, ReplaysWriterJoinToLateReaderProcess) {
+  int writer_joined[2];
+  int writer_release[2];
+  ASSERT_EQ(pipe(writer_joined), 0);
+  ASSERT_EQ(pipe(writer_release), 0);
+
+  const std::string channel_name = "/minicyber/mc623/late_reader/" +
+                                   std::to_string(getpid());
+  const pid_t writer = fork();
+  ASSERT_NE(writer, -1);
+  if (writer == 0) {
+    auto* topology = minicyber::topology::TopologyManager::Instance();
+    if (!topology->Start() ||
+        !topology->Join(minicyber::proto::ROLE_WRITER,
+                        MakeRole("late_writer", channel_name))) {
+      _exit(2);
+    }
+    const char joined = 1;
+    if (write(writer_joined[1], &joined, sizeof(joined)) != sizeof(joined)) {
+      _exit(3);
+    }
+    char release = 0;
+    if (read(writer_release[0], &release, sizeof(release)) != sizeof(release)) {
+      _exit(4);
+    }
+    topology->Leave(minicyber::proto::ROLE_WRITER,
+                    MakeRole("late_writer", channel_name));
+    topology->Shutdown();
+    _exit(0);
+  }
+
+  close(writer_joined[1]);
+  close(writer_release[0]);
+  ReadByte(writer_joined[0]);
+
+  // Reader 在 Writer 的 Join 已发布后才创建 Participant；成功观察到 Writer
+  // 证明 Reliable + Transient Local 控制 Topic 完成晚加入重放。
+  const pid_t reader = fork();
+  ASSERT_NE(reader, -1);
+  if (reader == 0) {
+    auto* topology = minicyber::topology::TopologyManager::Instance();
+    if (!topology->Start() ||
+        !WaitFor([&] { return topology->HasWriter(channel_name); })) {
+      _exit(5);
+    }
+    const auto writers = topology->GetWriters(channel_name);
+    if (writers.size() != 1 || writers.front().process_id() != writer) {
+      _exit(6);
+    }
+    topology->Shutdown();
+    _exit(0);
+  }
+
+  int reader_status = 0;
+  ASSERT_EQ(waitpid(reader, &reader_status, 0), reader);
+  ASSERT_TRUE(WIFEXITED(reader_status));
+  EXPECT_EQ(WEXITSTATUS(reader_status), 0);
+  WriteByte(writer_release[1]);
+  int writer_status = 0;
+  ASSERT_EQ(waitpid(writer, &writer_status, 0), writer);
+  ASSERT_TRUE(WIFEXITED(writer_status));
+  EXPECT_EQ(WEXITSTATUS(writer_status), 0);
+}
+
+TEST(TopologyDiscoveryTest, RemovesRolesWhenParticipantExitsWithoutLeave) {
+  int observer_ready[2];
+  int observer_saw_writer[2];
+  int writer_joined[2];
+  ASSERT_EQ(pipe(observer_ready), 0);
+  ASSERT_EQ(pipe(observer_saw_writer), 0);
+  ASSERT_EQ(pipe(writer_joined), 0);
+
+  const std::string channel_name = "/minicyber/mc623/abnormal_exit/" +
+                                   std::to_string(getpid());
+  const pid_t observer = fork();
+  ASSERT_NE(observer, -1);
+  if (observer == 0) {
+    auto* topology = minicyber::topology::TopologyManager::Instance();
+    if (!topology->Start() ||
+        !topology->Join(minicyber::proto::ROLE_READER,
+                        MakeRole("exit_observer", channel_name))) {
+      _exit(2);
+    }
+    const char ready = 1;
+    if (write(observer_ready[1], &ready, sizeof(ready)) != sizeof(ready)) {
+      _exit(3);
+    }
+    if (!WaitFor([&] { return topology->HasWriter(channel_name); })) {
+      _exit(4);
+    }
+    const char saw_writer = 1;
+    if (write(observer_saw_writer[1], &saw_writer, sizeof(saw_writer)) !=
+        sizeof(saw_writer)) {
+      _exit(5);
+    }
+    // FastRTPS 通过 Participant lease 报告 DROPPED/REMOVED；不给 Writer
+    // 发送显式 Leave，验证 ChannelManager 原子清除该 PID 的全部角色。
+    if (!WaitFor([&] { return !topology->HasWriter(channel_name); }, 400)) {
+      _exit(6);
+    }
+    topology->Leave(minicyber::proto::ROLE_READER,
+                    MakeRole("exit_observer", channel_name));
+    topology->Shutdown();
+    _exit(0);
+  }
+
+  close(observer_ready[1]);
+  close(observer_saw_writer[1]);
+  ReadByte(observer_ready[0]);
+
+  const pid_t writer = fork();
+  ASSERT_NE(writer, -1);
+  if (writer == 0) {
+    auto* topology = minicyber::topology::TopologyManager::Instance();
+    if (!topology->Start() ||
+        !topology->Join(minicyber::proto::ROLE_WRITER,
+                        MakeRole("abrupt_writer", channel_name))) {
+      _exit(7);
+    }
+    const char joined = 1;
+    if (write(writer_joined[1], &joined, sizeof(joined)) != sizeof(joined)) {
+      _exit(8);
+    }
+    for (;;) {
+      pause();
+    }
+  }
+
+  close(writer_joined[1]);
+  ReadByte(writer_joined[0]);
+  ReadByte(observer_saw_writer[0]);
+  ASSERT_EQ(kill(writer, SIGKILL), 0);
+  int writer_status = 0;
+  ASSERT_EQ(waitpid(writer, &writer_status, 0), writer);
+  ASSERT_TRUE(WIFSIGNALED(writer_status));
+  EXPECT_EQ(WTERMSIG(writer_status), SIGKILL);
+
+  int observer_status = 0;
+  ASSERT_EQ(waitpid(observer, &observer_status, 0), observer);
+  ASSERT_TRUE(WIFEXITED(observer_status));
+  EXPECT_EQ(WEXITSTATUS(observer_status), 0);
 }

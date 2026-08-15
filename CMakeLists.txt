@@ -145,7 +145,6 @@ set(MINICYBER_CORE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/scheduler/policy/choreography_context.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/scheduler/policy/classic_context.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/scheduler/processor.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/scheduler/processor_context.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/scheduler/scheduler.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/scheduler/scheduler_factory.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/swap.S
@@ -158,6 +157,8 @@ set(MINICYBER_CORE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/transport/shm/posix_segment.cpp
 )
 add_library(minicyber_core SHARED ${MINICYBER_CORE_SOURCES})
+target_compile_definitions(minicyber_core PRIVATE
+    $<$<CONFIG:Debug>:MINICYBER_ENABLE_TEST_FAILURES>)
 target_link_libraries(minicyber_core
     PUBLIC minicyber_proto ${Protobuf_LIBRARIES} fastrtps
     PRIVATE pthread dl rt

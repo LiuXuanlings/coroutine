@@ -22,23 +22,12 @@ CRoutine::ptr CRoutine::GetThis() {
   return t_croutine;
 }
 
-/*
- * MainFunc 的 shared_ptr 生命周期管理沿用 Fiber::mainFunc 的成熟方案：
- *
- * 协程在执行完用户回调后必须最后一次切回主协程。如果直接调用
- * GetThis()->Yield()，GetThis() 会在本协程栈上生成一个临时
- * shared_ptr，由于该协程再也不会被恢复，临时对象的析构永远不会
- * 执行，导致 CRoutine 对象及其 128KB 栈永久泄漏。
- *
- * 解决方案：
- * 1. 将 shared_ptr 提取到局部变量 cur。
- * 2. 清空 cur->cb_ 释放回调闭包中可能持有的 shared_ptr。
- * 3. 提取裸指针 raw_ptr。
- * 4. cur.reset() 在 Yield 之前销毁栈上的 shared_ptr。
- * 5. 用裸指针调用 Yield 切回主协程。
- */
+// MainFunc 运行时，Processor 和 Scheduler 队列共同保证当前对象存活。
+// 这里必须全程使用原生 CRoutine::GetCurrentRoutine 风格的裸指针：
+// RoutineFactory 的数据消费循环不会返回，若在协程栈上保存 self shared_ptr，
+// 每次 DATA_WAIT 都会冻结一个自引用，RemoveTask 清空外部所有权后仍无法析构。
 void CRoutine::MainFunc() {
-  CRoutine::ptr cur = GetThis();
+  CRoutine* cur = GetCurrentRoutine();
   cur->state_ = RoutineState::READY;  // 运行中视为 READY（CyberRT 语义）
 
   try {
@@ -50,9 +39,7 @@ void CRoutine::MainFunc() {
     cur->state_ = RoutineState::FINISHED;
   }
 
-  CRoutine* raw_ptr = cur.get();
-  cur.reset();
-  raw_ptr->Yield();
+  cur->Yield();
 }
 
 CRoutine::CRoutine(const RoutineFunc& cb) {

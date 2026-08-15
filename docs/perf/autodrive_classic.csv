@@ -1,2 +1,2 @@
 schema,commit,policy,messages,frequency_hz,samples,p50_ns,p95_ns,p99_ns,throughput_msg_s,lost,duplicates,duration_ns,audit_difference,out_of_order
-minicyber_autodrive_v1,0d59e73f5382f404dbd557d3b9d87156bab5638a,classic,1000,100,1000,1149584,2014910,2065132,100.106,0,0,9989400918,0,0
+minicyber_autodrive_v1,72853c9534ff4b2e1451c989c268af175175a1c5,classic,1000,100,1000,1067722,2042769,3058242,100.125,0,0,9987546331,0,0
