@@ -6,7 +6,7 @@
 
 - 当前分支：`development`
 - 当前阶段：第二次重构，业务模块改造阶段
-- 当前任务：MC-615
+- 当前任务：MC-616
 - 当前状态：待开始
 - 唯一状态事实源：[`docs/refactor/00_进度记录.md`](docs/refactor/00_进度记录.md)
 - 唯一任务执行方案：[`docs/refactor/01_实施方案.md`](docs/refactor/01_实施方案.md)
@@ -32,8 +32,9 @@
   Processor、Classic 公共池、任务回退和原路由唤醒；MC-612 已将单/双通道 Component
   接入 DataVisitor、RoutineFactory 和 Scheduler，补齐回调内关闭与 SHM 数据协程分流；
   MC-613 已完成独立 Scheduler 配置、真实 `.so` 加载水位回滚和主线程有序退出；
-  MC-614 已定义业务 Protobuf，固定六类消息的源序列/单调时间字段契约并完成生成验证。
-  下一步为 MC-615。
+  MC-614 已定义业务 Protobuf，固定六类消息的源序列/单调时间字段契约并完成生成验证；
+  MC-615 已完成同一业务 `.so` 内五组件、唯一 DAG、真实 TextFormat 加载、确定性链路和
+  `dlclose` 注册注销验证。下一步为 MC-616。
 - MC-602 必须先从 `docs/refactor/baseline.md`、`docs/refactor/module_mapping.md`、
   `docs/refactor/perf/**`、`docs/croutine/shared_from_this.md`、
   `docs/scheduler/debug_vtable_hang.md`、`docs/transport/signal.md` 和

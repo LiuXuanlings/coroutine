@@ -199,6 +199,24 @@ RoleAttributes、Protobuf-only Node API、动态 `HasReader` 和安全端点关�
 按本次加载水位逆序 Shutdown、销毁组件和 `dlclose`，不把旧测试的静态预注册绕过
 当作生产能力。
 
+### 为什么业务 `.so` 不能再次链接静态 Protobuf 生成库？
+
+Protobuf 生成文件会在库加载时向进程级描述符数据库注册。MC-615 的主程序已经经
+`minicyber_core` 持有 `minicyber_proto`；若业务 `.so` 又直接链接该静态库，`dlopen` 会让
+同一 `.proto` 第二次注册并在 `GeneratedDatabase()->Add` 失败。业务插件因此只链接核心库，
+从核心库继承生成头文件和运行时符号。这个约束与 ComponentFactory 的唯一实例相同，都是
+跨 DSO 不能分裂的 ABI 前提；它不表示支持任意第三方 Protobuf ABI 混用。
+
+### 为什么可卸载组件要把数据总线和消息控制块放入核心库？
+
+CyberRT 的 ClassLoader 边界要求先销毁组件、再卸载库，工厂也必须同时撤销该库的创建函数。
+MiniCyber 的业务组件是同一可卸载 `.so`，因此 `DataDispatcher`、`DataNotifier` 和消息
+`shared_ptr` 控制块不能在头文件模板或插件中各自生成。否则一方面两份数据总线互不通信，
+另一方面 GNU unique 符号会使 glibc 把 DSO 标记为 `NODELETE`，或在卸载后留下指向插件代码的
+析构入口。MC-615 将业务 Dispatcher 显式实例化、Notifier 单例和输出消息工厂固定到
+`minicyber_core`，插件仅引用；测试还在 `dlclose` 前释放观察副本。该方案保证本项目这一条
+业务链的卸载安全，不承诺任意插件对象或用户长期持有消息时都可热卸载。
+
 ### 为什么删除 Timer、TimerComponent 和 RPC？
 
 它们不服务唯一主干，并会引入额外线程、生命周期或另一套通信边界。输入节拍由独立

@@ -89,8 +89,8 @@ class ModuleController {
    *   3. 遍历 lib_handles_ 逐个 dlclose
    *   4. 清空 lib_handles_
    *
-   * 注意：dlclose 并不"反注册"工厂中的条目（C++ 静态变量的析构
-   * 在 dlclose 后的行为是未定义的，且匿名命名空间符号不可见）。
+   * 插件静态注册器在 dlclose 前析构并按所有权注销创建函数；业务插件不得
+   * 产生 GNU unique 单例，否则 glibc 会延迟析构而使该不变量失效。
    */
   void Clear();
 

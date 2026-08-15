@@ -1,0 +1,45 @@
+module_config {
+  # MC-616 的启动脚本从构建目录提供 LD_LIBRARY_PATH；DAG 保持唯一且不包含构建类型路径。
+  module_library: "libminicyber_autodrive_components.so"
+  components {
+    class_name: "PerceptionComponent"
+    config {
+      name: "perception"
+      config_file_path: "config/autodrive/components/perception.conf"
+      readers { channel: "/autodrive/camera" pending_queue_size: 8 }
+    }
+  }
+  components {
+    class_name: "FusionComponent"
+    config {
+      name: "fusion"
+      config_file_path: "config/autodrive/components/fusion.conf"
+      readers { channel: "/autodrive/perception_obstacle" pending_queue_size: 8 }
+      readers { channel: "/autodrive/vehicle_state" pending_queue_size: 8 }
+    }
+  }
+  components {
+    class_name: "PlanningComponent"
+    config {
+      name: "planning"
+      config_file_path: "config/autodrive/components/planning.conf"
+      readers { channel: "/autodrive/fused_obstacle" pending_queue_size: 8 }
+    }
+  }
+  components {
+    class_name: "ControlComponent"
+    config {
+      name: "control"
+      config_file_path: "config/autodrive/components/control.conf"
+      readers { channel: "/autodrive/trajectory" pending_queue_size: 8 }
+    }
+  }
+  components {
+    class_name: "ControlAuditComponent"
+    config {
+      name: "control_audit"
+      config_file_path: "config/autodrive/components/control_audit.conf"
+      readers { channel: "/autodrive/control_command" pending_queue_size: 8 }
+    }
+  }
+}

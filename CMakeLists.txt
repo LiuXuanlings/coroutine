@@ -122,6 +122,7 @@ set(MINICYBER_CORE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/component/component_factory.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/croutine.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/croutine/detail/routine_context.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/data/data_notifier.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/mainboard/module_controller.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/service_discovery/channel_manager.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/scheduler/common/pin_thread.cpp
@@ -136,6 +137,7 @@ set(MINICYBER_CORE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/time/rate.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/time/time.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/topology/topology_manager.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/transport/autodrive_dispatcher.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/transport/dispatcher/shm_dispatcher.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/transport/shm/condition_notifier.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/transport/shm/posix_segment.cpp
@@ -145,6 +147,29 @@ target_link_libraries(minicyber_core
     PUBLIC minicyber_proto ${Protobuf_LIBRARIES} fastrtps
     PRIVATE pthread dl rt
 )
+# 业务 DSO 不能按需从静态 Proto 库复制尚未被核心引用的消息描述符（MC-615）。
+# 核心库作为唯一 ABI 所有者完整收纳生成对象，插件只解析此处导出的符号。
+target_link_options(minicyber_core PRIVATE
+    "-Wl,--whole-archive,$<TARGET_FILE:minicyber_proto>,--no-whole-archive"
+)
+
+# MC-615 的唯一业务插件。业务 Component 只能经 ModuleController 的 dlopen
+# 触发静态注册，不能链接进 mainboard 绕过 CyberRT ClassLoader 对应的插件边界。
+set(AUTODRIVE_COMPONENT_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/demo/autodrive/components/control_audit_component.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/demo/autodrive/components/control_component.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/demo/autodrive/components/fusion_component.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/demo/autodrive/components/perception_component.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/demo/autodrive/components/planning_component.cpp
+)
+add_library(minicyber_autodrive_components SHARED ${AUTODRIVE_COMPONENT_SOURCES})
+target_link_libraries(minicyber_autodrive_components
+    PRIVATE minicyber_core
+)
+# 业务插件含模板传输代码；GCC 默认的 GNU unique 局部静态对象会让 glibc
+# 将该 DSO 视为 NODELETE，从而跳过静态注册器的析构和工厂注销。核心库继续
+# 持有跨 DSO 的运行时单例，插件本身必须允许 ModuleController::Clear dlclose。
+target_compile_options(minicyber_autodrive_components PRIVATE -fno-gnu-unique)
 
 # ---------------------------------------------------------
 # 集成 GoogleTest (使用 FetchContent 自动下载)

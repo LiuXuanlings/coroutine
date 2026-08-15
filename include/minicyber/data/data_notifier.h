@@ -84,10 +84,10 @@ class DataNotifier {
   };
   using NotifyVector = std::vector<NotifierEntry>;
 
-  static DataNotifier* Instance() {
-    static DataNotifier inst;
-    return &inst;
-  }
+  // DataNotifier 是跨进程内 DSO 的数据唤醒总线，实例必须由 minicyber_core
+  // 唯一持有。若把函数局部静态对象留在头文件，dlopen 组件会生成 GNU unique
+  // 符号并被运行时标记为 NODELETE，进而跳过 ComponentFactory 的注销析构。
+  static DataNotifier* Instance();
 
   void AddNotifier(uint64_t channel_id,
                    const std::shared_ptr<Notifier>& notifier,

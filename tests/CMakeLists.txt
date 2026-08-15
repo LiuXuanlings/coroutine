@@ -2,6 +2,7 @@
 
 # MC-603 留存清单中的测试源文件，禁止通过 GLOB 隐式扩大测试边界。
 set(TEST_FILES
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_autodrive_components.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_autodrive_proto.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_atomic_hash_map.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_atomic_rw_lock.cpp
@@ -75,6 +76,12 @@ if(TEST_FILES)
                 MINICYBER_TEST_PLUGIN_PATH="$<TARGET_FILE:test_module_controller_plugin>"
                 MINICYBER_MAINBOARD_PATH="$<TARGET_FILE:mainboard>")
         endif()
+        if(TEST_NAME STREQUAL "test_autodrive_components")
+            add_dependencies(${TEST_NAME} minicyber_autodrive_components)
+            target_compile_definitions(${TEST_NAME} PRIVATE
+                MINICYBER_AUTODRIVE_COMPONENTS_PATH="$<TARGET_FILE:minicyber_autodrive_components>"
+                MINICYBER_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+        endif()
         
         # 注册到 ctest
         add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
@@ -107,6 +114,9 @@ if(TEST_FILES)
             list(APPEND TEST_LABELS "high_risk")
         endif()
         if(TEST_NAME STREQUAL "test_module_controller")
+            list(APPEND TEST_LABELS "high_risk" "integration")
+        endif()
+        if(TEST_NAME STREQUAL "test_autodrive_components")
             list(APPEND TEST_LABELS "high_risk" "integration")
         endif()
         if(TEST_NAME MATCHES "^test_scheduler_choreography$")

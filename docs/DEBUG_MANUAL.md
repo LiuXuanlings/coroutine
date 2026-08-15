@@ -3,6 +3,76 @@
 > 本文由 MC-602 从首轮实施资料迁移而来。它只记录对后续重构仍有约束力的历史
 > 事实；当前架构边界以 `docs/refactor/02_架构取舍矩阵.md` 为准。
 
+## MC-615 业务 DSO 重复注册 Protobuf 描述符
+
+### 触发环境与最小复现
+
+在 Debug 构建中运行 `test_autodrive_components`，由测试进程通过
+`ModuleController::LoadModule` 真实 `dlopen` `libminicyber_autodrive_components.so`。
+业务库最初直接链接 `minicyber_proto`，随后即使移除直接依赖，核心库的静态 Proto
+传递依赖仍可能按需把新消息对象拉入插件。
+
+### 原始现象、排查与证据
+
+1. `cmake --build build/debug -j2 --target minicyber_autodrive_components test_autodrive_components`
+   退出码 0，说明组件代码、注册宏和链接符号均可生成。
+2. `ctest --test-dir build/debug --output-on-failure -R '^test_autodrive_components$'`
+   退出码 8；`dlopen` 后立即输出 `File already exists in database:
+   minicyber/proto/autodrive.proto`，随后 `GeneratedDatabase()->Add` 触发 FATAL。失败发生在
+   `ComponentFactory::Create` 和 `Component::Initialize` 之前，排除了 DAG 类名、TextFormat
+   配置和业务 Proc 算法错误。
+3. 对比 MC-613 的 `tests/module_controller_test_plugin.cpp`，该插件只链接
+   `minicyber_core`。移除业务库的直接 Proto 依赖后再次复现，检查 `link.txt` 发现
+   `minicyber_core` 的 `PUBLIC minicyber_proto` 仍把静态归档传给插件；因为核心此前没有引用
+   `autodrive.pb.cc`，归档的按需抽取仍把该描述符复制进插件。
+
+### 根因、修复边界与回归
+
+Protobuf 生成文件属于核心库的唯一 ABI 所有者；mainboard、测试进程和业务插件必须共享
+`minicyber_core` 中的那份描述符注册。业务 DSO 只链接 `minicyber_core`，核心以 whole-archive
+收纳完整 `minicyber_proto`，继续使用其公开包含目录，不改变 ComponentFactory 的
+`RTLD_GLOBAL` 注册边界，也不把组件静态链接进 mainboard。回归必须先确认五类组件全部注册，再验证 TextFormat 配置和业务链路；任何在
+`dlopen` 阶段出现的 descriptor duplicate 都应先检查 DSO 是否复制链接了核心 Protobuf
+静态库，不能修改消息编号或绕过动态加载。
+
+## MC-615 跨 DSO 数据总线与真实卸载
+
+### 触发环境与最小复现
+
+同一 Debug 环境继续运行
+`ctest --test-dir build/debug --output-on-failure -R '^test_autodrive_components$'`。
+测试经 `ModuleController` 加载业务 `.so`，发布 VehicleState 与 CameraFrame，随后关闭
+Node、组件和动态库；因此同时覆盖模板数据总线、静态注册器和 `dlclose` 生命周期。
+
+### 原始现象与排查时间线
+
+1. 描述符修复后第 2 次运行仍以退出码 8 失败，五个组件均已注册，但完整链路在 2 秒
+   等待超时，失败率为 1/1。检查 `DataDispatcher<T>::Instance()` 后确认主程序和插件各自
+   实例化了业务类型的函数局部静态数据总线，消息只进入发布方所在副本。
+2. 在 `minicyber_core` 显式实例化六类业务 `DataDispatcher`，并在插件侧使用
+   `extern template` 后，第 3 次运行链路通过，但 `controller.Clear()` 后
+   `ComponentFactory::Has("PerceptionComponent")` 仍为真，命令退出码 8、失败率 1/1。
+   `readelf -sW libminicyber_autodrive_components.so` 显示模板 Dispatcher、ShmDispatcher 和
+   IntraDispatcher 的 `STB_GNU_UNIQUE` 符号；glibc 因此将该库保留为 `NODELETE`，不执行
+   注册器析构。
+3. 将 `DataNotifier::Instance()` 移到核心库并对该业务插件使用 `-fno-gnu-unique` 后，第 4 次
+   运行进入真实 `dlclose`，却触发 SIGSEGV（CTest 退出码 8，单项失败率 1/1）。`gdb` 回溯定位到
+   测试局部 `shared_ptr<ControlCommand>` 的最后一次释放：其控制块由插件内的
+   `std::make_shared` 生成，虚析构入口已经随插件卸载。
+
+### 根因、修复边界与回归
+
+核心运行时必须唯一拥有跨 DSO 的 Dispatcher、Notifier 及业务输出消息控制块；业务插件只
+借用这些运行时对象。`autodrive_runtime.h` 因而声明业务 Dispatcher 的显式实例和四类输出的
+核心消息工厂，`minicyber_core` 提供定义；五个组件不再在插件内创建会越过卸载边界的控制块。
+测试在 `Clear()` 前释放观察副本，符合“所有外部消息借用结束后才卸载插件”的所有权顺序。
+`-fno-gnu-unique` 只施加于唯一业务插件，不改变核心库或 CyberRT 的 Component/Factory 职责。
+
+最终以相同命令连续 5 轮通过（5/5），每轮均验证五个 TextFormat 配置、确定性链路、工厂注册
+和 `Clear()` 后注销；`cmake --build build/debug -j2` 退出码 0，完整 CTest 为 46/46 通过，
+`find /dev/shm -maxdepth 1 -name 'minicyber_*' -print` 无输出。可迁移经验是：可 `dlclose` 的
+C++ 插件不能携带进程级 GNU unique 单例，也不能让核心缓存持有由插件生成的 `shared_ptr` 控制块。
+
 ## 一、使用原则
 
 - 先确认问题位于协程、数据唤醒、调度、传输还是动态加载边界，再缩小到对应测试
