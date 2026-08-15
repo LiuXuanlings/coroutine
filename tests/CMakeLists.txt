@@ -134,3 +134,13 @@ add_custom_target(check_cross_process
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L cross_process
     DEPENDS test_condition_notifier test_posix_segment test_posix_segment_signal test_shm_dispatcher test_topology_discovery test_hybrid_transport
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+
+# MC-618 的业务视角验收只驱动唯一自动驾驶 DAG：真实 mainboard dlopen、跨进程
+# SHM 端点、组件内 INTRA 链和 Classic CRoutine 都由统一脚本的进程日志及 Sink
+# 结果证明。独立目录保留失败现场，不能以单元测试替代这条 1000 条主干。
+add_test(NAME test_autodrive_classic_pipeline
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/run_autodrive_classic_pipeline.sh
+                 ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR})
+set_tests_properties(test_autodrive_classic_pipeline PROPERTIES
+    LABELS "integration;high_risk;cross_process"
+    TIMEOUT 50)

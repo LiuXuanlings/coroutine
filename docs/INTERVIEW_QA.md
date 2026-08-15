@@ -117,8 +117,9 @@ Writer、Reader 或 Node 会回入同一对象，形成自死锁或跨线程等�
 POSIX SHM 的块大小由第一个创建同名段的进程写入共享 State。若 Reader 默认创建 1 KiB，
 Writer 却按 64 KiB 假设发送，同一 Channel 的能力就会取决于启动顺序。原生 CyberRT 用
 `ShmConf` 按消息大小分档并支持容量不足时重建；MiniCyber 为控制范围，不恢复完整动态
-分档，而是让正式 Protobuf Reader/Writer 都请求 64 KiB/4 块，并在既存布局更小时明确
-初始化失败。它解决确定性和可诊断性，但不宣传动态扩容能力。
+分档，但正式 Protobuf Reader/Writer 必须共同采用原生首档的 16 KiB/512 块，并在既存
+布局更小时明确初始化失败。512 个未读块避免 Dispatcher 短时调度延迟覆盖尚未消费的
+通知；项目仍不宣传动态扩容能力。
 
 ### Node 为什么要为每个端点填充完整的 RoleAttributes？
 

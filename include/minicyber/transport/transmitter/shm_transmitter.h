@@ -26,8 +26,9 @@ class ShmTransmitter : public Transmitter<M> {
 
  public:
   explicit ShmTransmitter(uint64_t channel_id,
-                          uint64_t ceiling_msg_size = 64 * 1024,
-                          uint32_t block_num = 4)
+                          uint64_t ceiling_msg_size =
+                              kDefaultShmCeilingMessageSize,
+                          uint32_t block_num = kDefaultShmBlockNum)
       : Transmitter<M>(channel_id),
         ceiling_msg_size_(ceiling_msg_size),
         block_num_(block_num) {}

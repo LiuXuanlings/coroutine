@@ -17,6 +17,12 @@ namespace transport {
 using ShmWritableBlock = WritableBlock;
 using ShmReadableBlock = ReadableBlock;
 
+// 对齐 cyber_ref/cyber/transport/shm/shm_conf.cc 的首档：跨进程 Channel
+// 默认按 16 KiB 消息和 512 个块建立环。它为 Dispatcher 的短时调度延迟保留
+// 足够的未读块，不能退化为四块循环槽而覆盖尚未消费的 ReadableInfo。
+constexpr uint64_t kDefaultShmCeilingMessageSize = 16 * 1024;
+constexpr uint32_t kDefaultShmBlockNum = 512;
+
 // =============================================================================
 // PosixSegment：基于 shm_open + mmap 的共享内存段
 //

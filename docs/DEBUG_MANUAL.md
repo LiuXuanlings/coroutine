@@ -593,6 +593,61 @@ Source 后，才发布 1..N 测量序列。这是可观测的端到端预热屏�
 引用归零的自然回收。新路径在成功时先检查四个精确 POSIX SHM 名称，仅在失败或
 中断后才做精确兜底删除。这使“自然回收”和“环境恢复”成为两类可区分证据。
 
+### MC-618 Classic 主干 CTest 工作目录与 SHM 块覆盖
+
+**触发环境与最小复现**：Debug 构建先后执行：
+
+```bash
+ctest --test-dir build/debug --output-on-failure -R '^test_autodrive_classic_pipeline$'
+ctest --test-dir build/debug --output-on-failure -L high_risk
+```
+
+首次 CTest 退出码为 8、1 项中 1 项失败。`mainboard.log` 已加载唯一 DAG 与
+`libminicyber_autodrive_components.so`，但在 `PerceptionComponent::Initialize` 失败，
+Sink 在 30 秒后报未观察到 ControlCommand Writer，Source 尚未启动。该次失败率为 1/1；
+四个精确频道的 `build/debug/bin/control_sink --check-shm-clean` 退出码为 0。第二次同命令
+在修正工作目录后业务主干已完整输出 `received=1000`、`audit_received=1000`，但 CTest 仍以
+退出码 8、1/1 失败：正常成功的 `control_sink.log` 为 0 bytes，而驱动错误地将每个日志都
+断言为非空；SHM 检查仍为 0。两次均保留在
+`build/debug/autodrive-classic-ctest-*` 的独立进程日志目录，不能由后续通过删除。
+
+**真实数据失败与排查**：修正 CTest 驱动后，单独主干通过；随后完整
+`ctest --test-dir build/debug --output-on-failure -L high_risk` 退出码为 8，22 项中 21 项通过。
+本轮 `control_sink.log` 为：
+
+```text
+ControlSink timed out after 994 control and 998 audit of 1000 commands.
+```
+
+对应指标为 `received=996 audit_received=1000 lost=6 duplicates=2 audit_duplicates=2
+out_of_order=2 audit_difference=4`；mainboard 已动态加载全部五个 Component，Source 已报告
+发布完成，且 SHM 检查退出码为 0、无残留进程或精确频道残留。因此排除发现未 Join、异常
+退出和尾部提前销毁，失败率为 1/1。
+
+沿 `ShmTransmitter -> PosixSegment -> ConditionNotifier -> ShmDispatcher` 检查后确认，正式
+Protobuf SHM 原先统一使用 `64 KiB/4 blocks`。写锁在提交后立即释放，Dispatcher 尚未读取的
+块可被四次循环后的新写覆盖；若同一 `HybridTransmitter` 同时向本地 Audit INTRA 和远端 Sink
+SHM 扇出，INTRA 成功会使 `Transmit` 返回成功，掩盖远端块已覆盖。通知仍指向旧块索引，因而
+Sink 可观察到重复、乱序与尾部缺失。这不是扩大 Component 队列或改变 CacheBuffer 快进语义
+能够修复的问题。
+
+**修复边界与回归**：参照 `cyber_ref/cyber/transport/shm/shm_conf.cc` 的首档，正式
+Reader/Writer 默认改为共同请求 `16 KiB/512 blocks`；`PosixSegment` 的显式低层测试默认值和
+MiniCyber 未实现的动态分档/重建范围均不改变。新增 `test_hybrid_transport` 定向断言锁定首档，
+并新增 `test_autodrive_classic_pipeline`，其只调用唯一脚本、保存三进程日志、检查真实 dlopen
+的五组件、1000 条 Control/Audit 指标与自然 SHM 回收。
+
+```bash
+cmake --build build/debug -j2
+ctest --test-dir build/debug --output-on-failure --repeat until-fail:3 -R '^test_autodrive_classic_pipeline$'
+ctest --test-dir build/debug --output-on-failure -L high_risk
+ctest --test-dir build/debug --output-on-failure
+```
+
+实际退出码均为 0；Classic CTest 连续 3/3 通过，high_risk 为 22/22，完整 Debug CTest 为
+46/46。每轮成功路径均在脚本兜底 `shm_unlink` 前通过四频道检查。后续 MC-619 只复用该入口
+验证 Choreography 与混合扇出，不得复制业务管道或回退 SHM 首档容量。
+
 ## 七、证据来源
 
 本初稿迁移自首轮 `00_进度记录.md`、`baseline.md`、`module_mapping.md`、

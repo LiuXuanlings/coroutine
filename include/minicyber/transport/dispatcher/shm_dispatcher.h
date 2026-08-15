@@ -67,8 +67,9 @@ class ShmDispatcher {
   // 注册 Protobuf 字节监听器。数据仍由 dispatcher 统一取得并释放 SHM 块，
   // 监听器只持有本次消息的进程内副本；RemoveListener 返回后不会再进入回调。
   uint64_t AddListener(uint64_t channel_id, RawMessageListener callback,
-                       uint64_t ceiling_msg_size = 64 * 1024,
-                       uint32_t block_num = 4);
+                       uint64_t ceiling_msg_size =
+                           kDefaultShmCeilingMessageSize,
+                       uint32_t block_num = kDefaultShmBlockNum);
   void RemoveListener(uint64_t channel_id, uint64_t listener_id);
 
   // 关闭后台线程与所有 segment

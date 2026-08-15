@@ -247,6 +247,24 @@ TEST_F(HybridTransportTest, ProtobufShmDeliversEmptyMessage) {
   CleanupChannel(channel);
 }
 
+TEST_F(HybridTransportTest, ProtobufShmUsesCyberRtDefaultBlockPool) {
+  const std::string channel = "/hybrid/native_default_block_pool";
+  CleanupChannel(channel);
+  const uint64_t channel_id = Transport::ChannelNameToId(channel);
+
+  // cyber_ref 的 ShmConf 首档固定为 16 KiB 和 512 个块；这不是业务队列
+  // 参数，而是跨进程未读通知的共享内存容量，避免短时 dispatcher 抖动覆盖块。
+  ShmTransmitter<RoleAttributes> transmitter(channel_id);
+  transmitter.Enable();
+  ASSERT_TRUE(transmitter.enabled());
+  ASSERT_NE(transmitter.segment(), nullptr);
+  EXPECT_EQ(transmitter.segment()->ceiling_msg_size(), 16u * 1024u);
+  EXPECT_EQ(transmitter.segment()->block_num(), 512u);
+
+  transmitter.Disable();
+  CleanupChannel(channel);
+}
+
 TEST_F(HybridTransportTest,
        ProtobufReceiverRejectsIncompatibleExistingSegment) {
   const std::string channel = "/hybrid/incompatible_segment";
