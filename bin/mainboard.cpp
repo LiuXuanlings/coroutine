@@ -25,46 +25,27 @@
 
 namespace {
 
-// sig_atomic_t 是 POSIX 信号处理器唯一可移植读写的状态类型。处理器不触碰
-// mutex、堆、日志或 C++ 对象；主线程观察该通知后执行有序析构。
-volatile sig_atomic_t g_shutdown_requested = 0;
-
-void SignalHandler(int) { g_shutdown_requested = 1; }
-
-bool InstallSignalHandlers(sigset_t* wait_mask) {
-  if (wait_mask == nullptr) return false;
+bool BlockShutdownSignals(sigset_t* shutdown_signals) {
+  if (shutdown_signals == nullptr) return false;
 
   // 在创建 Scheduler 工作线程前阻塞退出信号，后续线程会
-  // 继承该掩码。sigsuspend 再原子地解除阻塞并等待，避免
-  // “检查标志 -> pause”之间丢失唯一一次退出信号。
-  sigset_t shutdown_signals;
-  sigemptyset(&shutdown_signals);
-  sigaddset(&shutdown_signals, SIGINT);
-  sigaddset(&shutdown_signals, SIGTERM);
-  if (::pthread_sigmask(SIG_BLOCK, &shutdown_signals, wait_mask) != 0) {
+  // 继承该掩码。主线程随后用 sigwait 同步消费，避免“检查标志 -> pause”
+  // 丢失信号，也避免 POSIX SHM 异常处理器覆盖进程 handler 后误把正常
+  // SIGTERM 重新抛出。正常信号仍只由 mainboard 主线程触发有序析构。
+  sigemptyset(shutdown_signals);
+  sigaddset(shutdown_signals, SIGINT);
+  sigaddset(shutdown_signals, SIGTERM);
+  if (::pthread_sigmask(SIG_BLOCK, shutdown_signals, nullptr) != 0) {
     std::cerr << "[Mainboard] Cannot block shutdown signals." << std::endl;
     return false;
   }
-
-  struct sigaction action {};
-  action.sa_handler = SignalHandler;
-  sigemptyset(&action.sa_mask);
-  action.sa_flags = 0;
-  if (::sigaction(SIGINT, &action, nullptr) != 0 ||
-      ::sigaction(SIGTERM, &action, nullptr) != 0) {
-    std::cerr << "[Mainboard] Cannot install signal handlers: "
-              << std::strerror(errno) << std::endl;
-    return false;
-  }
   ::signal(SIGPIPE, SIG_IGN);
-  sigdelset(wait_mask, SIGINT);
-  sigdelset(wait_mask, SIGTERM);
   return true;
 }
 
-void WaitForShutdown(const sigset_t& wait_mask) {
-  while (g_shutdown_requested == 0) {
-    ::sigsuspend(&wait_mask);
+void WaitForShutdown(const sigset_t& shutdown_signals) {
+  int received_signal = 0;
+  while (::sigwait(&shutdown_signals, &received_signal) == EINTR) {
   }
 }
 
@@ -159,8 +140,8 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  sigset_t shutdown_wait_mask;
-  if (!InstallSignalHandlers(&shutdown_wait_mask)) return 1;
+  sigset_t shutdown_signals;
+  if (!BlockShutdownSignals(&shutdown_signals)) return 1;
 
   minicyber::scheduler::SchedulerConf scheduler_conf;
   // Scheduler 在 DAG 之前完成解析和工厂创建，确保 Component::Initialize
@@ -178,8 +159,7 @@ int main(int argc, char** argv) {
     ShutdownRuntime(&controller, scheduler.get());
     return 1;
   }
-
-  WaitForShutdown(shutdown_wait_mask);
+  WaitForShutdown(shutdown_signals);
   ShutdownRuntime(&controller, scheduler.get());
   return 0;
 }

@@ -355,9 +355,10 @@ MC-613 由主线程在通知后按 Component、Transport/Discovery、Scheduler �
 
 `sig_atomic_t` 只保证标志的信号上下文读写安全，不会把“检查标志”和“进入
 阻塞”合并为原子操作。信号在两者之间到达时，主线程会在标志已置位后仍然
-`pause`。MiniCyber 在创建 Scheduler 线程前阻塞 SIGINT/SIGTERM，再由主线程用
-`sigsuspend` 原子地临时解除阻塞并等待；既保留处理器只写标志的边界，也不需要
-引入自创的退出线程。
+`pause`。mainboard 在创建 Scheduler 线程前阻塞 SIGINT/SIGTERM，再由主线程以
+`sigwait` 同步消费；初始化期已到达的信号保持 pending，等待期的信号也不会落在检查
+与阻塞之间。这个选择还避免 POSIX SHM 的异常清理 handler 在异步 Channel Join 后覆盖
+正常退出 handler；正常退出仍由主线程执行既定析构顺序，不引入退出线程。
 
 ### DataVisitor 回调为什么需要“未发布通知”挂账？
 
@@ -373,3 +374,33 @@ Resume CRoutine、发布 `task_id`。如果协程已进入 DATA_WAIT，但数据
 已绑核，实际却由内核自由迁移线程，Choreography 的线程归属证据和性能数据都会失真。
 MiniCyber 不改变原生的 affinity 选择规则，只将系统调用成败变为可诊断事实；
 测试则必须保持目标线程存活，避免把测试对象生命周期误判为调度策略错误。
+
+## MC-616 多进程主干
+
+### 为什么 VehicleState 必须预热，并且每个测量序列先于 CameraFrame 发布？
+
+Fusion 是双通道 `AllLatest`：CameraFrame 为主通道，只有主通道到达时才会取 VehicleState
+的当前最新值并推动业务协程。若第一帧 CameraFrame 先到，次通道尚未填充会使首个测量样本
+没有可融合的 VehicleState；若同一序列颠倒顺序，则 CameraFrame 可能组合上一条次通道。
+因此 SensorSource 先写 sequence 0 的非测量 VehicleState，完整经过一个 `time::Rate` 周期，
+随后对每个测量序列固定写 `VehicleState -> CameraFrame`，并在全链路透传相同的源序列和单调
+时间。这是 `cyber_ref` 数据驱动访问器的主通道/最新值职责，不是时间戳同步或额外可靠性协议。
+
+### 为什么 Source 发完不能立即销毁 Writer？
+
+`Writer::Write` 成功只说明消息已进入当前传输后端，不代表独立 mainboard 中的 Component
+协程链和外部 ControlSink 已完成尾部消费。若 Source 在最后一帧后立即关闭 Node，SHM
+Transmitter 会 Disable，最后的输入块可能在 Perception、Fusion、Planning、Control 尚未完成时被
+撤销，表现为稳定频率下的末尾缺号。MC-616 的启动脚本以 Sink 收到完整且连续的
+ControlCommand 作为排空事实，再 SIGTERM 仍持有 Writer 的 Source，最后终止 mainboard。
+这保持 Node 端点“Disable 后 Leave”的原有关闭职责；它不把发送确认伪装为 Transport 的可靠
+投递能力，也不以增大 SHM 块数掩盖生命周期顺序。
+
+### 为什么 Source 的两个输入 Reader Join 不足以放行整条管道？
+
+它们只证明 SensorSource 可以向 Perception 和 Fusion 的输入端发送。ControlCommand 的
+Writer 与先启动的 ControlSink Reader 通过独立的异步 Join 收敛；在 Writer 尚未观察到对端时，
+既有 Hybrid API 允许 Write 成功返回但没有跨进程发送对象。MC-616 因此先让 ControlSink
+以 `Reader::HasWriter` 观察这个下游 Join，再写入有界 ready 条件给启动脚本；脚本确认后才
+启动 Source，Source 仍自行等待两个输入 Reader。这样每项放行都由对应的拓扑事实支撑，
+不是用经验 sleep 延长启动时间。

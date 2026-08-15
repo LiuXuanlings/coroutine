@@ -479,6 +479,76 @@ MC-617 还必须保留专门的首条消息并发门禁，不能只用连续高�
 分配语义。SHM 用例保留 `Close` 不删全局段的生产契约，但在断言后清理该测试
 的精确名称，不再依赖人工删除。
 
+### MC-616 多进程主干启动与尾部排空
+
+**触发环境与最小复现**：Debug 构建中先后执行：
+
+```bash
+scripts/run_autodrive_pipeline.sh --messages 10 --frequency 20 --timeout-ms 15000 \
+  --output-dir /tmp/minicyber-mc616-YTL44a
+scripts/run_autodrive_pipeline.sh --messages 1000 --frequency 100 --timeout-ms 30000 \
+  --output-dir /tmp/minicyber-mc616-default-X43Mdx
+```
+
+第一次命令的脚本退出码为 3，三进程均已启动但 Sink 未收到命令；第二次命令同样非零，
+Sink 的退出码为 3。随后相同默认参数又分别得到 `978/1000` 和“Sink 指标完整但脚本退出
+143”的结果；每次观察的失败率都是 1/1。这些跨进程/生命周期失败均保留在本条，不能以
+后续复跑通过覆盖。
+
+**原始现象与按时间排序的排查**：第一轮的 `mainboard.log` 记录：
+
+```text
+dlopen failed for: /home/liuxuanling/minicyber/libminicyber_autodrive_components.so
+```
+
+同时 Source 报“timed out waiting for CameraFrame and VehicleState readers”，Sink 报
+“timed out after 0 of 10 commands”。检查 DAG 后确认 `module_library` 是不含目录的
+`libminicyber_autodrive_components.so`，而启动脚本已将构建目录加入 `LD_LIBRARY_PATH`。
+继续跟踪 `ModuleController::ResolveLibraryPath`，发现它仍把所有相对字符串拼成 CWD，
+因而绕过 `dlopen` 的动态库搜索路径。将“裸库名”保留给 `dlopen`、仅让含目录的相对路径
+拼 CWD 后，同一 10 条负载通过，Sink 为 `received=10 missing=0 out_of_order=0`。
+
+第二轮在加载修复后复现 1000 条默认负载。`metrics.txt` 输出
+`received=994 missing=6 out_of_order=0 throughput_mps=100.110`，Sink 日志为
+“timed out after 994 of 1000 commands”。先让 Source 在 `--await-shutdown` 模式下保留
+Node 和 Writer，直到 Sink 的完整序列确认后才由脚本 SIGTERM；这排除了“发完即撤销输入
+Writer”作为唯一解释，但下一次仍得到 `received=978 missing=22 out_of_order=0`。因此不能用
+扩大 SHM 块数或改变 `PosixSegment::Destroy` 的引用计数语义掩盖问题。
+
+继续从 Channel Join 时序检查：Source 原先只等待 CameraFrame 与 VehicleState 的远端 Reader，
+并不证明 ControlComponent 的 ControlCommand Writer 已经观察到先启动的 Sink Reader。Hybrid
+对端关系是异步收敛的；Writer 在没有对端时按既有 API 返回发布成功，所以首段业务输入可在
+ControlCommand 的 SHM 连接建立前静默越过 Sink。ControlSink 因此增加 `Reader::HasWriter` 的
+有界等待，并写入只供启动脚本读取的 ready 文件；脚本在启动 Source 前轮询这个明确 Join 条件。
+轮询具有同一 `--timeout-ms` 上界，不能以固定 sleep 猜测发现完成。Source 仍保留到 Sink
+确认后的 Writer 排空，结束顺序固定为 Sink 成功 -> SIGTERM Source -> SIGTERM mainboard。
+
+下游 Join 门禁首次得到完整 Sink 指标，但脚本退出 143，失败率 1/1，mainboard 日志没有
+`ModuleController cleared`。单独在无后续 Join 的 mainboard 上发送 SIGTERM 可退出 0，说明
+不是组件关闭本身。进一步确认 Control Writer 在 DAG 加载返回后的异步 Reader Join 中创建
+POSIX SHM 段，其异常清理处理器覆盖了 mainboard 先前的异步 SIGTERM handler；此时正常退出被
+重新抛出。mainboard 改为在创建 Scheduler 线程前阻塞 SIGINT/SIGTERM，并由主线程 `sigwait`
+同步消费。这个消费路径不依赖会被 SHM 异常处理器覆盖的 handler，既覆盖初始化期间已挂起的
+信号，也覆盖阻塞等待边界；SIGSEGV 仍由 SHM 异常清理路径处理。
+
+trap 在全部 PID 已回收后，只通过 `Transport::ChannelNameToId` 计算四个唯一主干频道并精确
+`shm_unlink`，忽略 `ENOENT`，不使用 `/dev/shm/minicyber_*` 通配符，且不改变
+`PosixSegment` 的正常引用计数职责。
+
+修复后执行：
+
+```bash
+scripts/run_autodrive_pipeline.sh --messages 1000 --frequency 100 --timeout-ms 30000 \
+  --output-dir /tmp/minicyber-mc616-sigwait-9rqkvo
+find /dev/shm -maxdepth 1 -name 'minicyber_*' -print
+```
+
+脚本退出码为 0，指标为 `received=1000 missing=0 out_of_order=0`、
+`throughput_mps=100.109`、`latency_ns_p50=1838319`、`latency_ns_p95=4558085`、
+`latency_ns_p99=6165685`；mainboard 记录 `ModuleController cleared`，第二条命令无输出。
+后续归属：MC-618/MC-619 分别以相同入口完成
+Classic/Choreography 的正式集成验收，MC-620 才能将该入口的 Release 数据写成性能结论。
+
 ## 七、证据来源
 
 本初稿迁移自首轮 `00_进度记录.md`、`baseline.md`、`module_mapping.md`、

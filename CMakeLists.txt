@@ -198,6 +198,18 @@ target_link_libraries(mainboard minicyber_core minicyber_proto
 set_target_properties(mainboard PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
+# MC-616 的唯一跨进程业务两端。它们只连接 MC-615 已冻结的频道和 DAG，
+# 不把 Source/Sink 混入可 dlopen 的组件库，保留 CyberRT 独立 Node 进程边界。
+add_executable(sensor_source demo/autodrive/sensor_source.cpp)
+target_link_libraries(sensor_source PRIVATE minicyber_core pthread dl)
+set_target_properties(sensor_source PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
+add_executable(control_sink demo/autodrive/control_sink.cpp)
+target_link_libraries(control_sink PRIVATE minicyber_core pthread dl)
+set_target_properties(control_sink PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
 # ---------------------------------------------------------
 # 添加测试子目录
 # ---------------------------------------------------------

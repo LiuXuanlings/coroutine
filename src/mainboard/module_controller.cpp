@@ -113,7 +113,8 @@ bool ModuleController::ParseDagFile(const std::string& path,
 // =============================================================================
 // 规则：
 //   - 绝对路径（起始字符为 '/'） → 原样返回
-//   - 相对路径                    → 拼接当前工作目录（getcwd）
+//   - 仅库名                      → 保留给 dlopen 的动态库搜索路径
+//   - 含目录的相对路径            → 拼接当前工作目录（getcwd）
 //
 // 为什么不拼接 WorkRoot（Apollo 的做法）：
 //   Apollo CyberRT 定义了 WORK_ROOT 环境变量作为基准目录。
@@ -127,6 +128,11 @@ std::string ModuleController::ResolveLibraryPath(
     return "";
   }
   if (module_library[0] == '/') {
+    return module_library;
+  }
+  // 唯一 DAG 不应写入构建目录；裸 DSO 名称由 MC-616 启动脚本的
+  // LD_LIBRARY_PATH 解析。有目录分隔符的历史相对路径继续按 CWD 解析。
+  if (module_library.find('/') == std::string::npos) {
     return module_library;
   }
   // 相对路径：拼接 CWD

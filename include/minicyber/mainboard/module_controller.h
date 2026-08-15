@@ -138,7 +138,8 @@ class ModuleController {
    * @brief 解析动态库路径
    *
    *   - 绝对路径（以 '/' 开头）：直接返回
-   *   - 相对路径：拼接 CWD
+   *   - 仅库名：交给 dlopen 的动态库搜索路径（供唯一启动脚本设置 LD_LIBRARY_PATH）
+   *   - 含目录的相对路径：拼接 CWD
    *
    * @param module_library proto 中的 module_library 字段
    * @return std::string 解析后的完整路径
