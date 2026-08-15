@@ -5,8 +5,8 @@
 ## 一、当前指针
 
 - 当前分支：`development`
-- 当前阶段：第二次重构，业务模块改造阶段
-- 当前任务：MC-622
+- 当前阶段：第二次重构，收尾验收阶段
+- 当前任务：MC-623
 - 当前状态：待开始
 - 唯一状态事实源：[`docs/refactor/00_进度记录.md`](docs/refactor/00_进度记录.md)
 - 唯一任务执行方案：[`docs/refactor/01_实施方案.md`](docs/refactor/01_实施方案.md)
@@ -39,7 +39,8 @@
   1000 条主干验收并将正式 SHM 默认池对齐原生首档；MC-619 已完成 Choreography、混合扇出
   与生产文件构建可达审计及关键运行探针；MC-620 已生成 Release 主干原始 CSV/JSON、环境元数据和中文性能报告，
   但质量评估确认该批数据启用了 MC-619 逐消息取证且采集自 dirty 工作区，只能作为临时观测；
-  MC-621 已补齐架构说明与自顶向下调用链；下一步为 MC-622。
+  MC-621 已补齐架构说明与自顶向下调用链；MC-622 已定稿调试手册与递进面试问答；
+  下一步为 MC-623 最终验收。
 - MC-602 必须先从 `docs/refactor/baseline.md`、`docs/refactor/module_mapping.md`、
   `docs/refactor/perf/**`、`docs/croutine/shared_from_this.md`、
   `docs/scheduler/debug_vtable_hang.md`、`docs/transport/signal.md` 和
@@ -48,10 +49,12 @@
 
 ### 1.2 MC-602 文档迁移
 
-- `docs/DEBUG_MANUAL.md` 与 `docs/INTERVIEW_QA.md` 已建立初稿，保留协程 ABI 与
-  栈冻结引用、Notifier/AllLatest、SHM 信号清理、调度关闭、动态加载以及关键取舍。
+- `docs/DEBUG_MANUAL.md` 与 `docs/INTERVIEW_QA.md` 已由 MC-622 定稿。调试手册保留协程
+  ABI 与栈冻结引用、Notifier/AllLatest、SHM 信号清理、FastRTPS、调度关闭和动态加载的
+  完整排查链；面试手册按项目、调度、通信、插件、主干、性能和限制形成递进问答。
 - 首轮离散笔记、UML、旧性能报告与原始 CSV/JSON 已在迁移后删除；旧性能数值没有
-  进入新手册。最终性能证据只允许由 MC-620 的唯一业务主干生成。
+  进入新手册。MC-620 只建立采集方法和临时观测，最终性能证据必须由 MC-623 在干净
+  Release 基线上通过唯一业务主干重采。
 - MC-603 接收的是已收敛的文档体系；它只清理代码、测试、旧示例与构建入口，不得
   回填或恢复本任务删除的离散资料。
 

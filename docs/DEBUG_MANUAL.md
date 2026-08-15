@@ -1,7 +1,8 @@
 # MiniCyber 调试手册
 
-> 本文由 MC-602 从首轮实施资料迁移而来。它只记录对后续重构仍有约束力的历史
-> 事实；当前架构边界以 `docs/refactor/02_架构取舍矩阵.md` 为准。
+> 本文由 MC-602 迁移历史事实，并由 MC-622 按第二次重构的真实故障、命令和回归证据
+> 定稿。当前架构边界以 `docs/refactor/02_架构取舍矩阵.md` 为准；没有实际复现或测量
+> 证据的推测不得写成故障结论。
 
 ## MC-619 Choreography 验收取证的构建与触达误判
 
@@ -124,39 +125,75 @@ C++ 插件不能携带进程级 GNU unique 单例，也不能让核心缓存持�
 - 回归必须覆盖正常路径和关闭路径。旧基准数值、已删除能力和未验证的性能结论都
   不能作为诊断依据。
 
+阅读时先按故障边界定位：协程入口崩溃或泄漏看第二节，数据到达但任务不运行看第三节，
+`/dev/shm` 残留看第四节，跨进程端点不可见看第五节，启动、关闭或插件卸载异常看第六节。
+每条完整记录均按“复现条件与症状 -> 错误假设 -> 工具与定位路径 -> 根因 -> 修复边界 ->
+回归命令 -> 通用经验”组织；历史条目中的真实退出码和失败率必须保留。
+
 ## 二、协程上下文与栈上引用
 
 ### x86_64 栈对齐和上下文切换
 
-**症状**：首次或往返恢复协程时崩溃、寄存器异常，或只在优化构建出现不稳定。
+**复现条件与症状**：在 Linux x86_64 上创建独立栈，第一次切入普通 C++ 函数后再切回，
+可出现首次入口或第二次恢复崩溃、参数寄存器错误，或者仅在优化构建和调用使用 SSE 的
+函数时不稳定。该类问题发生在业务 Proc 之前，不能先归因于 Scheduler 或 Channel。
 
-**已验证事实**：MC-102 对齐了 `src/swap.S`、
-`src/croutine/detail/routine_context.cpp` 与 CyberRT 的 x86_64 上下文职责，
-并以 `tests/test_croutine.cpp` 覆盖双向切换。实现只承诺 Linux x86_64，不能推断
-aarch64 或其他平台可用。
+**错误假设**：曾容易把“栈顶地址是 16 字节倍数”当成函数入口已经满足 ABI，或认为只要
+保存通用寄存器就无需验证 `%rdi` 和伪造返回地址。System V AMD64 ABI 要求普通函数入口
+观察到 `rsp % 16 == 8`；`call` 本应压入的返回地址必须由手工栈布局等价表达。
 
-**定位和回归**：在 `minicyber::CRoutine::Resume`、`SwapContext` 和协程入口处用
-`gdb` 检查栈指针与返回地址；先运行下列测试，再判断是否只在具体 Processor 或关闭
-路径发生。不能通过跳过第二次恢复或改变保存寄存器集合来掩盖 ABI 问题。
+**工具与定位路径**：用 `gdb` 在 `ctx_swap` 和协程入口检查 `$rsp`、`$rdi` 与返回地址，
+再对照 `src/swap.S` 的寄存器槽位和 `src/croutine/detail/routine_context.cpp` 的初始 `sp`。
+历史修复可用下列命令核对，不依赖事后口述：
+
+```bash
+git show 3c3b0b29a8234cf14a882c104148d61e3901ec9c -- \
+  src/swap.S src/croutine/detail/routine_context.cpp tests/test_croutine.cpp
+```
+
+**根因与修复**：初始栈必须预留返回地址和寄存器区，使首次进入函数时满足 ABI；汇编同时
+保存/恢复 `%rdi`，并补齐 ELF 函数类型、大小与非可执行栈元数据。测试
+`RoutineContextTest.SwitchesBothDirectionsWithAbiAlignedEntry` 在入口直接断言
+`rsp % 16 == 8`，并覆盖 phase 1 -> main -> phase 2 -> main，防止只验证单向切换。
+
+**回归与通用经验**：
 
 ```bash
 cmake --build build/debug -j2 --target test_croutine
 ctest --test-dir build/debug --output-on-failure -R '^test_croutine$'
 ```
 
+退出码为 0 才能证明当前 x86_64 路径未回退。手写上下文切换必须用 ABI 断言和双向切换
+测试固定契约；当前实现不承诺 aarch64 或其他 ABI。
+
 ### MainFunc 栈冻结导致的 `shared_ptr` 泄漏
 
-**症状**：协程执行完回调后不再恢复，ASAN 或长期运行显示 `CRoutine` 和其栈仍被
-持有；测试若只执行一次 `Resume()` 也会留下对象。
+**复现条件与症状**：让协程回调结束后从 `MainFunc` 最后一次 `Yield`，且不再恢复该栈。
+长期运行或 ASAN 泄漏检查会看到 `CRoutine` 与 128 KiB 栈仍被持有，即使任务状态已经是
+`FINISHED`。单次功能测试若只看回调返回值，很容易漏掉该泄漏。
 
-**根因**：协程栈在 `Yield` 后被冻结。入口函数若在这个栈上调用 `GetThis()`，临时
-`shared_ptr` 的析构永远不会执行，引用计数持续持有协程对象。这不是
-`shared_ptr(this)` 的双控制块问题，而是栈帧没有机会析构。
+**错误假设**：这不是 `shared_ptr(this)` 创建第二控制块导致的 double free，也不是
+Scheduler 映射忘记删除。`GetThis()` 返回的合法共享所有权本身没有错；错误在于最后一份
+局部 `shared_ptr` 被留在永远不再展开的协程栈帧上。
 
-**已验证修复边界**：`src/croutine.cpp` 的 `CRoutine::MainFunc` 先保存当前协程，
-清空回调，取得裸指针，并在 `Yield` 前释放局部 `shared_ptr`。`CRoutine::Yield`
-同样只用裸指针切回主协程。测试必须继续恢复到 `FINISHED`，不能把未完成协程当作
-测试结束状态。
+**工具与定位路径**：先用 ASAN 或析构计数确认对象未释放，再沿 `CRoutine::MainFunc ->
+GetThis -> Yield -> SwapContext` 检查最后一次切换前仍存活的栈变量。历史完整推导可通过
+`git show 7d0aafe:docs/croutine/shared_from_this.md` 读取，当前实现位于
+`src/croutine.cpp`。
+
+**根因与修复**：协程栈在最后一次 `Yield` 后冻结，C++ 不会替它执行局部变量析构。
+`MainFunc` 因而先保存 `cur`、清空 `cb_`、提取裸指针，再显式 `cur.reset()`，最后通过裸
+指针 `Yield`；`Yield` 本身也不能重新生成跨切换存活的共享所有权。
+
+**回归命令与通用经验**：
+
+```bash
+cmake --build build/debug -j2 --target test_croutine
+ctest --test-dir build/debug --output-on-failure -R '^test_croutine$'
+```
+
+协程、fiber 或手工栈在“最后一次挂起”前必须主动释放需要析构的所有权对象。代码评审时
+要区分“双控制块”与“冻结栈引用不下降”两类完全不同的 `shared_ptr` 问题。
 
 ### CRoutine 与时间库的 `Duration` 名称冲突
 
@@ -183,48 +220,100 @@ ctest --test-dir build/debug --output-on-failure -R '^test_time$'
 
 ### Notifier 注销竞态
 
-**症状**：Reader、Visitor 或 Component 关闭后仍进入回调，偶发 UAF、死锁或关闭
-卡住。
+**复现条件与症状**：一个线程进入 Notify 并开始执行回调，另一线程同时销毁 Reader、
+Visitor 或 Component 并注销通知。没有生命周期屏障时会在关闭返回后继续回调已释放对象，
+表现为 UAF；若注销无条件等待活动回调，回调内部自注销又会自死锁。
 
-**已验证事实**：首轮 MC-202/MC-203 让 Dispatcher 在安全快照上分发，并让
-`DataNotifier::RemoveNotifier` 先从注册表移除、再停用并等待已在执行的回调结束。
-后续 MC-609/MC-612 改造必须保留这一注销屏障；关闭时先阻止新任务，再移除调度任务
-和 Reader。
+**错误假设**：仅用 map 互斥锁保护查找和删除并不够。若持锁执行用户回调会阻塞重入；若
+锁外保存裸指针，删除后又会悬空；若所有注销都等待 `active_callbacks_ == 0`，当前回调会
+等待自己结束。
+
+**工具与定位路径**：以条件变量人为阻塞回调，稳定构造“回调在途、另一线程注销”，再用
+线程栈确认等待点。检查 `DataNotifier::Notify` 是否取得 `shared_ptr` 快照、回调是否在表锁外
+执行、`RemoveNotifier` 是否先摘路由后 Deactivate。历史改动：
+
+```bash
+git show 3cea6f5 -- include/minicyber/data/data_notifier.h tests/test_data_notifier.cpp
+```
+
+**根因与修复**：Notifier 对象需要独立于注册表项存活。Notify 在短锁内取得共享快照，锁外
+递增在途计数并执行；Remove 先从表中摘除，清空 callback，再等待其他线程的在途回调归零。
+thread-local `active_notifier_` 识别回调内自注销，使它不等待自己。
+
+**回归命令与通用经验**：
+
+```bash
+cmake --build build/debug -j2 --target test_data_notifier
+ctest --test-dir build/debug --output-on-failure -R '^test_data_notifier$'
+```
+
+必须保留 `RemoveNotifierWaitsForInFlightCallback` 与
+`CallbackCanRemoveItselfWithoutDeadlock`。可注销回调的完成定义是“以后不再开始，其他
+线程已开始的也已结束”，同时必须明确处理回调内自注销。
 
 ### AllLatest 填充必须先于唤醒
 
-**症状**：双输入组件在主通道到达后被唤醒，却看到空融合缓冲并再次等待，直到下一
-条主通道消息才恢复。
+**复现条件与症状**：次通道已有最新值，主通道到达后协程进入 READY，却在 TryFetch 中
+看不到融合结果，直到下一条主消息才处理上一轮数据。另一种症状是首条测量消息被最新值
+语义跳过，后续连续流量掩盖了问题。
 
-**根因和约束**：双通道由主通道驱动。`AllLatest` 的填充回调必须先注册，随后才注册
-唤醒协程的 notifier；`DataNotifier` 按注册顺序通知，协程被唤醒前已有融合结果。
-游标只由融合器推进一次，Visitor 不得再次递增。次通道没有最新值时不应伪造融合
-成功。
+**错误假设**：AllLatest 不是两个通道任意到达都唤醒，也不是严格时间同步；增加锁或让
+Visitor 再推进一次游标会制造重复消费。三、四输入模板已删除，不能拿历史泛型能力解释
+当前双输入行为。
 
-**定位路径**：检查 `include/minicyber/data/data_visitor.h` 的双通道构造顺序和
-`include/minicyber/data/fusion/all_latest.h` 的主通道语义。当前三、四输入路径待
-MC-609 删除，不能作为最终 API 的调试依据。
+**工具与定位路径**：沿 `DataDispatcher::Dispatch -> CacheBuffer::Fill ->
+DataNotifier::Notify -> Scheduler::NotifyTask -> DataVisitor::TryFetch` 记录主通道一次到达的
+先后顺序；检查 `data_visitor.h` 的构造注册顺序和 `all_latest.h` 的 primary callback。
+
+**根因与修复**：primary Fill 先执行融合 callback，读取 secondary 的 Latest 并写入独立融合
+队列，Dispatcher 完成 Fill 后才 Notify；随后注册的 Scheduler notifier 才能唤醒协程。
+销毁时清空 fusion callback 并等待在途执行，避免访问已释放的 secondary。首个游标的
+最新值语义由 sequence 0 端到端预热解决，不修改 CacheBuffer 契约。
+
+**回归命令与通用经验**：
+
+```bash
+cmake --build build/debug -j2 --target test_data_visitor test_routine_factory
+ctest --test-dir build/debug --output-on-failure \
+  -R '^test_(data_visitor|routine_factory)$'
+```
+
+融合系统必须明确“谁触发、取哪个快照、先产出还是先唤醒、谁推进游标”；仅验证连续高频
+消息会漏掉首条唤醒和首游标问题。
 
 ## 四、POSIX SHM 异常清理
 
-**症状**：`SIGINT`、`SIGTERM` 或崩溃后 `/dev/shm` 残留 `minicyber_*`，后续运行
-因同名段或不一致的段参数失败。
+**复现条件与症状**：创建命名段后向创建者发送异常信号，或在 `Destroy()` 的登记注销与
+`shm_unlink` 之间终止进程。`/dev/shm/minicyber_*` 残留会让下一轮按同名但不同布局打开时
+失败。普通返回路径通过不能证明异常路径安全。
 
-**根因**：内核会回收进程映射和文件描述符，但不会自动执行命名共享内存的
-`shm_unlink`。正常 RAII 析构无法覆盖异常终止。
+**错误假设**：进程退出只会回收映射和文件描述符，不会自动 unlink 名称；纯消费者也不能
+代替创建者删除仍被其他进程使用的段。信号处理器里调用 C++ `Destroy`、日志、mutex、
+`std::string` 或堆分配均不满足 async-signal-safe 约束。
 
-**约束**：创建者在段创建成功后登记名称，纯消费者不负责删除创建者的段；正常销毁
-走 Close、注销和 `shm_unlink`。信号路径只读取固定登记表并调用异步信号安全的
-`shm_unlink`，恢复默认处理后重新抛出信号。不得在信号处理器中调用 `Destroy`、
-加 `std::mutex`、分配内存或使用 `std::string`。
+**工具与定位路径**：测试前后用 `find /dev/shm` 比较精确名称，并沿
+`PosixSegment::OpenOrCreate -> Register -> Destroy -> Unregister` 检查所有权。历史修复可用：
+
+```bash
+git show fd21302 -- src/transport/shm/posix_segment.cpp
+git show 35079fb -- src/transport/shm/posix_segment.cpp
+```
+
+**根因与修复**：创建者在创建成功后把固定名称登记到无动态分配的信号清理表；异常路径只
+调用 `shm_unlink`，恢复默认处理并重新抛出信号。正常 `Destroy()` 必须先确认 unlink 成功，
+再从登记表移除；若先注销，恰在 unlink 前崩溃就会失去最后兜底。mainboard 的正常
+SIGINT/SIGTERM 则在线程创建前阻塞并由主线程 `sigwait`，不依赖可能被 SHM 覆盖的 handler。
+
+**回归命令与通用经验**：
 
 ```bash
 cmake --build build/debug -j2 --target test_posix_segment_signal
 ctest --test-dir build/debug --output-on-failure -R '^test_posix_segment_signal$'
 ```
 
-运行前后应比较 `/dev/shm/minicyber_*`。跨进程 Protobuf SHM 路径将在 MC-607 和
-MC-617 重新覆盖。
+运行前后执行 `find /dev/shm -maxdepth 1 -name 'minicyber_*' -print`，预期无本测试新增残留。
+异常清理、正常优雅退出和多进程所有权是三条不同链路，不能用一个全局通配符清理脚本
+掩盖生产路径的所有权错误。
 
 ## 五、FastRTPS 发现控制面
 
@@ -304,6 +393,42 @@ Participant 异常退出、晚加入、启动失败回滚及监听器并发注�
 端点匹配完成、历史样本重放完成是三个不同阶段，应使用有界事件协议表达因果关系。
 
 ## 六、调度启动、关闭和动态库
+
+### Scheduler 关闭与并发提交
+
+**复现条件与症状**：一个线程执行 `Scheduler::Shutdown`，其他线程仍在 CreateTask 或
+NotifyTask。旧行为可能把任务送入已停止 Context、在 Processor join 后访问被清空的映射，
+或因 Wait 未被唤醒而关闭卡住；顺序创建两种策略还可能复用上一次静态状态。
+
+**错误假设**：只设置一个原子 stop 标志不能覆盖“检查 stop 后、真正入表前”的窗口；只先
+停止 Processor 也不能保证阻塞在 Context::Wait 的线程退出。该问题不是工作窃取，Classic
+的正式语义始终是调度组共享多级优先级队列。
+
+**工具与定位路径**：用提交线程循环 CreateTask/NotifyTask，同时由主线程 Shutdown，记录
+是否有超时、重复执行或崩溃；再沿 Scheduler 生命周期锁、Context wait 条件和 Processor join
+顺序检查。历史修复：
+
+```bash
+git show 3cb9e3a -- src/scheduler/scheduler.cpp \
+  tests/test_scheduler_classic.cpp tests/test_scheduler_choreography.cpp
+```
+
+**根因与修复**：创建和通知在生命周期互斥区内二次检查 stop；Shutdown 先
+`stop_.exchange(true)`，在锁内换出 Processor/Context，先 `context->Shutdown()` 唤醒 Wait，
+再 `processor->Stop()` join，最后清任务映射。后续任务还让 `RoutineWakeState` 失效并处理
+RemoveTask 在当前协程内关闭，避免回调触达已销毁 Scheduler 或等待自身 Acquire。
+
+**回归命令与通用经验**：
+
+```bash
+cmake --build build/debug -j2 --target test_scheduler_classic test_scheduler_choreography
+ctest --test-dir build/debug --output-on-failure \
+  -R '^test_scheduler_(classic|choreography)$'
+```
+
+必须保留 `ConcurrentSubmissionDuringShutdown` 和 `PoliciesCanBeRecreatedInSequence`。
+并发运行时的关闭协议需要同时定义拒绝新工作、唤醒等待者、join 执行线程、失效外部回调和
+清理映射的顺序，原子布尔值不是完整生命周期协议。
 
 ### Hybrid 状态锁与同步 INTRA 回调形成自死锁
 
@@ -710,7 +835,7 @@ Transport、Scheduler 或业务算法，只隔离验证探针与性能样本。
 
 ## 七、证据来源
 
-本初稿迁移自首轮 `00_进度记录.md`、`baseline.md`、`module_mapping.md`、
+本文事实迁移自首轮 `00_进度记录.md`、`baseline.md`、`module_mapping.md`、
 `croutine/shared_from_this.md`、`scheduler/debug_vtable_hang.md`、
-`transport/signal.md` 及相关测试。旧文件已在 MC-602 删除；后续任务必须以现存
-源码、02/03 定稿和新的验证结果更新本文。
+`transport/signal.md` 及相关测试，并由 MC-622 对照现存源码、提交和测试定稿。旧文件已在
+MC-602 删除；后续新增重大故障仍须按九项排错链增量更新，不能只补根因和修复结论。
