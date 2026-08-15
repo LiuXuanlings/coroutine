@@ -259,6 +259,14 @@ SensorSource 的 `time::Rate` 控制，不把 Rate 包装成伪 Timer；RPC 不�
 工作区状态。不得将已删除的 PIPE、互斥队列、ping-pong 或 C++20 探针数值拿来比较，
 也不得从单次测量推出普适优势。
 
+### 为什么性能原始结果同时保存 CSV 和 JSON？
+
+MC-620 的 CSV 固定提供提交、策略、消息数、频率、样本数、p50/p95/p99、吞吐、丢包、重复和
+单调时钟运行时长，便于按统一字段比较。JSON 保留同一指标外的工作区状态、CPU、内核、编译器、
+FastRTPS/Protobuf 版本、系统负载、DAG/Scheduler 哈希、启动参数和 SHM 自然回收结果，避免
+脱离环境解释数字。采集脚本只调用唯一 `run_autodrive_pipeline.sh`，并在每种策略前后检查四个
+精确 SHM 名称；它不建立基准替身，也不把收集器变成业务数据路径的一部分。
+
 ## 项目不具备的能力
 
 MiniCyber 不支持 Windows、aarch64、跨主机 RTPS 数据、RPC、TimerComponent、录包

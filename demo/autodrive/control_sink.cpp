@@ -232,6 +232,10 @@ void PrintMetrics(const Metrics& metrics, uint64_t expected_messages,
           ? static_cast<double>(metrics.last_receive_ns - metrics.first_receive_ns) /
                 1000000000.0
           : 0.0;
+  const uint64_t duration_ns =
+      metrics.last_receive_ns > metrics.first_receive_ns
+          ? metrics.last_receive_ns - metrics.first_receive_ns
+          : 0;
   const double throughput = elapsed_seconds > 0.0
                                 ? static_cast<double>(metrics.received) / elapsed_seconds
                                 : 0.0;
@@ -247,6 +251,9 @@ void PrintMetrics(const Metrics& metrics, uint64_t expected_messages,
           << Percentile(metrics.latency_ns, 50, 100)
           << " latency_ns_p95=" << Percentile(metrics.latency_ns, 95, 100)
           << " latency_ns_p99=" << Percentile(metrics.latency_ns, 99, 100)
+          // 保留单调时钟原始差值，性能采集器不能从三位小数的吞吐反推时长。
+          // 这只导出 ControlSink 已有的观测结果，不改变 CyberRT 数据路径或调度语义。
+          << " duration_ns=" << duration_ns
           << "\n";
 }
 
