@@ -23,8 +23,8 @@ namespace transport {
 //           -> DataNotifier::Notify(channel_id) 唤醒挂起在 DATA_WAIT 的协程
 //
 // 为什么仍要单独一个类（而不是让上层直接调 DataDispatcher）？
-//   - 与 ShmDispatcher 提供统一接口，Step 23 的 Transport 可在运行时
-//     根据 TopologyManager::IsSameProc 无感切换 INTRA / SHM 后端。
+//   - 与 SHM 数据面共同作为 HybridTransport 后端；Transport 根据
+//     ChannelManager 的对端进程关系执行 INTRA/SHM 按对端扇出。
 //   - 后续可在此挂载进程内独有逻辑（如 host_id 过滤、消息链）而不污染 DataDispatcher。
 //
 // 模板化：与 DataDispatcher<T> 一致，按消息类型实例化独立单例。

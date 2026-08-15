@@ -107,7 +107,8 @@ class CRoutine : public std::enable_shared_from_this<CRoutine> {
   // ----------------------------------------------------------------------
   // 用于 Choreography 调度策略：Scheduler::NotifyTask 根据 processor_id
   // 决定将协程定向 Enqueue 到哪个 ChoreographyContext。
-  // 默认值 -1 表示"未绑定"，由 Scheduler 轮询分配（Classic 路径）。
+  // 默认值 -1 表示未定向绑定：Classic 任务进入所属共享组，
+  // Choreography 未绑定任务进入 Classic 公共池。
   // ----------------------------------------------------------------------
   int processor_id() const { return processor_id_; }
   void set_processor_id(int pid) { processor_id_ = pid; }

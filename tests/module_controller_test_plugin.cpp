@@ -1,4 +1,5 @@
 #include <cstdlib>
+#include <csignal>
 #include <fstream>
 #include <string>
 
@@ -22,6 +23,9 @@ class Mc613PluginComponent : public minicyber::component::ComponentBase {
   bool Initialize(const minicyber::proto::ComponentConfig& config) override {
     if (config.name().empty()) return false;
     Trace('I');
+    if (std::getenv("MINICYBER_MC613_SIGNAL_DURING_INIT") != nullptr) {
+      ::raise(SIGTERM);
+    }
     return true;
   }
 

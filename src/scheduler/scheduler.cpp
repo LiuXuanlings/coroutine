@@ -3,6 +3,7 @@
 #include <sched.h>
 #include <unistd.h>
 
+#include <iostream>
 #include <stdexcept>
 
 #include "minicyber/base/macros.h"
@@ -224,9 +225,11 @@ void Scheduler::CreateProcessors(const SchedulerConf& conf) {
 // ----------------------------------------------------------------------
 void Scheduler::ApplyThreadPolicy(const SchedulerConf& conf, size_t proc_idx,
                                    Processor* proc) {
-  if (!conf.affinity.empty() && !conf.cpuset.empty()) {
-    SetSchedAffinity(proc->Thread(), conf.cpuset, conf.affinity,
-                     static_cast<int>(proc_idx));
+  if (!conf.affinity.empty() && !conf.cpuset.empty() &&
+      !SetSchedAffinity(proc->Thread(), conf.cpuset, conf.affinity,
+                        static_cast<int>(proc_idx))) {
+    std::cerr << "[Scheduler WARN] Failed to set CPU affinity '"
+              << conf.affinity << "' for processor " << proc_idx << std::endl;
   }
   SetSchedPolicy(proc->Thread(), conf.processor_policy, conf.processor_prio,
                  proc->Tid().load());
@@ -316,6 +319,11 @@ uint64_t Scheduler::CreateTask(const croutine::RoutineFactory& factory,
     std::lock_guard<std::mutex> lock(wake_state->mutex);
     if (wake_state->scheduler != nullptr && wake_state->task_id != 0) {
       wake_state->scheduler->NotifyTask(wake_state->task_id);
+    } else if (wake_state->scheduler != nullptr) {
+      // 任务初始入队与 task_id 发布之间数据可能已到达。
+      // 先挂账，发布任务号后立即补一次 NotifyTask，避免
+      // Buffer 已有首条消息但 CRoutine 永久停在 DATA_WAIT。
+      wake_state->notification_pending = true;
     }
   });
   const uint64_t task_id = CreateTask(factory.CreateRoutine(), name, prio,
@@ -325,10 +333,14 @@ uint64_t Scheduler::CreateTask(const croutine::RoutineFactory& factory,
     wake_state->scheduler = nullptr;
     return 0;
   }
+  bool notification_pending = false;
   {
     std::lock_guard<std::mutex> lock(wake_state->mutex);
     wake_state->task_id = task_id;
+    notification_pending = wake_state->notification_pending;
+    wake_state->notification_pending = false;
   }
+  if (notification_pending) NotifyTask(task_id);
   {
     std::lock_guard<std::mutex> lock(routine_wake_mtx_);
     // Shutdown 可能在 CreateTask 返回后开始。只有在状态仍可用时才发布

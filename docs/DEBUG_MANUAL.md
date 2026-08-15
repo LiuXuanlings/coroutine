@@ -364,6 +364,51 @@ ctest --test-dir build/debug --output-on-failure -R '^test_module_controller$'
 本次水位，已加载组件保持可用。进程级用同一 DAG 搭配 Classic/Choreography 配置，等待初始化
 痕迹后发送 SIGTERM，两个子进程均退出码 0。
 
+### MC-613 质量评估：mainboard 单次退出信号丢失窗口
+
+**风险现象与复现思路**：原 `WaitForShutdown` 执行 `while (flag == 0) pause()`。
+如果 SIGINT/SIGTERM 在循环判断完成后、`pause` 进入内核前到达，处理器已将
+`sig_atomic_t` 置位，但主线程随后仍会休眠并等待第二个信号。这是代码时序可
+证明的 lost wakeup，普通的“初始化后再 kill”测试不易命中。
+
+**排查路径**：先确认信号处理器只写 `sig_atomic_t`，排除处理器内 mutex/日志导致
+的异步信号不安全；再按“检查标志 -> 信号到达 -> pause”排列时序，确认缺少
+原子的“解除阻塞并等待”操作。最后检查 Scheduler 线程创建时机，确认退出信号
+必须在创建工作线程之前阻塞，使新线程继承掩码，避免信号被非主线程消费。
+
+**修正与回归**：mainboard 在 Scheduler 创建前用 `pthread_sigmask` 阻塞 SIGINT/SIGTERM，
+主线程使用 `sigsuspend` 原子解除阻塞并等待，处理器仍只写标志。测试插件在
+`Initialize` 内主动产生 SIGTERM，证明信号先于等待到达时仍能触发
+`I -> S -> D -> U` 和有界退出。
+
+### MC-610 质量评估：RoutineFactory 任务号发布前丢失首条唤醒
+
+**风险时序**：Scheduler 原先先向 DataVisitor 安装回调，再创建并入队 CRoutine，
+最后才把 `task_id` 写入回调状态。Processor 可在写入之前将无数据协程挂到
+`DATA_WAIT`；若首条消息恰在此时到达，回调因 `task_id == 0` 返回，Buffer 已有
+数据但协程只能等待下一条通知。高频数据源会用下一帧掩盖问题，单条或低频
+通道则可能永久停顿。
+
+**定位与修正**：沿 `DataNotifier -> RegisterNotifyCallback -> RoutineWakeState ->
+NotifyTask` 检查所有状态发布点，确认 Buffer 填充本身没有丢失，丢失的是状态转换通知。
+回调现在于同一 mutex 下登记 `notification_pending`；发布任务号时取走挂账并立即
+补一次 `NotifyTask`。无论“通知先”或“任务号先”，至少一条路径会完成唤醒。
+MC-617 还必须保留专门的首条消息并发门禁，不能只用连续高频消息证明无丢失。
+
+### MC-613 质量评估：绑核测试时序与 SHM 测试残留
+
+**原始证据**：评估时 Debug 全量 CTest 为 43/44，
+`PinThreadTest.SetSchedAffinity1to1` 失败。目标 `std::thread` 的函数体为空，
+`pthread_setaffinity_np` 执行时线程可能已退出；生产封装又忽略返回值，导致测试
+无法区分时序失败和宿主拒绝。同次全量测试结束后，
+`find /dev/shm -maxdepth 1 -name 'minicyber_*'` 稳定发现 `minicyber_91006`；
+`CloseIsIdempotent` 验证了 Close 两次，却没有完成测试所有权下的最终清理。
+
+**修正边界**：绑核测试使目标线程存活到亲和性读回完成；`SetSchedAffinity`
+返回系统调用结果，Scheduler 在配置未生效时输出警告，不改变原生的 affinity
+分配语义。SHM 用例保留 `Close` 不删全局段的生产契约，但在断言后清理该测试
+的精确名称，不再依赖人工删除。
+
 ## 七、证据来源
 
 本初稿迁移自首轮 `00_进度记录.md`、`baseline.md`、`module_mapping.md`、

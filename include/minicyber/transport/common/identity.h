@@ -14,7 +14,7 @@
 //
 // 简化 vs CyberRT：
 //   - CyberRT 底层使用 Poco UUID（36字节字符串 + hash），这里用 8 字节随机数
-//   - 去掉 SequenceNumber（用的频率很低，Step 33 在 MessageInfo 中用 uint64_t）
+//   - 去掉 SequenceNumber（主干的 MessageInfo 直接使用 uint64_t）
 //   - 去掉 Deserialize/Serialize（数据量小，memcpy 即可）
 //
 // 面试口径（Identity 的设计动机）：

@@ -43,7 +43,7 @@ using ReadableBlock = WritableBlock;
 //   - Destroy()   : 物理销毁共享内存（shm_unlink 等），慎用
 //
 // 上层 AcquireBlockToWrite/Read 等高层 API 在 CyberRT 中由 Segment 基类实现，
-// 这里仅保留抽象接口，具体逻辑在 Step 18 PosixSegment 中落地。
+// 这里仅保留抽象接口，具体 POSIX 映射与回收由 PosixSegment 实现。
 // =============================================================================
 
 class Segment {

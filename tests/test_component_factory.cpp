@@ -172,7 +172,7 @@ TEST(ComponentFactoryTest, HasRegisteredClass) {
 TEST(ComponentFactoryTest, CreateInitializeAndDeliver) {
   FactoryTestComponent::ResetStats();
 
-  // Step 1: 通过工厂创建组件（模拟 mainboard 的 Create("ClassName"))
+  // 步骤 1：通过工厂创建组件（模拟 mainboard 的 Create("ClassName"))
   auto* raw = ComponentFactory::Instance()->Create("FactoryTestComponent");
   ASSERT_NE(raw, nullptr);
 
@@ -182,7 +182,7 @@ TEST(ComponentFactoryTest, CreateInitializeAndDeliver) {
   std::shared_ptr<FactoryTestComponent> comp(
       static_cast<FactoryTestComponent*>(raw));
 
-  // Step 2: 创建配置并 Initialize（模拟 mainboard 从 proto dag 读取配置）
+  // 步骤 2：创建配置并 Initialize（模拟 mainboard 从 proto dag 读取配置）
   minicyber::proto::ComponentConfig config;
   config.set_name("factory_comp");
   config.add_readers()->set_channel("/factory_channel");
@@ -190,7 +190,7 @@ TEST(ComponentFactoryTest, CreateInitializeAndDeliver) {
   ASSERT_TRUE(comp->Initialize(config));
   EXPECT_TRUE(comp->init_called());
 
-  // Step 3: 通过 Writer 发布消息（模拟真实数据流）
+  // 步骤 3：通过 Writer 发布消息（模拟真实数据流）
   minicyber::node::Node pub_node("factory_publisher");
   auto writer = pub_node.CreateWriter<TestMessage>("/factory_channel");
   ASSERT_NE(writer, nullptr);
@@ -198,16 +198,16 @@ TEST(ComponentFactoryTest, CreateInitializeAndDeliver) {
   std::string test_msg("delivered via factory");
   EXPECT_TRUE(writer->Write(MakeMessage(test_msg)));
 
-  // Step 4: 验证 Proc 经 DATA_WAIT 唤醒后异步执行。
+  // 步骤 4：验证 Proc 经 DATA_WAIT 唤醒后异步执行。
   ASSERT_TRUE(WaitForProcCount(1));
   EXPECT_EQ(g_factory_received, test_msg);
 
-  // Step 5: 第二次写入验证组件仍活跃
+  // 步骤 5：第二次写入验证组件仍活跃
   EXPECT_TRUE(writer->Write(MakeMessage("second factory message")));
   ASSERT_TRUE(WaitForProcCount(2));
   EXPECT_EQ(g_factory_received, "second factory message");
 
-  // Step 6: 清理
+  // 步骤 6：清理
   comp->Shutdown();
   EXPECT_TRUE(comp->IsShutdown());
 

@@ -78,6 +78,20 @@ int WaitForExit(pid_t child) {
   return status;
 }
 
+int WaitForExitBounded(pid_t child) {
+  for (int attempt = 0; attempt < 200; ++attempt) {
+    int status = 0;
+    const pid_t result = ::waitpid(child, &status, WNOHANG);
+    if (result == child) return status;
+    if (result == -1) return -1;
+    ::usleep(10 * 1000);
+  }
+  ::kill(child, SIGKILL);
+  int status = 0;
+  ::waitpid(child, &status, 0);
+  return -1;
+}
+
 }  // namespace
 
 TEST(ModuleControllerTest, RejectsEmptyModuleLibrary) {
@@ -176,4 +190,38 @@ TEST(MainboardTest, UsesOneDagWithClassicAndChoreographyConfigurations) {
   ::unlink(dag_path.c_str());
   ::unlink(classic_path.c_str());
   ::unlink(choreography_path.c_str());
+}
+
+TEST(MainboardTest, SignalDuringInitializationIsConsumedByShutdownWait) {
+  const std::string dag_path = WriteTempFile(
+      ".dag", "module_config { module_library: \"" +
+                  std::string(MINICYBER_TEST_PLUGIN_PATH) +
+                  "\" components { class_name: \"" +
+                  std::string(kPluginClass) +
+                  "\" config { name: \"signal_plugin\" readers { channel: \"/x\" } } } }\n");
+  const std::string scheduler_path = WriteTempFile(
+      ".conf", "policy: \"classic\" classic_conf { groups { name: \"default_grp\" processor_num: 1 } }\n");
+  const std::string trace = WriteTempFile(".trace", "");
+  ASSERT_FALSE(dag_path.empty());
+  ASSERT_FALSE(scheduler_path.empty());
+  ASSERT_FALSE(trace.empty());
+
+  const pid_t child = ::fork();
+  ASSERT_NE(child, -1);
+  if (child == 0) {
+    ::setenv("MINICYBER_MC613_PLUGIN_TRACE", trace.c_str(), 1);
+    ::setenv("MINICYBER_MC613_SIGNAL_DURING_INIT", "1", 1);
+    ::execl(MINICYBER_MAINBOARD_PATH, MINICYBER_MAINBOARD_PATH, "-d",
+            dag_path.c_str(), "-s", scheduler_path.c_str(), nullptr);
+    _exit(127);
+  }
+
+  const int status = WaitForExitBounded(child);
+  ASSERT_NE(status, -1) << "mainboard did not consume the pending SIGTERM";
+  EXPECT_TRUE(WIFEXITED(status));
+  EXPECT_EQ(WEXITSTATUS(status), 0);
+  EXPECT_EQ(ReadFile(trace), "ISDU");
+  ::unlink(dag_path.c_str());
+  ::unlink(scheduler_path.c_str());
+  ::unlink(trace.c_str());
 }

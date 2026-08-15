@@ -217,7 +217,7 @@ TEST(ChoreographyContextTest, RemoveWaitsForAcquiredRoutine) {
 // 关键差异验证：ChoreographyContext 无静态共享状态，A 的任务不会出现在 B。
 // 这是与 ClassicContext（静态 group 共享）的核心区别。
 // ----------------------------------------------------------------------
-TEST(ChoreographyContextTest, NoStealingFromOtherContexts) {
+TEST(ChoreographyContextTest, ContextsKeepIndependentTaskQueues) {
   ChoreographyContext ctx_a;
   ChoreographyContext ctx_b;
 

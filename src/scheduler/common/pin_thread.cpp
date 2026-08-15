@@ -65,10 +65,10 @@ void ParseCpuset(const std::string& str, std::vector<int>* cpuset) {
 //    参数：thread(pthread_t句柄)、cpusetsize(sizeof(cpu_set_t))、cpuset(CPU掩码)
 //    返回0代表设置成功，负数为失败，当前代码未处理返回错误。
 // ----------------------------------------------------------------------
-void SetSchedAffinity(std::thread* thread, const std::vector<int>& cpus,
+bool SetSchedAffinity(std::thread* thread, const std::vector<int>& cpus,
                       const std::string& affinity, int cpu_id) {
   if (cpus.empty()) {
-    return;
+    return true;
   }
 
   cpu_set_t set;
@@ -78,14 +78,17 @@ void SetSchedAffinity(std::thread* thread, const std::vector<int>& cpus,
     for (const auto cpu : cpus) {
       CPU_SET(cpu, &set);
     }
-    pthread_setaffinity_np(thread->native_handle(), sizeof(set), &set);
+    return pthread_setaffinity_np(thread->native_handle(), sizeof(set), &set) ==
+           0;
   } else if (affinity == "1to1") {
     if (cpu_id == -1 || static_cast<uint32_t>(cpu_id) >= cpus.size()) {
-      return;
+      return false;
     }
     CPU_SET(cpus[cpu_id], &set);
-    pthread_setaffinity_np(thread->native_handle(), sizeof(set), &set);
+    return pthread_setaffinity_np(thread->native_handle(), sizeof(set), &set) ==
+           0;
   }
+  return false;
 }
 
 // ----------------------------------------------------------------------

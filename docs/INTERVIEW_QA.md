@@ -322,3 +322,26 @@ Create 跳到已经卸载的代码段。测试 `.so` 记录 `I -> S -> D -> U`�
 MC-613 由主线程在通知后按 Component、Transport/Discovery、Scheduler 的顺序关闭，确保已卸载
 `.so` 不会再被发现或传输回调触达。进程级测试在 Classic 和 Choreography 配置下均等待插件真实
 初始化后发送 SIGTERM，并确认有界退出及 `I -> S -> D -> U` 顺序。
+
+### 为什么 `sig_atomic_t + pause()` 仍然可能丢失退出信号？
+
+`sig_atomic_t` 只保证标志的信号上下文读写安全，不会把“检查标志”和“进入
+阻塞”合并为原子操作。信号在两者之间到达时，主线程会在标志已置位后仍然
+`pause`。MiniCyber 在创建 Scheduler 线程前阻塞 SIGINT/SIGTERM，再由主线程用
+`sigsuspend` 原子地临时解除阻塞并等待；既保留处理器只写标志的边界，也不需要
+引入自创的退出线程。
+
+### DataVisitor 回调为什么需要“未发布通知”挂账？
+
+RoutineFactory 创建期间同时存在三个事件：安装 DataNotifier 回调、创建并首次
+Resume CRoutine、发布 `task_id`。如果协程已进入 DATA_WAIT，但数据在任务号发布前
+到达，直接忽略回调会让已填充 Buffer 失去对应的 READY 转换。因此回调在同一状态锁
+下记录 pending，`task_id` 发布后补一次 `NotifyTask`。这不是新调度策略，而是完成
+`DataNotifier -> DATA_WAIT/READY` 状态发布的并发契约。
+
+### 绑核为什么必须检查 `pthread_setaffinity_np` 的返回值？
+
+容器 cpuset、无效 CPU、目标线程已退出都可能让设置失败。忽略结果会使运行时声称
+已绑核，实际却由内核自由迁移线程，Choreography 的线程归属证据和性能数据都会失真。
+MiniCyber 不改变原生的 affinity 选择规则，只将系统调用成败变为可诊断事实；
+测试则必须保持目标线程存活，避免把测试对象生命周期误判为调度策略错误。

@@ -3,9 +3,13 @@
 
 #include <atomic>
 #include <cstdint>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <vector>
+
+#include <google/protobuf/text_format.h>
 
 #include "minicyber/data/data_visitor_base.h"
 #include "minicyber/proto/component_conf.pb.h"
@@ -153,22 +157,17 @@ class ComponentBase : public std::enable_shared_from_this<ComponentBase> {
   /**
    * @brief 从文本配置文件解析 Protobuf 对象
    *
-   * [Stub 实现] — 当前直接返回 false。
-   *
-   * 完整实现需要使用 google::protobuf::TextFormat::ParseFromString()
-   * 配合 std::ifstream 读取 config_file_path_ 指向的文本 proto 文件。
-   * 由于 MiniCyber 当前阶段还没有真实组件需要加载配置文件，这里先留空。
-   *
-   * 未来启用方式（需要包含 <fstream> 和 <google/protobuf/text_format.h>）：
-   *   std::ifstream ifs(config_file_path_);
-   *   if (!ifs.is_open()) return false;
-   *   std::string content(std::istreambuf_iterator<char>(ifs), {});
-   *   return google::protobuf::TextFormat::ParseFromString(content, config);
+   * 保留 cyber_ref ComponentBase 的文本 Protobuf 配置职责。
+   * 空指针、空路径、文件不存在或 TextFormat 解析失败均返回 false。
    */
   template <typename T>
   bool GetProtoConfig(T* config) const {
-    (void)config;
-    return false;
+    if (config == nullptr || config_file_path_.empty()) return false;
+    std::ifstream input(config_file_path_);
+    if (!input.is_open()) return false;
+    const std::string content((std::istreambuf_iterator<char>(input)),
+                              std::istreambuf_iterator<char>());
+    return google::protobuf::TextFormat::ParseFromString(content, config);
   }
 
   // 组件名称获取（来自 LoadConfigFiles 中存储的配置路径）
@@ -184,7 +183,8 @@ class ComponentBase : public std::enable_shared_from_this<ComponentBase> {
   //
   // Clear() 是虚函数，默认空实现。组件如有特殊清理需求（如关闭文件描述符、
   //   释放 GPU 显存）可以重写它。Clear 在 Shutdown 时被调用。
-  //   注意：Clear 调用时 readers_ 还未被销毁，派生类依然可以访问它们。
+  //   注意：Clear 调用时 Scheduler 任务和 Reader 已注销，派生类
+  //   应只释放自身 Writer 及业务资源，不得再依赖输入端点。
   // ==========================================================================
   virtual bool Init() = 0;
   virtual void Clear() {}

@@ -124,6 +124,10 @@ TEST(PosixSegmentTest, CloseIsIdempotent) {
   ASSERT_TRUE(seg.Open());
   seg.Close();
   seg.Close();
+  // Close 的生产语义是保留全局段；测试自身仍必须清理
+  // 精确名称，不把 /dev/shm 残留交给后续用例或人工命令。
+  UnlinkShm("minicyber_" + std::to_string(CH));
+  EXPECT_FALSE(ShmFileExists("minicyber_" + std::to_string(CH)));
   SUCCEED();
 }
 

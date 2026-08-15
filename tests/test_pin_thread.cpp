@@ -61,14 +61,18 @@ TEST(PinThreadTest, SetSchedAffinityRange) {
     if (CPU_ISSET(cpu, &allowed)) cpus.push_back(cpu);
   }
   ASSERT_FALSE(cpus.empty());
-  std::thread t([]() {});
+  std::atomic<bool> stop{false};
+  std::thread t([&]() {
+    while (!stop.load(std::memory_order_acquire)) std::this_thread::yield();
+  });
 
-  SetSchedAffinity(&t, cpus, "range");
+  EXPECT_TRUE(SetSchedAffinity(&t, cpus, "range"));
 
   // 验证线程的亲和性确实被设置了
   cpu_set_t get_set;
   CPU_ZERO(&get_set);
-  pthread_getaffinity_np(t.native_handle(), sizeof(get_set), &get_set);
+  EXPECT_EQ(0, pthread_getaffinity_np(t.native_handle(), sizeof(get_set),
+                                     &get_set));
 
   // 应该只有 cpus 中的 CPU 被设置
   for (const int cpu : cpus) {
@@ -80,6 +84,7 @@ TEST(PinThreadTest, SetSchedAffinityRange) {
     }
   }
 
+  stop.store(true, std::memory_order_release);
   if (t.joinable()) t.join();
 }
 
@@ -93,13 +98,17 @@ TEST(PinThreadTest, SetSchedAffinity1to1) {
   }
   ASSERT_FALSE(cpus.empty());
   const int target_index = cpus.size() > 1 ? 1 : 0;
-  std::thread t([]() {});
+  std::atomic<bool> stop{false};
+  std::thread t([&]() {
+    while (!stop.load(std::memory_order_acquire)) std::this_thread::yield();
+  });
 
-  SetSchedAffinity(&t, cpus, "1to1", target_index);
+  EXPECT_TRUE(SetSchedAffinity(&t, cpus, "1to1", target_index));
 
   cpu_set_t get_set;
   CPU_ZERO(&get_set);
-  pthread_getaffinity_np(t.native_handle(), sizeof(get_set), &get_set);
+  EXPECT_EQ(0, pthread_getaffinity_np(t.native_handle(), sizeof(get_set),
+                                     &get_set));
 
   EXPECT_TRUE(CPU_ISSET(cpus[target_index], &get_set));
   for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
@@ -108,6 +117,7 @@ TEST(PinThreadTest, SetSchedAffinity1to1) {
     }
   }
 
+  stop.store(true, std::memory_order_release);
   if (t.joinable()) t.join();
 }
 
@@ -116,7 +126,7 @@ TEST(PinThreadTest, SetSchedAffinityEmptyCpusNoop) {
   std::thread t([]() {});
 
   // 空 cpus 应直接返回，不崩溃
-  SetSchedAffinity(&t, cpus, "range");
+  EXPECT_TRUE(SetSchedAffinity(&t, cpus, "range"));
 
   if (t.joinable()) t.join();
 }
@@ -126,8 +136,8 @@ TEST(PinThreadTest, SetSchedAffinity1to1InvalidCpuId) {
   std::thread t([]() {});
 
   // cpu_id 越界应直接返回，不崩溃
-  SetSchedAffinity(&t, cpus, "1to1", 99);
-  SetSchedAffinity(&t, cpus, "1to1", -1);
+  EXPECT_FALSE(SetSchedAffinity(&t, cpus, "1to1", 99));
+  EXPECT_FALSE(SetSchedAffinity(&t, cpus, "1to1", -1));
 
   if (t.joinable()) t.join();
 }

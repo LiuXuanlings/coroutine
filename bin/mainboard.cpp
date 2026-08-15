@@ -5,6 +5,8 @@
 #include <signal.h>
 #include <unistd.h>
 
+#include <pthread.h>
+
 #include <cerrno>
 #include <cstring>
 #include <fstream>
@@ -29,7 +31,21 @@ volatile sig_atomic_t g_shutdown_requested = 0;
 
 void SignalHandler(int) { g_shutdown_requested = 1; }
 
-void InstallSignalHandlers() {
+bool InstallSignalHandlers(sigset_t* wait_mask) {
+  if (wait_mask == nullptr) return false;
+
+  // 在创建 Scheduler 工作线程前阻塞退出信号，后续线程会
+  // 继承该掩码。sigsuspend 再原子地解除阻塞并等待，避免
+  // “检查标志 -> pause”之间丢失唯一一次退出信号。
+  sigset_t shutdown_signals;
+  sigemptyset(&shutdown_signals);
+  sigaddset(&shutdown_signals, SIGINT);
+  sigaddset(&shutdown_signals, SIGTERM);
+  if (::pthread_sigmask(SIG_BLOCK, &shutdown_signals, wait_mask) != 0) {
+    std::cerr << "[Mainboard] Cannot block shutdown signals." << std::endl;
+    return false;
+  }
+
   struct sigaction action {};
   action.sa_handler = SignalHandler;
   sigemptyset(&action.sa_mask);
@@ -38,13 +54,17 @@ void InstallSignalHandlers() {
       ::sigaction(SIGTERM, &action, nullptr) != 0) {
     std::cerr << "[Mainboard] Cannot install signal handlers: "
               << std::strerror(errno) << std::endl;
+    return false;
   }
   ::signal(SIGPIPE, SIG_IGN);
+  sigdelset(wait_mask, SIGINT);
+  sigdelset(wait_mask, SIGTERM);
+  return true;
 }
 
-void WaitForShutdown() {
+void WaitForShutdown(const sigset_t& wait_mask) {
   while (g_shutdown_requested == 0) {
-    ::pause();
+    ::sigsuspend(&wait_mask);
   }
 }
 
@@ -139,6 +159,9 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  sigset_t shutdown_wait_mask;
+  if (!InstallSignalHandlers(&shutdown_wait_mask)) return 1;
+
   minicyber::scheduler::SchedulerConf scheduler_conf;
   // Scheduler 在 DAG 之前完成解析和工厂创建，确保 Component::Initialize
   // 取得的 thread-local Scheduler 是命令行指定策略而非默认策略。
@@ -150,14 +173,13 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  InstallSignalHandlers();
   minicyber::mainboard::ModuleController controller({args.dag_path});
   if (!controller.LoadAll()) {
     ShutdownRuntime(&controller, scheduler.get());
     return 1;
   }
 
-  WaitForShutdown();
+  WaitForShutdown(shutdown_wait_mask);
   ShutdownRuntime(&controller, scheduler.get());
   return 0;
 }

@@ -10,10 +10,9 @@
 namespace minicyber {
 namespace data {
 
-// Wraps a CacheBuffer and binds it to a channel_id. The underlying buffer
-// stores std::shared_ptr<T> so messages are handed around by reference rather
-// than copied. ChannelBuffer does NOT own the CacheBuffer; ownership
-// stays with the caller (typically DataDispatcher in Step 14).
+// 将 CacheBuffer 与 channel_id 绑定。底层保存 std::shared_ptr<T>，
+// 数据链传递共享指针而不复制消息对象；ChannelBuffer 与调用方
+// 共享 CacheBuffer 所有权。
 template <typename T>
 class ChannelBuffer {
  public:

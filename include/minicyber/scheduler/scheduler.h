@@ -100,6 +100,7 @@ class Scheduler {
     std::mutex mutex;
     Scheduler* scheduler = nullptr;
     std::atomic<uint64_t> task_id{0};
+    bool notification_pending = false;
   };
   std::mutex routine_wake_mtx_;
   std::vector<std::shared_ptr<RoutineWakeState>> routine_wake_states_;

@@ -19,7 +19,8 @@ namespace scheduler {
 //
 // 与 ClassicContext 的核心差异：ClassicContext 由同组 Processor 共同消费
 // 多级优先级队列；ChoreographyContext 保留单一就绪队列，任务由上游显式
-// Enqueue，专用于后续定向 Processor 的 DAG 依赖触发。
+// Enqueue 到配置指定的 Processor；数据到达时只更新状态并 Notify，
+// 不重复入队。
 //
 // 实例本地状态（无静态成员）：
 //   - cr_queue_：multimap<prio, CRoutine, greater>，begin() 即最高优先级。
@@ -42,8 +43,7 @@ class ChoreographyContext : public ProcessorContext {
   // 无就绪协程时返回 nullptr。不会窃取其他 Context 的任务。
   std::shared_ptr<CRoutine> NextRoutine() override;
 
-  // 将协程显式推入本上下文的就绪队列。由上游依赖满足后定向调用
-  // （Step 37 的 Scheduler::NotifyTask -> ChoreographyContext::Enqueue）。
+  // 将协程显式推入本上下文的就绪队列，仅由 Scheduler 创建任务时调用。
   // 写锁保护 multimap 插入。
   bool Enqueue(const std::shared_ptr<CRoutine>& cr);
 

@@ -82,7 +82,7 @@ bool ModuleController::LoadAll() {
 
 bool ModuleController::ParseDagFile(const std::string& path,
                                     DagConfig* dag_config) {
-  // Step 1: 读取文件到 string
+  // 步骤 1：读取文件到 string
   std::ifstream ifs(path, std::ios::in);
   if (!ifs.is_open()) {
     MERROR << "Cannot open DAG file: " << path << " - "
@@ -95,7 +95,7 @@ bool ModuleController::ParseDagFile(const std::string& path,
   ifs.close();
   const std::string content = buf.str();
 
-  // Step 2: 解析 TextFormat proto
+  // 步骤 2：解析 TextFormat proto
   // TextFormat 是 protobuf 提供的文本序列化格式解析器。
   // 与二进制格式（ParseFromString）不同，文本格式允许人类直接编辑。
   if (!google::protobuf::TextFormat::ParseFromString(content, dag_config)) {
@@ -156,17 +156,17 @@ bool ModuleController::LoadModuleFromFile(const std::string& path) {
 // ---------------------------------------------------------------------------
 // 遍历 DagConfig 中的每个 ModuleConfig：
 //
-//   Step 1: 解析 .so 路径
+//   步骤 1：解析 .so 路径
 //     调用 ResolveLibraryPath 获取完整路径。
 //     module_library 必须非空，且只能通过 dlopen 加载。
 //
-//   Step 2: 创建事件驱动组件
+//   步骤 2：创建事件驱动组件
 //     遍历 ModuleConfig::components：
 //       a. ComponentFactory::Create(class_name) → 反射创建
 //       b. component->Initialize(config) → 配置+初始化
 //       c. component_list_.push_back → 生命周期管理
 //
-//   Step 3: 错误处理
+//   步骤 3：错误处理
 //     任何一步失败 → 返回 false，由上层 Clear() 统一清理
 //
 // dlopen 的关键机制（面试核心考点）：
@@ -190,7 +190,7 @@ bool ModuleController::LoadModule(const DagConfig& dag_config) {
 
   for (const auto& module_config : dag_config.module_config()) {
     // ======================================================================
-    // Step 1: dlopen 加载动态库
+    // 步骤 1：dlopen 加载动态库
     // ======================================================================
     const std::string& lib_path_str = module_config.module_library();
     if (lib_path_str.empty()) {
@@ -213,7 +213,7 @@ bool ModuleController::LoadModule(const DagConfig& dag_config) {
     lib_handles_.push_back(handle);
 
     // ======================================================================
-    // Step 2: 创建事件驱动组件（Component<T>）
+    // 步骤 2：创建事件驱动组件（Component<T>）
     // ======================================================================
     for (const auto& component_info : module_config.components()) {
       if (component_info.class_name().empty() || !component_info.has_config() ||
@@ -272,8 +272,8 @@ bool ModuleController::LoadModule(const DagConfig& dag_config) {
 // 为什么逆序 Shutdown：
 //   如果组件 B 依赖组件 A（B 使用 A 的输出），先 Shutdown A 可能导致
 //   B 的 Proc 在 Shutdown 过程中调用时访问已释放的资源。逆序 Shutdown
-//   虽然不能完全解决这个问题（组件间依赖是图而非链），但历史上减少了
-//   很多竞态。完整方案需要 DAG 拓扑排序（留待 Phase 7）。
+//   不代替 DAG 拓扑依赖分析；MiniCyber 的裁剪边界只保证本次加载
+//   水位内的逆序关闭、销毁与卸载。
 // =============================================================================
 
 void ModuleController::Clear() {
