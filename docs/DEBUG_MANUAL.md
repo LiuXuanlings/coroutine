@@ -690,6 +690,24 @@ ctest --test-dir build/debug --output-on-failure
 46/46。每轮成功路径均在脚本兜底 `shm_unlink` 前通过四频道检查。后续 MC-619 只复用该入口
 验证 Choreography 与混合扇出，不得复制业务管道或回退 SHM 首档容量。
 
+### MC-620 质量评估：功能取证污染性能路径
+
+**触发条件与现象**：检查 MC-620 原始 JSON 时发现提交号仍指向 MC-619，工作区状态为
+`dirty`。继续沿采集脚本进入统一启动脚本，确认每次运行都无条件设置
+`MINICYBER_AUTODRIVE_EVIDENCE_FILE` 并向 Sink 传入 `--evidence-file`。这意味着五个组件
+每条消息都会执行环境变量查询、全局互斥和 `map/set` 插入，Control/Audit 还记录指针与
+后端计数；这些操作属于 MC-619 功能验收，不属于端到端延迟指标。
+
+**排查与排除**：先对照 `demo/autodrive/evidence.cpp` 确认 `Enabled()` 只受环境变量控制，
+再对照 `scripts/run_autodrive_pipeline.sh` 确认性能入口确实总是设置该变量。metrics 自身的
+开关测试只能证明关闭 metrics 后不保存延迟样本，不能排除另一套 evidence 的逐消息开销，
+因此“已有 metrics 开关足以隔离测量开销”的假设不成立。
+
+**修正边界**：统一脚本增加独立 `--evidence/--no-evidence`，默认关闭；Choreography 功能
+验收显式开启，性能采集显式关闭。既有 CSV/JSON 不删除，改标为临时观测；最终数据由
+MC-623 在代码、脚本和配置均已提交且工作区干净的 Release 基线上重采。这样没有修改
+Transport、Scheduler 或业务算法，只隔离验证探针与性能样本。
+
 ## 七、证据来源
 
 本初稿迁移自首轮 `00_进度记录.md`、`baseline.md`、`module_mapping.md`、

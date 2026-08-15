@@ -52,6 +52,8 @@ if [[ -n $(git -C "${source_dir}" status --porcelain=v1) ]]; then
   worktree_status=dirty
 fi
 cpu=$(lscpu | awk -F: '/Model name/ {sub(/^[[:space:]]+/, "", $2); print $2; exit}')
+online_cpu_count=$(getconf _NPROCESSORS_ONLN)
+allowed_cpu_list=$(awk '/Cpus_allowed_list/ {print $2; exit}' /proc/self/status)
 kernel=$(uname -sr)
 compiler=$(c++ --version | head -1)
 protobuf=$(protoc --version)
@@ -85,7 +87,7 @@ collect_policy() {
   "${sink}" --check-shm-clean
   "${runner}" --build-dir "${build_dir}" --scheduler "${scheduler}" \
     --output-dir "${run_dir}" --messages "${messages}" --frequency "${frequency}" \
-    --timeout-ms "${timeout_ms}" --metrics
+    --timeout-ms "${timeout_ms}" --metrics --no-evidence
   "${sink}" --check-shm-clean
 
   local metrics_line
@@ -130,6 +132,8 @@ collect_policy() {
   printf '  "policy": "%s",\n' "${policy}" >>"${json}"
   printf '  "build_type": "Release",\n' >>"${json}"
   printf '  "cpu": "%s",\n' "$(json_escape "${cpu}")" >>"${json}"
+  printf '  "online_cpu_count": %s,\n' "${online_cpu_count}" >>"${json}"
+  printf '  "allowed_cpu_list": "%s",\n' "$(json_escape "${allowed_cpu_list}")" >>"${json}"
   printf '  "kernel": "%s",\n' "$(json_escape "${kernel}")" >>"${json}"
   printf '  "compiler": "%s",\n' "$(json_escape "${compiler}")" >>"${json}"
   printf '  "fastrtps_version": "%s",\n' "$(json_escape "${fastrtps}")" >>"${json}"
@@ -139,7 +143,7 @@ collect_policy() {
   printf '  "dag_sha256": "%s",\n' "${dag_hash}" >>"${json}"
   printf '  "scheduler": "%s",\n' "$(json_escape "${scheduler#"${source_dir}"/}")" >>"${json}"
   printf '  "scheduler_sha256": "%s",\n' "${scheduler_hash}" >>"${json}"
-  printf '  "arguments": "--messages %s --frequency %s --timeout-ms %s --metrics",\n' \
+  printf '  "arguments": "--messages %s --frequency %s --timeout-ms %s --metrics --no-evidence",\n' \
     "${messages}" "${frequency}" "${timeout_ms}" >>"${json}"
   printf '  "samples": %s,\n' "${received}" >>"${json}"
   printf '  "p50_ns": %s,\n' "${p50}" >>"${json}"

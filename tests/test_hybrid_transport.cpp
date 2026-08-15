@@ -225,6 +225,39 @@ TEST_F(HybridTransportTest, ProtobufShmCrossProcessRoundTrip) {
   CleanupChannel(channel);
 }
 
+TEST_F(HybridTransportTest, ProtobufShmDeliversWhenWriterStartsFirst) {
+  const std::string channel = "/hybrid/protobuf_writer_first";
+  CleanupChannel(channel);
+  const uint64_t channel_id = Transport::ChannelNameToId(channel);
+
+  ShmTransmitter<RoleAttributes> transmitter(channel_id);
+  transmitter.Enable();
+  ASSERT_TRUE(transmitter.enabled());
+
+  std::atomic<int> received{0};
+  std::shared_ptr<RoleAttributes> delivered;
+  ShmReceiver<RoleAttributes> receiver(
+      channel_id, [&](const std::shared_ptr<RoleAttributes>& message) {
+        delivered = message;
+        received.fetch_add(1, std::memory_order_release);
+      });
+  receiver.Enable();
+  ASSERT_TRUE(receiver.enabled());
+
+  auto message = std::make_shared<RoleAttributes>();
+  message->set_node_name("writer-first");
+  message->set_proto_desc(std::string(2048, 'w'));
+  ASSERT_TRUE(transmitter.Transmit(message));
+  ASSERT_TRUE(WaitFor(received, 1));
+  ASSERT_NE(delivered, nullptr);
+  EXPECT_EQ(delivered->node_name(), "writer-first");
+  EXPECT_EQ(delivered->proto_desc(), message->proto_desc());
+
+  receiver.Disable();
+  transmitter.Disable();
+  CleanupChannel(channel);
+}
+
 TEST_F(HybridTransportTest, ProtobufShmDeliversEmptyMessage) {
   const std::string channel = "/hybrid/protobuf_empty";
   CleanupChannel(channel);

@@ -9,9 +9,10 @@ messages=1000
 frequency=100
 timeout_ms=30000
 metrics_enabled=1
+evidence_enabled=0
 
 usage() {
-  echo "Usage: $0 [--build-dir <path>] [--scheduler <path>] [--output-dir <path>] [--messages <count>] [--frequency <hz>] [--timeout-ms <ms>] [--metrics|--no-metrics]" >&2
+  echo "Usage: $0 [--build-dir <path>] [--scheduler <path>] [--output-dir <path>] [--messages <count>] [--frequency <hz>] [--timeout-ms <ms>] [--metrics|--no-metrics] [--evidence|--no-evidence]" >&2
 }
 
 while [[ $# -gt 0 ]]; do
@@ -22,6 +23,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-metrics)
       metrics_enabled=0
+      shift
+      ;;
+    --evidence)
+      evidence_enabled=1
+      shift
+      ;;
+    --no-evidence)
+      evidence_enabled=0
       shift
       ;;
     --build-dir|--scheduler|--output-dir|--messages|--frequency|--timeout-ms)
@@ -92,16 +101,24 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 rm -f "$ready_file" "${output_dir}/metrics.txt"
-sink_args=(--messages "$messages" --timeout-ms "$timeout_ms" --ready-file "$ready_file" --evidence-file "$sink_evidence")
+sink_args=(--messages "$messages" --timeout-ms "$timeout_ms" --ready-file "$ready_file")
 if (( metrics_enabled != 0 )); then
   sink_args+=(--metrics --output "${output_dir}/metrics.txt")
+fi
+if (( evidence_enabled != 0 )); then
+  sink_args+=(--evidence-file "$sink_evidence")
 fi
 "$control_sink" "${sink_args[@]}" >"${output_dir}/control_sink.log" 2>&1 &
 sink_pid=$!
 
-MINICYBER_AUTODRIVE_EVIDENCE_FILE="$mainboard_evidence" \
+if (( evidence_enabled != 0 )); then
+  MINICYBER_AUTODRIVE_EVIDENCE_FILE="$mainboard_evidence" \
+    "$mainboard" -d "$dag_path" -s "$scheduler_path" \
+    >"${output_dir}/mainboard.log" 2>&1 &
+else
   "$mainboard" -d "$dag_path" -s "$scheduler_path" \
-  >"${output_dir}/mainboard.log" 2>&1 &
+    >"${output_dir}/mainboard.log" 2>&1 &
+fi
 mainboard_pid=$!
 
 # 等待 Sink 观察到 mainboard 的 ControlCommand Writer Join。轮询只检查这一

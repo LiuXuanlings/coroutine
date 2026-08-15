@@ -37,7 +37,8 @@
   `dlclose` 注册注销验证；MC-616 已完成 Source/Sink、拓扑 Join 放行、统一脚本、指标和
   有序退出。MC-617 已收敛高风险单测与 Protobuf-only SHM 边界；MC-618 已完成 Classic
   1000 条主干验收并将正式 SHM 默认池对齐原生首档；MC-619 已完成 Choreography、混合扇出
-  与生产文件触达审计；MC-620 已完成 Release 主干原始 CSV/JSON、环境元数据和中文性能报告；
+  与生产文件构建可达审计及关键运行探针；MC-620 已生成 Release 主干原始 CSV/JSON、环境元数据和中文性能报告，
+  但质量评估确认该批数据启用了 MC-619 逐消息取证且采集自 dirty 工作区，只能作为临时观测；
   下一步为 MC-621。
 - MC-602 必须先从 `docs/refactor/baseline.md`、`docs/refactor/module_mapping.md`、
   `docs/refactor/perf/**`、`docs/croutine/shared_from_this.md`、
@@ -165,6 +166,8 @@ MC-613 质量评估确认的局部门禁已分别归入 MC-615 的配置加载�
 MC-617 的信号/唤醒/绑核/资源测试和 MC-621 的注释一致性审计。
 MC-616 交付评估的细节门禁已下沉到 MC-617~620：指标关闭零样本开销、
 SHM 成功路径自然回收、Control/Audit 集合与 Hybrid 扇出证据、丢包/重复/乱序独立统计。
+MC-620 交付评估将文件职责补证、发现故障场景和干净 Release 性能复验下沉至
+MC-621/MC-623；统一启动脚本的逐消息 evidence 默认关闭，只允许功能验收显式开启。
 这些都是局部任务验收，不新增根级红线。
 接力 Agent 只在执行对应任务时读取具体门禁，不将这些实现细节追加为新的全局红线。
 

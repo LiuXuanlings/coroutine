@@ -3,7 +3,9 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <functional>
+#include <future>
 #include <string>
 #include <thread>
 
@@ -170,6 +172,52 @@ TEST(TopologyManagerTest, JoinLeaveTracksReadersSnapshotsAndChangeListeners) {
   ASSERT_TRUE(topo->Leave(minicyber::proto::ROLE_WRITER, replacement_writer));
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   EXPECT_EQ(joins.load() + leaves.load(), callback_count);
+  topo->Shutdown();
+}
+
+TEST(TopologyManagerTest, RemoveListenerWaitsForInFlightCallback) {
+  auto* topo = TopologyManager::Instance();
+  topo->Shutdown();
+
+  std::mutex mutex;
+  std::condition_variable entered_cv;
+  std::condition_variable release_cv;
+  bool entered = false;
+  bool release = false;
+  const auto connection = topo->AddChangeListener(
+      [&](const minicyber::proto::ChangeMsg&) {
+        std::unique_lock<std::mutex> lock(mutex);
+        entered = true;
+        entered_cv.notify_one();
+        release_cv.wait(lock, [&] { return release; });
+      });
+
+  const auto writer = MakeRole("in_flight_writer", "/ch/in_flight", 0x6064);
+  std::thread join_thread([&] {
+    EXPECT_TRUE(topo->Join(minicyber::proto::ROLE_WRITER, writer));
+  });
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    ASSERT_TRUE(entered_cv.wait_for(lock, std::chrono::seconds(2),
+                                    [&] { return entered; }));
+  }
+
+  auto remove_result = std::async(std::launch::async, [&] {
+    topo->RemoveChangeListener(connection);
+  });
+  EXPECT_EQ(remove_result.wait_for(std::chrono::milliseconds(50)),
+            std::future_status::timeout);
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    release = true;
+  }
+  release_cv.notify_one();
+  join_thread.join();
+  EXPECT_EQ(remove_result.wait_for(std::chrono::seconds(2)),
+            std::future_status::ready);
+  remove_result.get();
+
+  ASSERT_TRUE(topo->Leave(minicyber::proto::ROLE_WRITER, writer));
   topo->Shutdown();
 }
 

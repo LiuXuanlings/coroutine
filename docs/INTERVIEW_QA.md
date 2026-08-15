@@ -19,7 +19,7 @@ ControlCommand 的字段 1、2 固定为 `source_sequence` 和
 `source_monotonic_ns`。这沿用 CyberRT 示例 Header 将序列与时间作为消息关联键的职责，
 但不增加可被组件遗漏的嵌套 Header。传感器为测量样本生成从 1 开始的连续序列和
 `CLOCK_MONOTONIC` 时间；各组件只透传它们，ControlSink 才能用同一时钟域计算完整链路
-延迟、按期望集合判定丢包并识别重复。序列 0 仅供 VehicleState 预热使用，不进入测量
+延迟、按期望集合判定丢包并识别重复。序列 0 供 VehicleState 与 CameraFrame 端到端预热使用，不进入测量
 集合。这不是严格时间同步或可靠传输承诺，AllLatest 仍按主通道到达时取次通道最新值。
 
 ### 为什么只保留一条业务主干？
@@ -428,8 +428,8 @@ HasReader 证明对端已 Join，不证明每层 Component 的 CRoutine 都已�
 Fusion 是双通道 `AllLatest`：CameraFrame 为主通道，只有主通道到达时才会取 VehicleState
 的当前最新值并推动业务协程。若第一帧 CameraFrame 先到，次通道尚未填充会使首个测量样本
 没有可融合的 VehicleState；若同一序列颠倒顺序，则 CameraFrame 可能组合上一条次通道。
-因此 SensorSource 先写 sequence 0 的非测量 VehicleState，完整经过一个 `time::Rate` 周期，
-随后对每个测量序列固定写 `VehicleState -> CameraFrame`，并在全链路透传相同的源序列和单调
+因此 SensorSource 先按 `VehicleState -> CameraFrame` 写 sequence 0，并等待它完整穿透五组件、
+由 ControlAudit 回执形成端到端屏障；随后对每个测量序列保持相同顺序，并在全链路透传源序列和单调
 时间。这是 `cyber_ref` 数据驱动访问器的主通道/最新值职责，不是时间戳同步或额外可靠性协议。
 
 ### 为什么 Source 发完不能立即销毁 Writer？
@@ -474,3 +474,12 @@ ControlSink 的序列集合用于丢包、重复、乱序及 Audit 一致性这�
 没有业务价值的分配和排序输入。MC-617 将记录逻辑收敛到独立的 Metrics 状态，并由
 `test_control_sink_metrics` 断言关闭时连续接收消息后 `latency_ns` 始终为空；开启时才保留
 有效的单调时钟差值。正式 Release 性能结论仍只属于 MC-620。
+
+### 为什么功能 evidence 必须与性能 metrics 使用两个独立开关？
+
+metrics 负责端到端延迟、吞吐和完整性统计，是被测业务结果的一部分；MC-619 evidence
+则为了证明 Processor 线程归属、INTRA 指针身份、SHM 进程边界和逐组件序列集合，会执行
+额外的互斥、容器插入和地址记录。如果两者共用启动条件，性能样本会把功能取证成本计算
+进中间件延迟，结论无法说明关闭调试探针后的主干表现。因此统一脚本默认关闭 evidence，
+功能验收显式开启，性能采集只开启 metrics。隔离开关不是优化传输算法，而是保证测量对象
+和验收探针边界清晰。

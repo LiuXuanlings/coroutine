@@ -9,7 +9,7 @@ execute_process(
           --build-dir "${BINARY_DIR}"
           --scheduler "${SOURCE_DIR}/config/autodrive/choreo_sched.conf"
           --output-dir "${run_dir}"
-          --messages 1000 --frequency 100 --metrics
+          --messages 1000 --frequency 100 --metrics --evidence
   WORKING_DIRECTORY "${SOURCE_DIR}"
   RESULT_VARIABLE pipeline_result
   OUTPUT_VARIABLE pipeline_output
@@ -114,7 +114,8 @@ if(sink_control_pointer STREQUAL "0" OR mainboard_control_pointer STREQUAL "0")
   message(FATAL_ERROR "Missing INTRA or SHM message object evidence")
 endif()
 
-# 触达报告同时核对冻结台账、当前 Git 生产路径和显式构建/运行时加载证据。
+# 文件审计先核对冻结台账和当前 Git 生产路径。编译依赖与 CMake 清单只证明
+# “构建可达”，不能单独冒充运行时职责触达；最终逐文件运行证据由 MC-623 收口。
 set(report "${run_dir}/file_touch_report.txt")
 file(READ "${SOURCE_DIR}/docs/refactor/00_进度记录.md" ledger)
 if(NOT ledger MATCHES "MC-603 冻结留存清单" OR
@@ -151,6 +152,8 @@ file(WRITE "${report}" "MC-603_frozen_manifest=docs/refactor/00_进度记录.md\
 file(APPEND "${report}" "post_MC604_changes=docs/refactor/00_进度记录.md:MC-619\n")
 file(APPEND "${report}" "current_git_manifest=git ls-files production roots\n")
 file(APPEND "${report}" "runtime_dlopen=libminicyber_autodrive_components.so\n")
+file(APPEND "${report}" "evidence_scope=build_reachability_plus_selected_runtime_probes\n")
+file(APPEND "${report}" "runtime_coverage_status=provisional_until_MC-623\n")
 string(REPLACE "\n" ";" production_files "${production_files}")
 foreach(path IN LISTS production_files)
   if(path STREQUAL "")
@@ -166,10 +169,10 @@ foreach(path IN LISTS production_files)
   elseif(path MATCHES "^(include|demo/autodrive)/.*\\.h$")
     string(FIND "${production_dependencies}" "/${path}" dependency_position)
     if(NOT dependency_position EQUAL -1)
-      set(evidence "production_compile_dependency")
+      set(evidence "build_reachable:production_compile_dependency")
     endif()
   elseif(root_cmake MATCHES "${path}")
-    set(evidence "explicit_link_or_compile_chain")
+    set(evidence "build_reachable:explicit_link_or_compile_chain")
   endif()
   if(evidence STREQUAL "")
     message(FATAL_ERROR "Untouched production file: ${path}")

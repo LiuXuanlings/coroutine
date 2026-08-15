@@ -2,14 +2,17 @@
 
 ## 测量范围
 
-本报告只记录 MC-620 在唯一自动驾驶主干上的实际测量。Classic 与 Choreography 使用同一
+本报告记录 MC-620 在唯一自动驾驶主干上的一次临时测量。质量评估确认统一脚本当时默认
+启用了 MC-619 的逐消息 evidence，且采集工作区为 dirty，因此这些数值只用于保留历史观测，
+不得作为最终 README 性能结论。Classic 与 Choreography 使用同一
 `config/autodrive/autodrive.dag`、`--messages 1000 --frequency 100 --timeout-ms 30000 --metrics`
-和同一 Release 构建；二者只替换 Scheduler 配置。VehicleState 预热和发现阶段不进入延迟样本。
+和同一 Release 构建；二者只替换 Scheduler 配置。sequence 0 端到端预热和发现阶段不进入延迟样本。
 
 原始结果为 [Classic CSV](perf/autodrive_classic.csv)、[Classic JSON](perf/autodrive_classic.json)、
 [Choreography CSV](perf/autodrive_choreography.csv) 和
 [Choreography JSON](perf/autodrive_choreography.json)。每种配置执行一次，未挑选最好值；本报告
-不把这两次单机虚拟化环境运行解释为通用性能排序。
+不把这两次单机虚拟化环境运行解释为通用性能排序；MC-623 将在 evidence 关闭且工作区干净
+的 Release 提交上重新采集最终数据。
 
 ## 环境与输入
 
