@@ -9,7 +9,7 @@
 namespace minicyber {
 namespace autodrive {
 
-// MC-619 的业务验收只在设置 MINICYBER_AUTODRIVE_EVIDENCE_FILE 时记录。
+// 业务取证只在设置 MINICYBER_AUTODRIVE_EVIDENCE_FILE 时记录。
 // 记录留在常驻 Runtime 而非可卸载组件 DSO，保证 ControlComponent 发布的
 // shared_ptr 与 ControlAudit 接收的同一对象可在 dlclose 前可靠比较。
 class RuntimeEvidence final {

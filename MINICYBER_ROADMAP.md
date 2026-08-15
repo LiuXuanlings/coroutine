@@ -6,7 +6,7 @@
 
 - 当前分支：`development`
 - 当前阶段：第二次重构，业务模块改造阶段
-- 当前任务：MC-621
+- 当前任务：MC-622
 - 当前状态：待开始
 - 唯一状态事实源：[`docs/refactor/00_进度记录.md`](docs/refactor/00_进度记录.md)
 - 唯一任务执行方案：[`docs/refactor/01_实施方案.md`](docs/refactor/01_实施方案.md)
@@ -39,7 +39,7 @@
   1000 条主干验收并将正式 SHM 默认池对齐原生首档；MC-619 已完成 Choreography、混合扇出
   与生产文件构建可达审计及关键运行探针；MC-620 已生成 Release 主干原始 CSV/JSON、环境元数据和中文性能报告，
   但质量评估确认该批数据启用了 MC-619 逐消息取证且采集自 dirty 工作区，只能作为临时观测；
-  下一步为 MC-621。
+  MC-621 已补齐架构说明与自顶向下调用链；下一步为 MC-622。
 - MC-602 必须先从 `docs/refactor/baseline.md`、`docs/refactor/module_mapping.md`、
   `docs/refactor/perf/**`、`docs/croutine/shared_from_this.md`、
   `docs/scheduler/debug_vtable_hang.md`、`docs/transport/signal.md` 和

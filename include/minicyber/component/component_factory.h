@@ -9,40 +9,11 @@
 
 #include "minicyber/component/component_base.h"
 
-// =============================================================================
-// MiniCyber Component Framework — ComponentFactory 与注册宏
-//
-// 设计目标：提供通过类名字符串动态实例化 Component 的能力，为 MC-613 的
-//   mainboard DAG 解析与 dlopen 动态加载提供唯一注册表。
-//
-// 与 CyberRT 的差异：
-//   CyberRT 使用 Poco 库实现的完整 ClassLoader 体系，包括：
-//     - AbstractClassFactoryBase / AbstractClassFactory<Base> / ClassFactory<Derived, Base>
-//     - library_path_ 追踪（记录每个类从哪个 .so 加载）
-//     - relative_class_loaders_ 管理（支持多 Loader 拥有/释放）
-//     - class_loader_utility 全局注册中心
-//
-//   MiniCyber 只保留单例工厂 + unordered_map<string, CreatorFunc>；Instance
-//   定义在 minicyber_core，而不是头文件内联静态变量，保证主进程和以
-//   RTLD_GLOBAL 加载的组件 .so 解析到同一注册表。
-//
-// 静态初始化 + dlopen 机制（面试核心考点）：
-//   1. 用户代码在 .cpp 中使用 MINICYBER_REGISTER_COMPONENT(MyComponent)
-//   2. 该宏在匿名命名空间中定义一个静态全局变量
-//   3. g_registrar_MyComponent 的构造函数在 main() 之前（或 dlopen 加载时）执行
-//   4. 构造函数调用 ComponentFactory::Instance()->Register("MyComponent", creator)
-//   5. mainboard 调用 ComponentFactory::Instance()->Create("MyComponent")
-//      → 返回 new MyComponent()
-//
-//   当组件被编译为 .so 并通过 dlopen(so_path, RTLD_NOW | RTLD_GLOBAL) 加载时：
-//     - .so 内的静态全局变量初始化代码被执行
-//     - 因为 RTLD_GLOBAL 共享符号表，.so 中引用的 ComponentFactory::Instance()
-//       指向主进程中的同一个单例
-//     - 所以 Registration 发生在主进程的工厂中
-//     - mainboard 可以像加载本地类一样 Create 来自 .so 的组件
-//
-//   这就是"动态热加载"的核心原理，不依赖任何反射库，纯 C++ 静态初始化实现。
-// =============================================================================
+// ComponentFactory 是 mainboard 与组件 DSO 之间的唯一注册表。
+// MiniCyber 裁剪了 CyberRT 完整 ClassLoader 的多 Loader 管理，但保留
+// “dlopen 触发静态注册 -> 按类名创建 -> 卸载前注销”职责。
+// Instance 定义在 minicyber_core，保证主进程和 RTLD_GLOBAL DSO
+// 解析到同一注册表；本实现不支持运行中替换活跃组件。
 
 namespace minicyber {
 namespace component {
@@ -168,46 +139,8 @@ class ComponentFactory {
 }  // namespace component
 }  // namespace minicyber
 
-// =============================================================================
-// MINICYBER_REGISTER_COMPONENT(ClassName) — 组件注册宏
-//
-// 用法：
-//   class MyComponent : public minicyber::component::Component<std::string> {
-//     bool Init() override { return true; }
-//     bool Proc(const std::shared_ptr<std::string>& msg) override { ... }
-//   };
-//   MINICYBER_REGISTER_COMPONENT(MyComponent)
-//
-// 展开效果（假设 ClassName = MyComponent, __COUNTER__ = 42）：
-//   namespace {
-//     struct ComponentRegistrar_MyComponent_42 {
-//       ComponentRegistrar_MyComponent_42() {
-//         minicyber::component::ComponentFactory::Instance()->Register(
-//             "MyComponent",
-//             []() -> minicyber::component::ComponentBase* {
-//               return new MyComponent();
-//             });
-//       }
-//     };
-//     static ComponentRegistrar_MyComponent_42 g_registrar_MyComponent_42;
-//   }
-//
-// 设计决策说明：
-//   1. 匿名命名空间：防止不同翻译单元中相同类名的注册冲突（内部链接）。
-//      如果没有匿名命名空间，两个不同的 .so 中各自定义了
-//      static ComponentRegistrar_MyComponent g_registrar_MyComponent，
-//      链接器可能会合并或产生 ODR 违反。
-//
-//   2. __COUNTER__：保证同一翻译单元中多个 MINICYBER_REGISTER_COMPONENT
-//      调用的变量名不冲突。如果没有 __COUNTER__，在同一 .cpp 中注册
-//      两个组件时 g_registrar 的变量名会重复，导致编译错误。
-//
-//   3. 类名字符串化：#ClassName 在预处理时转为 "ClassName" 字符串。
-//
-//   4. Creator 返回原始指针：匹配 new 语义，调用方决定所有权模型。
-//      如果强制返回 shared_ptr，会迫使所有组件使用 shared_ptr，
-//      限制了上层（如 mainboard）的选择。
-// =============================================================================
+// 注册宏用匿名命名空间和 __COUNTER__ 保证注册器的内部链接与唯一命名。
+// Creator 返回原始指针，ModuleController 立即用 shared_ptr 接管所有权。
 
 #define MINICYBER_REGISTER_COMPONENT_INTERNAL(ClassName, Counter)        \
   namespace {                                                             \

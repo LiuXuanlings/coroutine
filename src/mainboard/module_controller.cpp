@@ -15,12 +15,7 @@
 
 #include "minicyber/component/component_factory.h"
 
-// =============================================================================
-// 日志辅助宏（在 mainboard 独立的日志设施建立前使用 cerr）
-// =============================================================================
-// mainboard 是独立的可执行文件，不强制依赖 glog/AINFO。
-// 这里使用简单的 cerr 做输出，后续可替换为任何日志库。
-// =============================================================================
+// mainboard 保持轻量，在这个边界直接使用标准流输出加载证据。
 #define MWARN std::cerr << "[Mainboard WARN] "
 #define MERROR std::cerr << "[Mainboard ERROR] "
 #define MINFO std::cout << "[Mainboard INFO] "
@@ -33,18 +28,10 @@ using minicyber::component::ComponentBase;
 using minicyber::proto::ComponentConfig;
 using minicyber::proto::DagConfig;
 
-// =============================================================================
-// 构造 / 析构
-// =============================================================================
-
 ModuleController::ModuleController(const std::vector<std::string>& dag_paths)
     : dag_paths_(dag_paths) {}
 
 ModuleController::~ModuleController() { Clear(); }
-
-// =============================================================================
-// LoadAll：遍历 DAG 路径并逐个加载
-// =============================================================================
 
 bool ModuleController::LoadAll() {
   MINFO << "Loading " << dag_paths_.size() << " DAG file(s)..." << std::endl;
@@ -65,24 +52,11 @@ bool ModuleController::LoadAll() {
   return true;
 }
 
-// =============================================================================
-// ParseDagFile：将 .dag 文本 proto 文件解析为 DagConfig
-// =============================================================================
-// Apollo 的 .dag 配置文件使用 protobuf 的文本格式（TextFormat）；
-// 相比二进制格式，文本格式可读性强，适合人工编辑和代码审查。
-//
-// 实现方式：
-//   1. 以文本方式读取整个文件到 std::string
-//   2. 使用 TextFormat::ParseFromString 解析为 DagConfig 消息
-//
-// 错误处理：
-//   - 文件不存在或无法打开 → 返回 false，cerr 输出 strerror(errno)
-//   - 文件内容不是合法的 TextFormat proto → 返回 false
-// =============================================================================
+// DAG 保留 CyberRT 的 Protobuf TextFormat 边界；文件打开或解析失败
+// 都不得进入动态库加载阶段。
 
 bool ModuleController::ParseDagFile(const std::string& path,
                                     DagConfig* dag_config) {
-  // 步骤 1：读取文件到 string
   std::ifstream ifs(path, std::ios::in);
   if (!ifs.is_open()) {
     MERROR << "Cannot open DAG file: " << path << " - "
@@ -95,9 +69,6 @@ bool ModuleController::ParseDagFile(const std::string& path,
   ifs.close();
   const std::string content = buf.str();
 
-  // 步骤 2：解析 TextFormat proto
-  // TextFormat 是 protobuf 提供的文本序列化格式解析器。
-  // 与二进制格式（ParseFromString）不同，文本格式允许人类直接编辑。
   if (!google::protobuf::TextFormat::ParseFromString(content, dag_config)) {
     MERROR << "Failed to parse DAG file (TextFormat): " << path << std::endl;
     return false;
@@ -130,7 +101,7 @@ std::string ModuleController::ResolveLibraryPath(
   if (module_library[0] == '/') {
     return module_library;
   }
-  // 唯一 DAG 不应写入构建目录；裸 DSO 名称由 MC-616 启动脚本的
+  // 唯一 DAG 不写入构建目录；裸 DSO 名称由启动脚本的
   // LD_LIBRARY_PATH 解析。有目录分隔符的历史相对路径继续按 CWD 解析。
   if (module_library.find('/') == std::string::npos) {
     return module_library;
@@ -157,34 +128,9 @@ bool ModuleController::LoadModuleFromFile(const std::string& path) {
   return LoadModule(dag_config);
 }
 
-// ---------------------------------------------------------------------------
-// LoadModule(const DagConfig&) — 核心加载逻辑
-// ---------------------------------------------------------------------------
-// 遍历 DagConfig 中的每个 ModuleConfig：
-//
-//   步骤 1：解析 .so 路径
-//     调用 ResolveLibraryPath 获取完整路径。
-//     module_library 必须非空，且只能通过 dlopen 加载。
-//
-//   步骤 2：创建事件驱动组件
-//     遍历 ModuleConfig::components：
-//       a. ComponentFactory::Create(class_name) → 反射创建
-//       b. component->Initialize(config) → 配置+初始化
-//       c. component_list_.push_back → 生命周期管理
-//
-//   步骤 3：错误处理
-//     任何一步失败 → 返回 false，由上层 Clear() 统一清理
-//
-// dlopen 的关键机制（面试核心考点）：
-//   dlopen(so_path, RTLD_NOW | RTLD_GLOBAL) 加载 .so 时：
-//     1. .so 的全局静态变量构造函数被执行
-//     2. 这些构造函数中，MINICYBER_REGISTER_COMPONENT 宏生成的
-//        g_registrar_XXX 调用 ComponentFactory::Instance()->Register()
-//     3. 由于 RTLD_GLOBAL 共享符号表，.so 中引用的
-//        ComponentFactory::Instance() 解析到主进程中的同一单例
-//     4. dlopen 返回后，工厂中已注册了 .so 中的 Component 类
-//     5. ComponentFactory::Create(class_name) 即可实例化
-// ---------------------------------------------------------------------------
+// LoadModule 保留原生动态组件边界：dlopen 触发静态注册，
+// ComponentFactory 按 class_name 创建对象。任一加载或初始化失败都回滚
+// 到调用前水位，且对象始终在所属 DSO 卸载前销毁。
 
 bool ModuleController::LoadModule(const DagConfig& dag_config) {
   const size_t component_count = component_list_.size();
@@ -195,9 +141,6 @@ bool ModuleController::LoadModule(const DagConfig& dag_config) {
   };
 
   for (const auto& module_config : dag_config.module_config()) {
-    // ======================================================================
-    // 步骤 1：dlopen 加载动态库
-    // ======================================================================
     const std::string& lib_path_str = module_config.module_library();
     if (lib_path_str.empty()) {
       MERROR << "module_library is required; static registration is not a "
@@ -218,9 +161,6 @@ bool ModuleController::LoadModule(const DagConfig& dag_config) {
     }
     lib_handles_.push_back(handle);
 
-    // ======================================================================
-    // 步骤 2：创建事件驱动组件（Component<T>）
-    // ======================================================================
     for (const auto& component_info : module_config.components()) {
       if (component_info.class_name().empty() || !component_info.has_config() ||
           component_info.config().name().empty() ||

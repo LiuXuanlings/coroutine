@@ -16,46 +16,15 @@
 #include "minicyber/node/node.h"
 #include "minicyber/scheduler/scheduler.h"
 
-// =============================================================================
-// MiniCyber Component Framework — ComponentBase 生命周期抽象
-//
-// 设计目标：对齐 Apollo CyberRT 的 ComponentBase，为业务组件提供规范化的
-//   Initialize / Shutdown 生命周期。业务开发者只需继承 Component<T> 并重写
-//   Init() 和 Proc(), 框架自动管理 Node 创建、Reader 注册和资源释放。
-//
-// 与 CyberRT 的裁剪边界：去掉 gflags、class_loader 和 WorkRoot；保留
-// Component 任务由 Scheduler 持有的生命周期，并将 RemoveTask 放在 Reader
-// 注销之前，确保 DATA_WAIT 唤醒不会再触达已关闭组件。
-//
-// 命名空间：minicyber::component 与 node / scheduler / data 层隔离
-// =============================================================================
+// ComponentBase 保留 CyberRT 组件生命周期职责，裁剪 gflags、
+// class_loader 和 WorkRoot。Shutdown 必须先 RemoveTask，再注销 Reader，
+// 确保 DATA_WAIT 唤醒不会触达已关闭组件。
 
 namespace minicyber {
 namespace component {
 
-// =============================================================================
-// ReaderBase / ReaderT — 类型擦除的 Reader 包装器
-// =============================================================================
-// ComponentBase 需要持有一组异构的 Reader<M0>, Reader<M1>, ... 指针，以便在
-// Shutdown 时统一调用 reader->Shutdown()。C++ 模板不支持直接 vector 存储
-// 不同类型的 Reader<T>，因此使用「类型擦除」手法：
-//
-//   ReaderBase  (抽象基类, 纯虚 Shutdown)
-//       ↑
-//   ReaderT<T>  (派生模板, 持有 shared_ptr<node::Reader<T>>)
-//
-// 这种方案相比 std::any / void* 的优势：类型安全 + 零运行时开销（虚函数表
-// 的代价可忽略，因为 Shutdown 调用频率极低）。
-//
-// Tradeoff: 每个 ReaderT 对象多一次虚函数间接调用（Shutdown 时）。
-// 由于 Shutdown 在框架关闭时只调用一次，这个成本完全可接受。
-//
-// CyberRT 原版在 cyber/node/reader_base.h 中定义了 ReaderBase 基类，
-// 所有 Reader<M> 都继承它。MiniCyber 为了保持 node 层的简洁性（Reader 没有
-// 继承体系），在 component 层引入这套包装器。这是「关注点分离」的体现：
-//   - node::Reader<T>: 纯数据通道接口，不做生命周期管理
-//   - component::ReaderBase: 生命周期管理接口，用于框架层面统一清理
-// =============================================================================
+// ReaderT 用类型擦除让 ComponentBase 能按同一关闭顺序管理异构 Reader。
+// node::Reader<T> 保持模板类型边界，ReaderBase 只暴露低频的 Shutdown。
 class ReaderBase {
  public:
   virtual ~ReaderBase() = default;

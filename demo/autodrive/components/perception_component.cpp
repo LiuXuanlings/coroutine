@@ -31,7 +31,7 @@ class PerceptionComponent
         scheduler == nullptr ? -1 : scheduler->ProcessorTid(1));
     auto obstacle = minicyber::runtime::CreateAutodriveMessage<
         minicyber::proto::PerceptionObstacle>();
-    // MC-614 的关联键只在 Source 写入；这里和后续组件只透传，保证 Sink 能计算端到端延迟。
+    // 关联键只在 Source 写入；后续组件只透传，保证 Sink 能计算端到端延迟。
     obstacle->set_source_sequence(frame->source_sequence());
     obstacle->set_source_monotonic_ns(frame->source_monotonic_ns());
     obstacle->set_obstacle_id(frame->source_sequence());

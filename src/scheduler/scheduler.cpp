@@ -274,7 +274,7 @@ uint64_t Scheduler::CreateTask(const std::function<void()>& func,
       target = static_cast<uint32_t>(requested_processor);
       cr->set_processor_id(requested_processor);
     } else {
-      // 未指定或越出定向区的任务统一进入 MC-610 的 Classic 公共组。
+      // 未指定或越出定向区的任务统一进入 Classic 公共组。
       cr->set_processor_id(-1);
       cr->set_group_name(DEFAULT_GROUP_NAME);
     }

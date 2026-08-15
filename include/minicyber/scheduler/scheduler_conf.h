@@ -44,7 +44,7 @@ struct ClassicGroupConf {
 // ----------------------------------------------------------------------
 // SchedulerConf: 调度器配置
 // ----------------------------------------------------------------------
-// classic_groups 是 MC-610 的正式 Classic 输入，由 Scheduler Protobuf 转换
+// classic_groups 是 Classic 的正式输入，由 Scheduler Protobuf 转换
 // 而来。未提供 group 时，旧字段只构造一个 default_grp，保持已存在调用方
 // 的兼容；它不再表达每 Processor 一个 proc_i 组。
 // ----------------------------------------------------------------------
@@ -70,7 +70,7 @@ struct SchedulerConf {
   std::vector<uint32_t> prio_threshold;
 
   // Classic 与 Choreography 分别按其原生配置职责转换；双区数量和 cpuset
-  // 在 MC-611 入口校验，避免启动后才暴露不可路由的任务。
+  // 在配置转换入口校验，避免启动后才暴露不可路由的任务。
   static bool FromProto(const ::minicyber::proto::SchedulerConf& proto,
                         SchedulerConf* conf);
 };

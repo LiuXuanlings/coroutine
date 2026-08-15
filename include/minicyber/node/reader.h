@@ -18,8 +18,7 @@ namespace minicyber {
 namespace node {
 
 // Reader 保留业务需要的有界 Observe 队列，但接收回调只入队和通知用户；
-// 它不在发布线程同步执行业务 Proc。MC-609/MC-612 将在此边界之上接入
-// DataVisitor 与 RoutineFactory。
+// Component 的 Proc 由 DataVisitor/RoutineFactory 协程链执行，不在发布线程同步调用。
 template <typename T>
 class Reader {
   static_assert(std::is_base_of<google::protobuf::Message, T>::value,

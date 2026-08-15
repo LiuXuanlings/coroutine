@@ -51,7 +51,7 @@ class Scheduler {
                       const std::string& name, uint32_t prio = 0,
                       int processor_id = -1);
 
-  // 将 MC-609 的 RoutineFactory 接入调度器。DataVisitor 回调只转换为
+  // 将 RoutineFactory 接入调度器。DataVisitor 回调只转换为
   // NotifyTask，不能在发布线程运行 Proc；关闭时会先解除回调到本 Scheduler
   // 的引用，避免 Visitor 生命周期长于 Scheduler 时访问已销毁对象。
   uint64_t CreateTask(const croutine::RoutineFactory& factory,

@@ -31,7 +31,7 @@ namespace node {
 // 与 CyberRT 的简化：
 //   - 保留 NodeChannelImpl 填充 RoleAttributes 和端点 Join/Leave；不恢复 RTPS 数据面
 //   - Reader 保留有界 Observe 队列，不在接收回调中同步执行业务 Proc
-//   - DataVisitor/RoutineFactory 的异步调度职责留给 MC-609/MC-612
+//   - DataVisitor/RoutineFactory 在 Component 层负责异步调度
 // =============================================================================
 
 // ReaderBase 前置声明（用于 map 存储异构 Reader）

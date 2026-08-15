@@ -1,6 +1,6 @@
-// MiniCyber mainboard：保留 cyber_ref mainboard 的“参数 -> 初始化 -> 加载 ->
-// 等待 -> 清理”职责。MC-613 将 DAG 与 Scheduler 配置拆开，同一 DAG 仅通过
-// 替换独立 Scheduler 配置选择 Classic 或 Choreography。
+// MiniCyber mainboard 保留 cyber_ref mainboard 的“参数 -> 初始化 -> 加载 ->
+// 等待 -> 清理”职责。DAG 与 Scheduler 配置独立，同一 DAG 只通过
+// 替换 Scheduler 配置选择 Classic 或 Choreography。
 
 #include <signal.h>
 #include <unistd.h>

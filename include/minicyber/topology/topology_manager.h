@@ -44,7 +44,7 @@ class TopologyManager {
   ChangeConnection AddChangeListener(ChangeFunc callback);
   void RemoveChangeListener(ChangeConnection connection);
 
-  // 这些兼容入口仍写入同一 Channel 状态表，供 MC-608 前的 Node/测试使用。
+  // 这些兼容入口仍写入同一 Channel 状态表，不维护第二套拓扑状态。
   void AddNode(const std::string& node_name, pid_t process_id);
   void AddChannelWriter(const std::string& channel_name,
                         const std::string& node_name, pid_t process_id);

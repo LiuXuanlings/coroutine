@@ -8,7 +8,7 @@ namespace minicyber {
 namespace data {
 namespace fusion {
 
-// DataFusion 是双通道访问的最小抽象。MC-609 只保留唯一主干需要的
+// DataFusion 是双通道访问的最小抽象。本项目只保留唯一主干需要的
 // AllLatest，不再保留三/四输入策略或把多输入接口伪装成通用能力。
 template <typename M0, typename M1>
 class DataFusion {
