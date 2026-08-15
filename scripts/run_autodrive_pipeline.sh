@@ -8,13 +8,22 @@ output_dir="${source_dir}/out/autodrive"
 messages=1000
 frequency=100
 timeout_ms=30000
+metrics_enabled=1
 
 usage() {
-  echo "Usage: $0 [--build-dir <path>] [--scheduler <path>] [--output-dir <path>] [--messages <count>] [--frequency <hz>] [--timeout-ms <ms>]" >&2
+  echo "Usage: $0 [--build-dir <path>] [--scheduler <path>] [--output-dir <path>] [--messages <count>] [--frequency <hz>] [--timeout-ms <ms>] [--metrics|--no-metrics]" >&2
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --metrics)
+      metrics_enabled=1
+      shift
+      ;;
+    --no-metrics)
+      metrics_enabled=0
+      shift
+      ;;
     --build-dir|--scheduler|--output-dir|--messages|--frequency|--timeout-ms)
       [[ $# -ge 2 ]] || { usage; exit 1; }
       case "$1" in
@@ -69,17 +78,23 @@ cleanup() {
       wait "$pid" 2>/dev/null || true
     fi
   done
-  # 仅在三个业务进程均已退出后，清理本次唯一主干的精确 SHM 名称。不能以
-  # /dev/shm 通配符覆盖其他运行实例，也不改变 PosixSegment 的正常引用回收。
-  "$control_sink" --cleanup-shm >/dev/null 2>&1 || true
+  # 只有失败或中断路径使用精确名称兜底清理；成功路径必须由
+  # PosixSegment 引用归零自然回收，否则无法验证生命周期语义。
+  if (( status != 0 )); then
+    if ! "$control_sink" --cleanup-shm; then
+      echo "Failed to clean pipeline SHM after status ${status}." >&2
+    fi
+  fi
   exit "$status"
 }
 trap cleanup EXIT INT TERM
 
-rm -f "$ready_file"
-"$control_sink" --messages "$messages" --timeout-ms "$timeout_ms" --metrics \
-  --output "${output_dir}/metrics.txt" --ready-file "$ready_file" \
-  >"${output_dir}/control_sink.log" 2>&1 &
+rm -f "$ready_file" "${output_dir}/metrics.txt"
+sink_args=(--messages "$messages" --timeout-ms "$timeout_ms" --ready-file "$ready_file")
+if (( metrics_enabled != 0 )); then
+  sink_args+=(--metrics --output "${output_dir}/metrics.txt")
+fi
+"$control_sink" "${sink_args[@]}" >"${output_dir}/control_sink.log" 2>&1 &
 sink_pid=$!
 
 "$mainboard" -d "$dag_path" -s "$scheduler_path" \
@@ -114,4 +129,12 @@ source_pid=""
 kill -TERM "$mainboard_pid"
 wait "$mainboard_pid"
 mainboard_pid=""
-echo "Autodrive pipeline completed: ${output_dir}/metrics.txt"
+
+# 正常退出后先检查四个精确频道已自然回收；检查失败会保留非零
+# 退出码，再由 trap 做环境恢复，不能把兜底 unlink 冒充为验收证据。
+"$control_sink" --check-shm-clean
+if (( metrics_enabled != 0 )); then
+  echo "Autodrive pipeline completed: ${output_dir}/metrics.txt"
+else
+  echo "Autodrive pipeline completed with metrics disabled."
+fi

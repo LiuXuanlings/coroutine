@@ -137,7 +137,6 @@ set(MINICYBER_CORE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/time/rate.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/time/time.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/topology/topology_manager.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/transport/autodrive_dispatcher.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/transport/dispatcher/shm_dispatcher.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/transport/shm/condition_notifier.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/transport/shm/posix_segment.cpp
@@ -153,6 +152,13 @@ target_link_options(minicyber_core PRIVATE
     "-Wl,--whole-archive,$<TARGET_FILE:minicyber_proto>,--no-whole-archive"
 )
 
+# 自动驾驶消息的模板实例和 shared_ptr 控制块需要一个先于组件
+# 插件加载、后于插件卸载的常驻所有者。它属于 Demo 运行时，不能让
+# 通用 minicyber_core 依赖 CameraFrame/ControlCommand 等具体业务类型。
+add_library(minicyber_autodrive_runtime SHARED
+    ${CMAKE_CURRENT_SOURCE_DIR}/demo/autodrive/autodrive_runtime.cpp)
+target_link_libraries(minicyber_autodrive_runtime PRIVATE minicyber_core)
+
 # MC-615 的唯一业务插件。业务 Component 只能经 ModuleController 的 dlopen
 # 触发静态注册，不能链接进 mainboard 绕过 CyberRT ClassLoader 对应的插件边界。
 set(AUTODRIVE_COMPONENT_SOURCES
@@ -164,7 +170,7 @@ set(AUTODRIVE_COMPONENT_SOURCES
 )
 add_library(minicyber_autodrive_components SHARED ${AUTODRIVE_COMPONENT_SOURCES})
 target_link_libraries(minicyber_autodrive_components
-    PRIVATE minicyber_core
+    PRIVATE minicyber_autodrive_runtime minicyber_core
 )
 # 业务插件含模板传输代码；GCC 默认的 GNU unique 局部静态对象会让 glibc
 # 将该 DSO 视为 NODELETE，从而跳过静态注册器的析构和工厂注销。核心库继续
@@ -201,12 +207,14 @@ set_target_properties(mainboard PROPERTIES
 # MC-616 的唯一跨进程业务两端。它们只连接 MC-615 已冻结的频道和 DAG，
 # 不把 Source/Sink 混入可 dlopen 的组件库，保留 CyberRT 独立 Node 进程边界。
 add_executable(sensor_source demo/autodrive/sensor_source.cpp)
-target_link_libraries(sensor_source PRIVATE minicyber_core pthread dl)
+target_link_libraries(sensor_source PRIVATE minicyber_autodrive_runtime
+                    minicyber_core pthread dl)
 set_target_properties(sensor_source PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 add_executable(control_sink demo/autodrive/control_sink.cpp)
-target_link_libraries(control_sink PRIVATE minicyber_core pthread dl)
+target_link_libraries(control_sink PRIVATE minicyber_autodrive_runtime
+                    minicyber_core pthread dl)
 set_target_properties(control_sink PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 

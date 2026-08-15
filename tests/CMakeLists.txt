@@ -78,6 +78,7 @@ if(TEST_FILES)
         endif()
         if(TEST_NAME STREQUAL "test_autodrive_components")
             add_dependencies(${TEST_NAME} minicyber_autodrive_components)
+            target_link_libraries(${TEST_NAME} minicyber_autodrive_runtime)
             target_compile_definitions(${TEST_NAME} PRIVATE
                 MINICYBER_AUTODRIVE_COMPONENTS_PATH="$<TARGET_FILE:minicyber_autodrive_components>"
                 MINICYBER_SOURCE_DIR="${CMAKE_SOURCE_DIR}")

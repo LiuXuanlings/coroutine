@@ -6,7 +6,9 @@ module_config {
     config {
       name: "perception"
       config_file_path: "config/autodrive/components/perception.conf"
-      readers { channel: "/autodrive/camera" pending_queue_size: 8 }
+      # 默认验收是 1000 条；业务队列覆盖该窗口，避免 Processor
+      # 短时调度抖动触发 CacheBuffer 的原生“落后则快进到最新”语义。
+      readers { channel: "/autodrive/camera" pending_queue_size: 1024 }
     }
   }
   components {
@@ -14,8 +16,8 @@ module_config {
     config {
       name: "fusion"
       config_file_path: "config/autodrive/components/fusion.conf"
-      readers { channel: "/autodrive/perception_obstacle" pending_queue_size: 8 }
-      readers { channel: "/autodrive/vehicle_state" pending_queue_size: 8 }
+      readers { channel: "/autodrive/perception_obstacle" pending_queue_size: 1024 }
+      readers { channel: "/autodrive/vehicle_state" pending_queue_size: 1024 }
     }
   }
   components {
@@ -23,7 +25,7 @@ module_config {
     config {
       name: "planning"
       config_file_path: "config/autodrive/components/planning.conf"
-      readers { channel: "/autodrive/fused_obstacle" pending_queue_size: 8 }
+      readers { channel: "/autodrive/fused_obstacle" pending_queue_size: 1024 }
     }
   }
   components {
@@ -31,7 +33,7 @@ module_config {
     config {
       name: "control"
       config_file_path: "config/autodrive/components/control.conf"
-      readers { channel: "/autodrive/trajectory" pending_queue_size: 8 }
+      readers { channel: "/autodrive/trajectory" pending_queue_size: 1024 }
     }
   }
   components {
@@ -39,7 +41,7 @@ module_config {
     config {
       name: "control_audit"
       config_file_path: "config/autodrive/components/control_audit.conf"
-      readers { channel: "/autodrive/control_command" pending_queue_size: 8 }
+      readers { channel: "/autodrive/control_command" pending_queue_size: 1024 }
     }
   }
 }

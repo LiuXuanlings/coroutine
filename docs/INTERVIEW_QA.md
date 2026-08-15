@@ -377,6 +377,29 @@ MiniCyber 不改变原生的 affinity 选择规则，只将系统调用成败变
 
 ## MC-616 多进程主干
 
+### 为什么不把业务 DataDispatcher 显式实例化直接放进 minicyber_core？
+
+跨 DSO 确实需要一份常驻的 DataDispatcher 状态和 shared_ptr 销毁入口，但这个需求
+不意味着通用中间件核心应依赖 CameraFrame、ControlCommand 等具体业务类型。
+MiniCyber 使用常驻的 `minicyber_autodrive_runtime` 持有业务模板实例：Source/Sink 和组件
+插件都链接它，插件卸载后 Runtime 仍然存活；`minicyber_core` 继续只表达通用调度、
+通信和生命周期职责。
+
+### 为什么默认主干 Reader 队列不能只配置为 8？
+
+`CacheBuffer` 是有界队列，消费者落后并超过活动窗口时，`ChannelBuffer::Fetch` 会快进
+到最新消息。这是面向实时最新值的原生语义，不是无界可靠队列。但本项目的默认
+业务验收又明确要求 1000 条无缺号，因此唯一 DAG 将业务队列设为 1024，覆盖验收
+窗口。这是业务 QoS 配置，不修改中间件的覆盖策略，也不把 MiniCyber 宣传为可靠持久队列。
+
+### 为什么只等 HasReader 与扩大队列仍不能保证第一条测量数据不丢？
+
+HasReader 证明对端已 Join，不证明每层 Component 的 CRoutine 都已首次运行。
+`ChannelBuffer::Fetch` 在消费游标为 0 时按 CyberRT 的最新值语义直接取 `Tail`；某层首次
+运行前若已累积两条输入，第一条会被跳过，无论队列多大都一样。因此 MiniCyber
+用 sequence 0 做端到端预热：Source 等到它从 ControlAudit 跨进程回执，再发 1..N
+测量序列。这个屏障证明整条协程链已消费首次游标，同时不改变底层最新值语义。
+
 ### 为什么 VehicleState 必须预热，并且每个测量序列先于 CameraFrame 发布？
 
 Fusion 是双通道 `AllLatest`：CameraFrame 为主通道，只有主通道到达时才会取 VehicleState

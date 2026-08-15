@@ -3,8 +3,8 @@
 namespace minicyber {
 namespace data {
 
-// 这些显式实例化把业务 DataDispatcher 的状态和函数地址固定在核心库；
-// 组件 .so 只引用它们，不在 dlopen 边界复制数据总线单例。
+// 业务 DataDispatcher 由常驻 Demo Runtime 唯一实例化；可卸载的
+// Component DSO 只引用这份状态，不会复制进程内数据总线。
 template class DataDispatcher<proto::CameraFrame>;
 template class DataDispatcher<proto::VehicleState>;
 template class DataDispatcher<proto::PerceptionObstacle>;

@@ -6,12 +6,15 @@
 #include <cerrno>
 #include <cstring>
 #include <exception>
+#include <fcntl.h>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <mutex>
 #include <string>
 #include <sys/mman.h>
+#include <unordered_set>
+#include <unistd.h>
 #include <vector>
 
 #include "minicyber/node/node.h"
@@ -33,6 +36,7 @@ struct ProgramArgs {
   uint64_t timeout_ms = 30000;
   bool metrics = false;
   bool cleanup_shm = false;
+  bool check_shm_clean = false;
   std::string output_path;
   std::string ready_path;
   bool show_help = false;
@@ -41,11 +45,15 @@ struct ProgramArgs {
 
 struct Metrics {
   uint64_t received = 0;
-  uint64_t expected_sequence = 1;
-  uint64_t missing = 0;
+  uint64_t audit_received = 0;
+  uint64_t last_first_sequence = 0;
+  uint64_t duplicates = 0;
+  uint64_t audit_duplicates = 0;
   uint64_t out_of_order = 0;
   uint64_t first_receive_ns = 0;
   uint64_t last_receive_ns = 0;
+  std::unordered_set<uint64_t> sequences;
+  std::unordered_set<uint64_t> audit_sequences;
   std::vector<uint64_t> latency_ns;
 };
 
@@ -53,7 +61,7 @@ void PrintUsage(const char* program) {
   std::cerr << "Usage: " << program
             << " [--messages <count>] [--timeout-ms <ms>] [--metrics]"
                " [--output <metrics_path>] [--ready-file <path>]"
-               " [--cleanup-shm]\n";
+               " [--cleanup-shm] [--check-shm-clean]\n";
 }
 
 bool ParseUnsigned(const std::string& value, uint64_t* result) {
@@ -83,6 +91,10 @@ ProgramArgs ParseArgs(int argc, char** argv) {
     }
     if (argument == "--cleanup-shm") {
       args.cleanup_shm = true;
+      continue;
+    }
+    if (argument == "--check-shm-clean") {
+      args.check_shm_clean = true;
       continue;
     }
     if ((argument != "--messages" && argument != "--timeout-ms" &&
@@ -125,6 +137,29 @@ bool CleanupPipelineShm() {
   return success;
 }
 
+bool CheckPipelineShmClean() {
+  constexpr const char* kChannels[] = {
+      "/autodrive/camera", "/autodrive/vehicle_state",
+      "/autodrive/control_command", "/autodrive/control_audit"};
+  bool clean = true;
+  for (const char* channel : kChannels) {
+    const std::string name =
+        "/minicyber_" + std::to_string(
+                             minicyber::transport::Transport::ChannelNameToId(channel));
+    const int fd = ::shm_open(name.c_str(), O_RDWR, 0644);
+    if (fd >= 0) {
+      ::close(fd);
+      std::cerr << "ControlSink found residual SHM segment " << name << ".\n";
+      clean = false;
+    } else if (errno != ENOENT) {
+      std::cerr << "ControlSink could not inspect " << name << ": "
+                << std::strerror(errno) << ".\n";
+      clean = false;
+    }
+  }
+  return clean;
+}
+
 bool WriteReadyFile(const std::string& path) {
   if (path.empty()) return true;
   std::ofstream output(path);
@@ -158,8 +193,19 @@ uint64_t Percentile(std::vector<uint64_t> values, uint64_t numerator,
   return values[std::min<uint64_t>(index, values.size() - 1)];
 }
 
-void PrintMetrics(const Metrics& metrics, std::ostream* output) {
+void PrintMetrics(const Metrics& metrics, uint64_t expected_messages,
+                  std::ostream* output) {
   if (output == nullptr) return;
+  const uint64_t lost = expected_messages > metrics.sequences.size()
+                            ? expected_messages - metrics.sequences.size()
+                            : 0;
+  uint64_t audit_difference = 0;
+  for (const uint64_t sequence : metrics.sequences) {
+    if (metrics.audit_sequences.count(sequence) == 0) ++audit_difference;
+  }
+  for (const uint64_t sequence : metrics.audit_sequences) {
+    if (metrics.sequences.count(sequence) == 0) ++audit_difference;
+  }
   const double elapsed_seconds =
       metrics.last_receive_ns > metrics.first_receive_ns
           ? static_cast<double>(metrics.last_receive_ns - metrics.first_receive_ns) /
@@ -169,8 +215,12 @@ void PrintMetrics(const Metrics& metrics, std::ostream* output) {
                                 ? static_cast<double>(metrics.received) / elapsed_seconds
                                 : 0.0;
   *output << "METRICS received=" << metrics.received
-          << " missing=" << metrics.missing
+          << " audit_received=" << metrics.audit_received
+          << " lost=" << lost
+          << " duplicates=" << metrics.duplicates
+          << " audit_duplicates=" << metrics.audit_duplicates
           << " out_of_order=" << metrics.out_of_order
+          << " audit_difference=" << audit_difference
           << " throughput_mps=" << std::fixed << std::setprecision(3)
           << throughput << " latency_ns_p50="
           << Percentile(metrics.latency_ns, 50, 100)
@@ -200,6 +250,9 @@ int main(int argc, char** argv) {
   if (args.cleanup_shm) {
     return CleanupPipelineShm() ? 0 : 7;
   }
+  if (args.check_shm_clean) {
+    return CheckPipelineShmClean() ? 0 : 8;
+  }
 
   std::signal(SIGINT, SignalHandler);
   std::signal(SIGTERM, SignalHandler);
@@ -210,35 +263,52 @@ int main(int argc, char** argv) {
   minicyber::node::Node sink("autodrive_control_sink");
   auto reader = sink.CreateReader<minicyber::proto::ControlCommand>(
       "/autodrive/control_command",
-      [&mutex, &received_cv, &metrics](
+      [&mutex, &received_cv, &metrics, collect_metrics = args.metrics](
           const std::shared_ptr<minicyber::proto::ControlCommand>& command) {
+        if (command->source_sequence() == 0) return;
         const uint64_t receive_time =
             minicyber::time::Time::MonoTime().ToNanosecond();
         std::lock_guard<std::mutex> lock(mutex);
         if (metrics.received == 0) metrics.first_receive_ns = receive_time;
         metrics.last_receive_ns = receive_time;
         ++metrics.received;
-        if (command->source_sequence() > metrics.expected_sequence) {
-          metrics.missing += command->source_sequence() - metrics.expected_sequence;
-          metrics.expected_sequence = command->source_sequence() + 1;
-        } else if (command->source_sequence() == metrics.expected_sequence) {
-          ++metrics.expected_sequence;
+        const uint64_t sequence = command->source_sequence();
+        if (!metrics.sequences.insert(sequence).second) {
+          ++metrics.duplicates;
         } else {
-          ++metrics.out_of_order;
+          if (metrics.last_first_sequence != 0 &&
+              sequence < metrics.last_first_sequence) {
+            ++metrics.out_of_order;
+          }
+          metrics.last_first_sequence =
+              std::max(metrics.last_first_sequence, sequence);
         }
-        if (receive_time >= command->source_monotonic_ns()) {
+        if (collect_metrics && receive_time >= command->source_monotonic_ns()) {
           metrics.latency_ns.push_back(receive_time -
                                        command->source_monotonic_ns());
         }
         received_cv.notify_all();
       });
-  if (reader == nullptr) {
-    std::cerr << "ControlSink could not create ControlCommand reader.\n";
+  auto audit_reader = sink.CreateReader<minicyber::proto::ControlCommand>(
+      "/autodrive/control_audit",
+      [&mutex, &received_cv, &metrics](
+          const std::shared_ptr<minicyber::proto::ControlCommand>& command) {
+        if (command->source_sequence() == 0) return;
+        std::lock_guard<std::mutex> lock(mutex);
+        ++metrics.audit_received;
+        if (!metrics.audit_sequences.insert(command->source_sequence()).second) {
+          ++metrics.audit_duplicates;
+        }
+        received_cv.notify_all();
+      });
+  if (reader == nullptr || audit_reader == nullptr) {
+    std::cerr << "ControlSink could not create ControlCommand readers.\n";
     ShutdownRuntime(&sink);
     return 2;
   }
-  if (!WaitForWriter(reader, args.timeout_ms)) {
-    std::cerr << "ControlSink timed out waiting for ControlCommand writer.\n";
+  if (!WaitForWriter(reader, args.timeout_ms) ||
+      !WaitForWriter(audit_reader, args.timeout_ms)) {
+    std::cerr << "ControlSink timed out waiting for Control or Audit writer.\n";
     ShutdownRuntime(&sink);
     return 3;
   }
@@ -256,7 +326,9 @@ int main(int argc, char** argv) {
   const auto deadline = std::chrono::steady_clock::now() +
                         std::chrono::milliseconds(args.timeout_ms);
   std::unique_lock<std::mutex> lock(mutex);
-  while (metrics.received < args.messages && g_shutdown_requested == 0) {
+  while ((metrics.sequences.size() < args.messages ||
+          metrics.audit_sequences.size() < args.messages) &&
+         g_shutdown_requested == 0) {
     // 信号处理器只能写 sig_atomic_t，不能通知 condition_variable；以短周期
     // 醒来检查退出标志，保证启动脚本的 trap 不会被完整业务超时拖住。
     const auto now = std::chrono::steady_clock::now();
@@ -266,18 +338,20 @@ int main(int argc, char** argv) {
     received_cv.wait_until(lock, wake_deadline);
   }
   Metrics result = metrics;
-  // 收包提前结束时，尚未抵达的尾部序列同样属于缺号；否则只有中间跳号
-  // 会进入指标，无法如实报告 Writer 过早关闭造成的尾部丢失。
-  if (result.expected_sequence <= args.messages) {
-    result.missing += args.messages - result.expected_sequence + 1;
-  }
-  const bool complete = result.received == args.messages;
-  const bool orderly = result.missing == 0 && result.out_of_order == 0;
+  const uint64_t lost = args.messages > result.sequences.size()
+                            ? args.messages - result.sequences.size()
+                            : 0;
+  const bool complete = result.sequences.size() == args.messages &&
+                        result.audit_sequences.size() == args.messages;
+  const bool orderly = lost == 0 && result.duplicates == 0 &&
+                       result.audit_duplicates == 0 &&
+                       result.out_of_order == 0 &&
+                       result.sequences == result.audit_sequences;
   lock.unlock();
 
   if (args.metrics) {
     if (args.output_path.empty()) {
-      PrintMetrics(result, &std::cout);
+      PrintMetrics(result, args.messages, &std::cout);
     } else {
       std::ofstream output(args.output_path);
       if (!output.is_open()) {
@@ -286,19 +360,20 @@ int main(int argc, char** argv) {
         ShutdownRuntime(&sink);
         return 4;
       }
-      PrintMetrics(result, &output);
+      PrintMetrics(result, args.messages, &output);
     }
   }
 
   ShutdownRuntime(&sink);
   if (g_shutdown_requested != 0) return 5;
   if (!complete) {
-    std::cerr << "ControlSink timed out after " << result.received << " of "
+    std::cerr << "ControlSink timed out after " << result.sequences.size()
+              << " control and " << result.audit_sequences.size() << " audit of "
               << args.messages << " commands.\n";
     return 3;
   }
   if (!orderly) {
-    std::cerr << "ControlSink observed missing or out-of-order commands.\n";
+    std::cerr << "ControlSink observed lost, duplicate, out-of-order, or audit-different commands.\n";
     return 6;
   }
   return 0;

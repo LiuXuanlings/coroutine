@@ -447,7 +447,7 @@ ctest --test-dir build/debug --output-on-failure -R '^test_module_controller$'
 必须在创建工作线程之前阻塞，使新线程继承掩码，避免信号被非主线程消费。
 
 **修正与回归**：mainboard 在 Scheduler 创建前用 `pthread_sigmask` 阻塞 SIGINT/SIGTERM，
-主线程使用 `sigsuspend` 原子解除阻塞并等待，处理器仍只写标志。测试插件在
+主线程使用 `sigwait` 同步消费 pending 信号，不再安装会被 SHM 路径覆盖的正常退出 handler。测试插件在
 `Initialize` 内主动产生 SIGTERM，证明信号先于等待到达时仍能触发
 `I -> S -> D -> U` 和有界退出。
 
@@ -548,6 +548,34 @@ find /dev/shm -maxdepth 1 -name 'minicyber_*' -print
 `latency_ns_p99=6165685`；mainboard 记录 `ModuleController cleared`，第二条命令无输出。
 后续归属：MC-618/MC-619 分别以相同入口完成
 Classic/Choreography 的正式集成验收，MC-620 才能将该入口的 Release 数据写成性能结论。
+
+### MC-616 质量评估：短队列覆盖与验收证据失真
+
+**触发环境与现象**：评估首次执行 20 条/100 Hz 时 Sink 只收到 14 条，
+退出码为 3；同参数后续连续 3 次通过。增加 ControlAudit 集合观察后，一次默认
+1000 条运行同时得到 `control=993` 与 `audit=993`，两者差集为 0。这排除了
+Audit 二次发布或 Sink Hybrid 扇出单独丢失的候选假设。
+
+**排查顺序与工具**：先用唯一脚本分别重复小负载和默认负载，保留每轮进程日志、
+退出码和 metrics；再用 `rg`/`sed` 沿 `ShmDispatcher -> DataDispatcher -> DataVisitor ->
+ChannelBuffer -> RoutineFactory` 追踪数据窗口。`ConditionNotifier` 环容量为 4096，本次负载
+未超过通知环；而唯一 DAG 中五个 Reader 的 `pending_queue_size` 均为 8。
+`ChannelBuffer::Fetch` 明确规定消费游标落后于 `Head` 时快进到 `Tail`，因而 Processor
+短时调度抖动会合法覆盖中间业务消息。
+
+**根因和修正边界**：队列深度 8 会放大落后覆盖风险，但调整为 1024 后仍实测到
+`999/1000`，因而“只是队列太短”的假设被排除。继续检查 `ChannelBuffer::Fetch`，确认
+消费游标初值为 0 时会直接读取当前 `Tail`；如果某层 Processor 首次执行前已累积
+两条消息，第一条会按原生“首次取最新”语义跳过，队列再大也无法修复。
+最终不修改 CacheBuffer/ChannelBuffer 语义；SensorSource 同时发布 sequence 0 的 VehicleState
+和 CameraFrame，并等待这条预热真正穿过五个 Component、由 ControlAudit 经 SHM 回到
+Source 后，才发布 1..N 测量序列。这是可观测的端到端预热屏障，不以 sleep 猜测
+协程是否已消费首条数据。DAG 业务队列仍设为 1024，用于覆盖默认验收窗口中
+预热之后的短时调度抖动。
+
+**附带证据修正**：旧脚本每次退出都无条件 `shm_unlink`，因而“无残留”不能证明
+引用归零的自然回收。新路径在成功时先检查四个精确 POSIX SHM 名称，仅在失败或
+中断后才做精确兜底删除。这使“自然回收”和“环境恢复”成为两类可区分证据。
 
 ## 七、证据来源
 

@@ -1,7 +1,10 @@
+#include <chrono>
 #include <csignal>
 #include <cstdint>
+#include <condition_variable>
 #include <exception>
 #include <iostream>
+#include <mutex>
 #include <string>
 
 #include "minicyber/node/node.h"
@@ -105,6 +108,16 @@ bool WaitForReaders(const std::shared_ptr<minicyber::node::Writer<
   return false;
 }
 
+bool WaitForWarmup(std::mutex* mutex, std::condition_variable* ready,
+                   bool* warmup_observed, uint64_t timeout_ms) {
+  std::unique_lock<std::mutex> lock(*mutex);
+  return ready->wait_for(lock, std::chrono::milliseconds(timeout_ms),
+                         [warmup_observed] {
+                           return *warmup_observed || g_shutdown_requested != 0;
+                         }) &&
+         *warmup_observed;
+}
+
 void ShutdownRuntime(minicyber::node::Node* node) {
   if (node != nullptr) node->Shutdown();
   minicyber::topology::TopologyManager::Instance()->Shutdown();
@@ -127,11 +140,23 @@ int main(int argc, char** argv) {
   std::signal(SIGTERM, SignalHandler);
 
   minicyber::node::Node source("autodrive_sensor_source");
+  std::mutex warmup_mutex;
+  std::condition_variable warmup_ready;
+  bool warmup_observed = false;
+  auto audit_reader = source.CreateReader<minicyber::proto::ControlCommand>(
+      "/autodrive/control_audit",
+      [&warmup_mutex, &warmup_ready, &warmup_observed](
+          const std::shared_ptr<minicyber::proto::ControlCommand>& command) {
+        if (command->source_sequence() != 0) return;
+        std::lock_guard<std::mutex> lock(warmup_mutex);
+        warmup_observed = true;
+        warmup_ready.notify_all();
+      });
   auto camera_writer = source.CreateWriter<minicyber::proto::CameraFrame>(
       "/autodrive/camera");
   auto vehicle_writer = source.CreateWriter<minicyber::proto::VehicleState>(
       "/autodrive/vehicle_state");
-  if (camera_writer == nullptr || vehicle_writer == nullptr ||
+  if (audit_reader == nullptr || camera_writer == nullptr || vehicle_writer == nullptr ||
       !WaitForReaders(camera_writer, vehicle_writer, args.ready_timeout_ms)) {
     std::cerr << "SensorSource timed out waiting for CameraFrame and "
                  "VehicleState readers.\n";
@@ -150,15 +175,24 @@ int main(int argc, char** argv) {
       minicyber::time::Time::MonoTime().ToNanosecond());
   warmup.set_speed_mps(4.0);
   warmup.set_steering_angle_rad(0.1);
-  if (!vehicle_writer->Write(warmup)) {
-    std::cerr << "SensorSource could not publish VehicleState warmup.\n";
+  minicyber::proto::CameraFrame warmup_camera;
+  warmup_camera.set_source_sequence(0);
+  warmup_camera.set_source_monotonic_ns(warmup.source_monotonic_ns());
+  warmup_camera.set_width(640);
+  warmup_camera.set_height(480);
+  warmup_camera.set_image_data(std::string(64, 'w'));
+  // sequence 0 必须真正穿过五个 Component 并从 Audit SHM 返回，
+  // 才能证明每层 DataVisitor 已消费首次“取最新”游标。
+  if (!vehicle_writer->Write(warmup) || !camera_writer->Write(warmup_camera) ||
+      !WaitForWarmup(&warmup_mutex, &warmup_ready, &warmup_observed,
+                     args.ready_timeout_ms)) {
+    std::cerr << "SensorSource did not observe the end-to-end warmup.\n";
     ShutdownRuntime(&source);
     return 3;
   }
 
-  // Fusion 的次通道必须先有最新值。预热不属于测量序列，随后完整等待一个
-  // Rate 周期再发首个 CameraFrame，与 CyberRT 数据驱动 Component 的 AllLatest
-  // 主通道唤醒语义对齐。
+  // 预热不属于测量序列；端到端 Audit 回执已取代经验 sleep，
+  // 这里仅让 Rate 建立后续稳定的发布节拍。
   rate.Sleep();
   uint64_t published_messages = 0;
   for (uint64_t sequence = 1;
