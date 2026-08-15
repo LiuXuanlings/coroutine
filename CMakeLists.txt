@@ -59,8 +59,9 @@ include_directories(${Protobuf_INCLUDE_DIRS})
 set(PROTO_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/proto_gen)
 
 # MC-603 留存清单中的 Proto 源文件，禁止递归 GLOB 将黑名单重新编入。
-set(PROTO_FILES
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/minicyber/proto/autodrive.proto
+# 核心库只持有通用运行时协议；自动驾驶消息与其模板实例由常驻业务 Runtime
+# 持有，避免 minicyber_core 把唯一业务 DAG 的类型泄漏为通用 ABI。
+set(CORE_PROTO_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/include/minicyber/proto/component_conf.proto
     ${CMAKE_CURRENT_SOURCE_DIR}/include/minicyber/proto/dag_conf.proto
     ${CMAKE_CURRENT_SOURCE_DIR}/include/minicyber/proto/qos_profile.proto
@@ -68,6 +69,10 @@ set(PROTO_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/include/minicyber/proto/scheduler_conf.proto
     ${CMAKE_CURRENT_SOURCE_DIR}/include/minicyber/proto/topology_change.proto
 )
+set(AUTODRIVE_PROTO_FILES
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/minicyber/proto/autodrive.proto
+)
+set(PROTO_FILES ${CORE_PROTO_FILES} ${AUTODRIVE_PROTO_FILES})
 
 # 循环遍历每一个proto文件
 foreach(PROTO_FILE ${PROTO_FILES})
@@ -77,8 +82,14 @@ foreach(PROTO_FILE ${PROTO_FILES})
     # 获取文件名（不带后缀）：qos_profile
     get_filename_component(PROTO_NAME ${PROTO_REL} NAME_WE)
 
-    # 拼接生成的 .pb.cc 文件完整路径，存入PROTO_SRCS列表
-    list(APPEND PROTO_SRCS ${PROTO_BINARY_DIR}/${PROTO_DIR}/${PROTO_NAME}.pb.cc)
+    # 按 ABI 所有权拆分生成源：通用协议进入核心，业务协议只进入 Runtime。
+    if(PROTO_FILE IN_LIST AUTODRIVE_PROTO_FILES)
+        list(APPEND AUTODRIVE_PROTO_SRCS
+            ${PROTO_BINARY_DIR}/${PROTO_DIR}/${PROTO_NAME}.pb.cc)
+    else()
+        list(APPEND CORE_PROTO_SRCS
+            ${PROTO_BINARY_DIR}/${PROTO_DIR}/${PROTO_NAME}.pb.cc)
+    endif()
 
     # 自定义命令：调用protoc工具把proto翻译成C++代码
     add_custom_command(
@@ -100,20 +111,17 @@ endforeach()
 # 将proto代码生成目录加入头文件搜索路径
 include_directories(${PROTO_BINARY_DIR})
 
-# 将所有生成的pb.cc编译为【静态库 minicyber_proto】
-# POSITION_INDEPENDENT_CODE ON: 因为 minicyber_proto 是静态库，会被链接进
-# libminicyber_core.so (SHARED)。静态库目标必须开启 -fPIC，否则在链接为
-# 共享库时会出现 "relocation R_X86_64_PC32 can not be used when making a
-# shared object; recompile with -fPIC" 错误。
-add_library(minicyber_proto STATIC ${PROTO_SRCS})
-set_target_properties(minicyber_proto PROPERTIES POSITION_INDEPENDENT_CODE ON)
-# 链接protobuf运行时库
-target_link_libraries(minicyber_proto ${Protobuf_LIBRARIES})
-# 对外暴露头文件路径，其他target链接minicyber_proto时自动继承
-target_include_directories(minicyber_proto
-    PUBLIC ${PROTO_BINARY_DIR}
-    PUBLIC ${Protobuf_INCLUDE_DIRS}
-)
+# POSITION_INDEPENDENT_CODE ON: 两个静态 Proto 库都会被链接进共享库。
+add_library(minicyber_proto STATIC ${CORE_PROTO_SRCS})
+add_library(minicyber_autodrive_proto STATIC ${AUTODRIVE_PROTO_SRCS})
+foreach(PROTO_TARGET minicyber_proto minicyber_autodrive_proto)
+    set_target_properties(${PROTO_TARGET} PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    target_link_libraries(${PROTO_TARGET} PUBLIC ${Protobuf_LIBRARIES})
+    target_include_directories(${PROTO_TARGET}
+        PUBLIC ${PROTO_BINARY_DIR}
+        PUBLIC ${Protobuf_INCLUDE_DIRS}
+    )
+endforeach()
 
 # ---------------------------------------------------------
 # 构建核心库
@@ -146,8 +154,7 @@ target_link_libraries(minicyber_core
     PUBLIC minicyber_proto ${Protobuf_LIBRARIES} fastrtps
     PRIVATE pthread dl rt
 )
-# 业务 DSO 不能按需从静态 Proto 库复制尚未被核心引用的消息描述符（MC-615）。
-# 核心库作为唯一 ABI 所有者完整收纳生成对象，插件只解析此处导出的符号。
+# 核心协议描述符由核心 ABI 唯一持有；自动驾驶描述符不能进入该库。
 target_link_options(minicyber_core PRIVATE
     "-Wl,--whole-archive,$<TARGET_FILE:minicyber_proto>,--no-whole-archive"
 )
@@ -157,7 +164,19 @@ target_link_options(minicyber_core PRIVATE
 # 通用 minicyber_core 依赖 CameraFrame/ControlCommand 等具体业务类型。
 add_library(minicyber_autodrive_runtime SHARED
     ${CMAKE_CURRENT_SOURCE_DIR}/demo/autodrive/autodrive_runtime.cpp)
-target_link_libraries(minicyber_autodrive_runtime PRIVATE minicyber_core)
+target_link_libraries(minicyber_autodrive_runtime
+    PRIVATE minicyber_core
+    PUBLIC minicyber_autodrive_proto
+)
+# 业务 Runtime 是自动驾驶描述符和模板实例的常驻所有者；可卸载组件只引用它。
+target_link_options(minicyber_autodrive_runtime PRIVATE
+    "-Wl,--whole-archive,$<TARGET_FILE:minicyber_autodrive_proto>,--no-whole-archive"
+)
+
+add_library(minicyber_autodrive_metrics STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/demo/autodrive/metrics.cpp)
+target_include_directories(minicyber_autodrive_metrics
+    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 # MC-615 的唯一业务插件。业务 Component 只能经 ModuleController 的 dlopen
 # 触发静态注册，不能链接进 mainboard 绕过 CyberRT ClassLoader 对应的插件边界。
@@ -213,8 +232,8 @@ set_target_properties(sensor_source PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 add_executable(control_sink demo/autodrive/control_sink.cpp)
-target_link_libraries(control_sink PRIVATE minicyber_autodrive_runtime
-                    minicyber_core pthread dl)
+target_link_libraries(control_sink PRIVATE minicyber_autodrive_metrics
+                    minicyber_autodrive_runtime minicyber_core pthread dl)
 set_target_properties(control_sink PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 

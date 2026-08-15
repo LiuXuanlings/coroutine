@@ -427,3 +427,27 @@ Writer 与先启动的 ControlSink Reader 通过独立的异步 Join 收敛；�
 以 `Reader::HasWriter` 观察这个下游 Join，再写入有界 ready 条件给启动脚本；脚本确认后才
 启动 Source，Source 仍自行等待两个输入 Reader。这样每项放行都由对应的拓扑事实支撑，
 不是用经验 sleep 延长启动时间。
+
+## MC-617 高风险边界
+
+### 为什么 `minicyber_core` 不能链接自动驾驶 Protobuf？
+
+核心层的公开 Channel 边界是 `google::protobuf::Message`，不是 CameraFrame 或
+ControlCommand 等唯一业务 DAG 类型。若把全部生成 Proto 整体链接进
+`minicyber_core`，核心共享库会导出具体业务符号，业务模板实例和描述符的所有权也会变得
+模糊。MC-617 将通用协议保留在 `minicyber_proto`，把 `autodrive.proto`、业务
+`DataDispatcher` 显式实例和描述符放入常驻的 `minicyber_autodrive_runtime`；可卸载组件
+只引用该 Runtime，因此不会在每个 `.so` 中复制进程内数据总线。
+
+验证不依赖源码注释：Debug 构建后 `nm -D --defined-only libminicyber_core.so` 不包含六类
+自动驾驶消息符号，而 Runtime 持有这些符号；`test_autodrive_proto` 和真实 dlopen 组件测试
+仍通过。这不表示支持混用任意第三方 Protobuf ABI，所有主程序、核心、Runtime 与组件仍需
+使用同一套 Protobuf ABI。
+
+### 为什么关闭 metrics 后仍保留序列集合，却不能保留延迟样本？
+
+ControlSink 的序列集合用于丢包、重复、乱序及 Audit 一致性这些业务完成断言，即使不输出
+性能数据也必须存在。逐消息延迟样本只服务 p50/p95/p99；在 `--no-metrics` 时保存它们会引入
+没有业务价值的分配和排序输入。MC-617 将记录逻辑收敛到独立的 Metrics 状态，并由
+`test_control_sink_metrics` 断言关闭时连续接收消息后 `latency_ns` 始终为空；开启时才保留
+有效的单调时钟差值。正式 Release 性能结论仍只属于 MC-620。

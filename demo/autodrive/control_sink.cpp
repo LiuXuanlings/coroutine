@@ -13,10 +13,10 @@
 #include <mutex>
 #include <string>
 #include <sys/mman.h>
-#include <unordered_set>
 #include <unistd.h>
 #include <vector>
 
+#include "demo/autodrive/metrics.h"
 #include "minicyber/node/node.h"
 #include "minicyber/proto/autodrive.pb.h"
 #include "minicyber/time/rate.h"
@@ -43,19 +43,7 @@ struct ProgramArgs {
   bool valid = true;
 };
 
-struct Metrics {
-  uint64_t received = 0;
-  uint64_t audit_received = 0;
-  uint64_t last_first_sequence = 0;
-  uint64_t duplicates = 0;
-  uint64_t audit_duplicates = 0;
-  uint64_t out_of_order = 0;
-  uint64_t first_receive_ns = 0;
-  uint64_t last_receive_ns = 0;
-  std::unordered_set<uint64_t> sequences;
-  std::unordered_set<uint64_t> audit_sequences;
-  std::vector<uint64_t> latency_ns;
-};
+using minicyber::autodrive::Metrics;
 
 void PrintUsage(const char* program) {
   std::cerr << "Usage: " << program
@@ -269,24 +257,9 @@ int main(int argc, char** argv) {
         const uint64_t receive_time =
             minicyber::time::Time::MonoTime().ToNanosecond();
         std::lock_guard<std::mutex> lock(mutex);
-        if (metrics.received == 0) metrics.first_receive_ns = receive_time;
-        metrics.last_receive_ns = receive_time;
-        ++metrics.received;
         const uint64_t sequence = command->source_sequence();
-        if (!metrics.sequences.insert(sequence).second) {
-          ++metrics.duplicates;
-        } else {
-          if (metrics.last_first_sequence != 0 &&
-              sequence < metrics.last_first_sequence) {
-            ++metrics.out_of_order;
-          }
-          metrics.last_first_sequence =
-              std::max(metrics.last_first_sequence, sequence);
-        }
-        if (collect_metrics && receive_time >= command->source_monotonic_ns()) {
-          metrics.latency_ns.push_back(receive_time -
-                                       command->source_monotonic_ns());
-        }
+        metrics.RecordMeasurement(sequence, command->source_monotonic_ns(),
+                                  receive_time, collect_metrics);
         received_cv.notify_all();
       });
   auto audit_reader = sink.CreateReader<minicyber::proto::ControlCommand>(
@@ -295,10 +268,7 @@ int main(int argc, char** argv) {
           const std::shared_ptr<minicyber::proto::ControlCommand>& command) {
         if (command->source_sequence() == 0) return;
         std::lock_guard<std::mutex> lock(mutex);
-        ++metrics.audit_received;
-        if (!metrics.audit_sequences.insert(command->source_sequence()).second) {
-          ++metrics.audit_duplicates;
-        }
+        metrics.RecordAudit(command->source_sequence());
         received_cv.notify_all();
       });
   if (reader == nullptr || audit_reader == nullptr) {

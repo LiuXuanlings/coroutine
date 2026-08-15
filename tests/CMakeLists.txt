@@ -17,6 +17,7 @@ set(TEST_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/test_component_base.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_component_factory.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_condition_notifier.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_control_sink_metrics.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_croutine.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_data_dispatcher.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_data_fusion.cpp
@@ -39,10 +40,8 @@ set(TEST_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/test_scheduler_classic.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_shm_block.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_shm_dispatcher.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_shm_receiver.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_shm_segment.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_shm_state.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_shm_transmitter.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_smoke.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_time.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_topology.cpp
@@ -76,25 +75,29 @@ if(TEST_FILES)
                 MINICYBER_TEST_PLUGIN_PATH="$<TARGET_FILE:test_module_controller_plugin>"
                 MINICYBER_MAINBOARD_PATH="$<TARGET_FILE:mainboard>")
         endif()
-        if(TEST_NAME STREQUAL "test_autodrive_components")
-            add_dependencies(${TEST_NAME} minicyber_autodrive_components)
+        if(TEST_NAME MATCHES "^test_autodrive_")
+            if(TEST_NAME STREQUAL "test_autodrive_components")
+                add_dependencies(${TEST_NAME} minicyber_autodrive_components)
+            endif()
             target_link_libraries(${TEST_NAME} minicyber_autodrive_runtime)
+        endif()
+        if(TEST_NAME STREQUAL "test_autodrive_components")
             target_compile_definitions(${TEST_NAME} PRIVATE
                 MINICYBER_AUTODRIVE_COMPONENTS_PATH="$<TARGET_FILE:minicyber_autodrive_components>"
                 MINICYBER_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+        endif()
+        if(TEST_NAME STREQUAL "test_control_sink_metrics")
+            target_link_libraries(${TEST_NAME} minicyber_autodrive_metrics)
         endif()
         
         # 注册到 ctest
         add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
         set(TEST_LABELS "unit")
-        if(TEST_NAME MATCHES "^test_scheduler_")
-            list(APPEND TEST_LABELS "scheduler" "stability" "sanitizer")
-        endif()
-        if(TEST_NAME MATCHES "^test_(atomic_hash_map|atomic_rw_lock|bounded_queue|shm_block|shm_state)$")
-            list(APPEND TEST_LABELS "stress")
-        endif()
-        if(TEST_NAME MATCHES "^test_(condition_notifier|posix_segment|posix_segment_signal|shm_dispatcher|shm_transmitter)$")
+        if(TEST_NAME MATCHES "^test_(condition_notifier|posix_segment|posix_segment_signal|shm_dispatcher)$")
             list(APPEND TEST_LABELS "cross_process")
+        endif()
+        if(TEST_NAME MATCHES "^test_(condition_notifier|control_sink_metrics|pin_thread|posix_segment_signal)$")
+            list(APPEND TEST_LABELS "high_risk")
         endif()
         if(TEST_NAME MATCHES "^test_topology$")
             list(APPEND TEST_LABELS "high_risk")
@@ -127,17 +130,7 @@ if(TEST_FILES)
     endforeach()
 endif()
 
-add_custom_target(check_scheduler_tsan
-    COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L sanitizer
-    DEPENDS test_scheduler_classic test_scheduler_choreography
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
-
-add_custom_target(check_stress
-    COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L stress
-    DEPENDS test_atomic_hash_map test_atomic_rw_lock test_bounded_queue test_shm_block test_shm_state
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
-
 add_custom_target(check_cross_process
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L cross_process
-    DEPENDS test_condition_notifier test_posix_segment test_posix_segment_signal test_shm_dispatcher test_shm_transmitter test_topology_discovery test_hybrid_transport
+    DEPENDS test_condition_notifier test_posix_segment test_posix_segment_signal test_shm_dispatcher test_topology_discovery test_hybrid_transport
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR})

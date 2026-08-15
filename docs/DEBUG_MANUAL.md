@@ -304,12 +304,28 @@ ID，会造成 Receiver 表面启用但实际没有可读段。
 2048 字节动态字段覆盖 Reader 先启动路径，PosixSegment 测试覆盖 1 KiB 既存段拒绝 64 KiB
 请求。该修复只做一致布局和失败诊断，不宣称具备原生动态扩容能力。
 
-### 未确认问题：ConditionNotifier 跨进程偶发失败
+### MC-617：ConditionNotifier 全局 SysV 队列与测试启动窗口
 
-MC-608 全量测试曾出现 `ConditionNotifierTest.ForkCrossProcessNotify` 子进程状态 1，随后
-连续 5 轮通过，当前没有稳定根因。该现象不能因复跑通过而删除：MC-617 必须记录复现率、
-父子进程退出码、notifier SHM 初始状态和清理结果，并用事件条件而非扩大 sleep 判断是否为
-通知初始化、残留资源或测试编排问题。在 MC-617 收口前，它保持“未确认问题”状态。
+**触发环境与最小复现**：在 Debug 构建后执行
+`ctest --test-dir build/debug --output-on-failure`。首次运行中
+`ConditionNotifierTest.ListenTimeout` 在 3 ms 返回一条通知，预期的 100 ms 超时未发生；
+CTest 退出码为 8，47 项中 1 项失败，当前观察失败率为 1/1。此前 MC-608 的
+`ForkCrossProcessNotify` 曾有 1 次子进程退出码 1，随后复跑通过，不能以本次新现象覆盖。
+
+**排查过程与证据**：先定向执行 `ListenTimeout` 20 轮，全部通过，说明没有稳定的
+`Listen` 超时算法回归。随后读取 `ConditionNotifier::MakeKey/OpenOrCreate/Listen`，确认其与
+`cyber_ref/cyber/transport/shm/condition_notifier.cc` 一样使用固定的跨进程 SysV key，而不是
+测试进程私有队列；`ipcs -m` 也观察到同 key 的在途段。原 fork 用例还依赖 50 ms 固定 sleep，
+无法区分子进程初始化、历史通知和实际通知传递。
+
+**根因与修复边界**：根因是测试把固定 key 的共享通知环当作独占空队列，并以 sleep 编排
+父子顺序。MC-617 不改变 ConditionNotifier 的原生共享职责：超时用例在开始计时前以
+`Listen(0)` 排空当前可见通知，fork 正反向用例改以管道和 2 s 有界条件编排。该修复没有
+删除跨进程通知、没有把轮询替换为 eventfd，也没有用延长 sleep 掩盖竞态。
+
+**回归结果与经验**：修复后 `cmake --build build/debug -j2` 退出码 0，Debug 全量 CTest
+为 45/45 通过。固定 key 的 IPC 测试必须把“已有可见通知”和“本用例发布通知”分开；只要
+出现一次跨进程失败，仍需保留命令、退出码、失败率和后续归属，不能只报告最终通过。
 
 ### MC-611 旧测试对象 ABI 不一致导致的 `stack smashing`
 

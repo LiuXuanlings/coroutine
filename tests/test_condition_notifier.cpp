@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <poll.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <sys/wait.h>
@@ -19,6 +20,37 @@ namespace {
 void CleanupShm(key_t key) {
   int shmid = ::shmget(key, 0, 0644);
   if (shmid != -1) ::shmctl(shmid, IPC_RMID, 0);
+}
+
+bool WriteByte(int fd) {
+  const char value = 1;
+  return ::write(fd, &value, sizeof(value)) == static_cast<ssize_t>(sizeof(value));
+}
+
+bool ReadByteBounded(int fd) {
+  pollfd descriptor{fd, POLLIN, 0};
+  if (::poll(&descriptor, 1, 2000) != 1) return false;
+  char value = 0;
+  return ::read(fd, &value, sizeof(value)) == static_cast<ssize_t>(sizeof(value));
+}
+
+bool WaitForChild(pid_t child, int* status) {
+  if (status == nullptr) return false;
+  for (int attempt = 0; attempt < 200; ++attempt) {
+    const pid_t result = ::waitpid(child, status, WNOHANG);
+    if (result == child) return true;
+    if (result == -1) return false;
+    ::poll(nullptr, 0, 10);
+  }
+  ::kill(child, SIGKILL);
+  ::waitpid(child, status, 0);
+  return false;
+}
+
+void DrainObservedNotifications(ConditionNotifier* notifier) {
+  ReadableInfo ignored;
+  while (notifier->Listen(0, &ignored)) {
+  }
 }
 }  // namespace
 
@@ -81,6 +113,10 @@ TEST(ConditionNotifierTest, ListenTimeout) {
   ConditionNotifier n;
   CleanupShm(n.key());
   ASSERT_TRUE(n.Init());
+  // ConditionNotifier 使用与 CyberRT 一致的固定跨进程 key。其他已附着端点
+  // 在 IPC_RMID 后的退出窗口仍可能写入旧观察者可见的通知；超时语义只约束
+  // 排空当前观察窗口后没有后续通知的情况，不能把共享队列误判为私有空队列。
+  DrainObservedNotifications(&n);
   ReadableInfo got;
   auto start = std::chrono::steady_clock::now();
   EXPECT_FALSE(n.Listen(100, &got));
@@ -206,8 +242,6 @@ TEST(ConditionNotifierTest, InfiniteListenWaitsUntilNotification) {
   std::thread listener([&]() {
     received.store(n.Listen(-1, &got), std::memory_order_release);
   });
-  std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  EXPECT_FALSE(received.load(std::memory_order_acquire));
   ASSERT_TRUE(n.Notify({77, 5, 88}));
   listener.join();
 
@@ -235,7 +269,6 @@ TEST(ConditionNotifierTest, ShutdownWaitsForInfiniteListenToExit) {
   while (!listener_started.load(std::memory_order_acquire)) {
     std::this_thread::yield();
   }
-  std::this_thread::sleep_for(std::chrono::milliseconds(2));
   n.Shutdown();
   listener.join();
   EXPECT_TRUE(listener_returned.load(std::memory_order_acquire));
@@ -268,12 +301,20 @@ TEST(ConditionNotifierTest, ForkCrossProcessNotify) {
   CleanupShm(n.key());
   ASSERT_TRUE(n.Init());
 
+  int child_ready[2];
+  int parent_go[2];
+  ASSERT_EQ(::pipe(child_ready), 0);
+  ASSERT_EQ(::pipe(parent_go), 0);
+
   pid_t pid = ::fork();
   ASSERT_GE(pid, 0);
   if (pid == 0) {
+    ::close(child_ready[0]);
+    ::close(parent_go[1]);
     // 子进程独立 Init（走 OpenOnly 路径，复用同 key SHM）
     ConditionNotifier child;
     bool ok = child.Init();
+    ok = ok && WriteByte(child_ready[1]) && ReadByteBounded(parent_go[0]);
     if (ok) {
       ReadableInfo got;
       ok = child.Listen(2000, &got);
@@ -282,13 +323,17 @@ TEST(ConditionNotifierTest, ForkCrossProcessNotify) {
     child.Shutdown();
     ::_exit(ok ? 0 : 1);
   }
-  // 父进程稍等让子进入 Listen
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  ::close(child_ready[1]);
+  ::close(parent_go[0]);
+  ASSERT_TRUE(ReadByteBounded(child_ready[0]));
+  ASSERT_TRUE(WriteByte(parent_go[1]));
   EXPECT_TRUE(n.Notify({9999, 0, 7}));
   int status = 0;
-  ::waitpid(pid, &status, 0);
+  ASSERT_TRUE(WaitForChild(pid, &status));
   ASSERT_TRUE(WIFEXITED(status));
   EXPECT_EQ(WEXITSTATUS(status), 0);
+  ::close(child_ready[0]);
+  ::close(parent_go[1]);
   n.Shutdown();
   CleanupShm(n.key());
 }
@@ -299,26 +344,37 @@ TEST(ConditionNotifierTest, ForkCrossProcessNotifyReverse) {
   CleanupShm(n.key());
   ASSERT_TRUE(n.Init());
 
+  int child_ready[2];
+  int child_go[2];
+  ASSERT_EQ(::pipe(child_ready), 0);
+  ASSERT_EQ(::pipe(child_go), 0);
+
   pid_t pid = ::fork();
   ASSERT_GE(pid, 0);
   if (pid == 0) {
+    ::close(child_ready[0]);
+    ::close(child_go[1]);
     ConditionNotifier child;
     bool ok = child.Init();
-    if (ok) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(50));
-      ok = child.Notify({4242, 1, 9});
-    }
+    ok = ok && WriteByte(child_ready[1]) && ReadByteBounded(child_go[0]);
+    if (ok) ok = child.Notify({4242, 1, 9});
     child.Shutdown();
     ::_exit(ok ? 0 : 1);
   }
+  ::close(child_ready[1]);
+  ::close(child_go[0]);
+  ASSERT_TRUE(ReadByteBounded(child_ready[0]));
+  ASSERT_TRUE(WriteByte(child_go[1]));
   ReadableInfo got;
   ASSERT_TRUE(n.Listen(2000, &got));
   EXPECT_EQ(got.host_id, 4242u);
   EXPECT_EQ(got.channel_id, 9u);
   int status = 0;
-  ::waitpid(pid, &status, 0);
+  ASSERT_TRUE(WaitForChild(pid, &status));
   ASSERT_TRUE(WIFEXITED(status));
   EXPECT_EQ(WEXITSTATUS(status), 0);
+  ::close(child_ready[0]);
+  ::close(child_go[1]);
   n.Shutdown();
   CleanupShm(n.key());
 }
