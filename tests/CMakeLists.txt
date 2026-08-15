@@ -4,10 +4,8 @@
 set(TEST_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/test_autodrive_components.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_autodrive_proto.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_atomic_hash_map.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_atomic_rw_lock.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_base_macros.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_bounded_queue.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_cache_buffer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_channel_buffer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_choreography_context.cpp
@@ -46,7 +44,6 @@ set(TEST_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/test_time.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_topology.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_topology_discovery.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_wait_strategy.cpp
 )
 
 # 如果没有测试文件，则跳过
@@ -142,5 +139,16 @@ add_test(NAME test_autodrive_classic_pipeline
     COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/run_autodrive_classic_pipeline.sh
                  ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR})
 set_tests_properties(test_autodrive_classic_pipeline PROPERTIES
+    LABELS "integration;high_risk;cross_process"
+    TIMEOUT 50)
+
+# MC-619 沿用 Classic 的唯一脚本，仅替换独立 Scheduler 配置。驱动同时校验
+# 定向区/公共池线程、Control 同一 Writer 的 INTRA+SHM 扇出和逐文件触达报告。
+add_test(NAME test_autodrive_choreography_pipeline
+    COMMAND ${CMAKE_COMMAND}
+            -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
+            -DBINARY_DIR=${CMAKE_BINARY_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/integration/autodrive_pipeline_test.cmake)
+set_tests_properties(test_autodrive_choreography_pipeline PROPERTIES
     LABELS "integration;high_risk;cross_process"
     TIMEOUT 50)

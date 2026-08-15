@@ -92,6 +92,20 @@ HybridTransport 按每个对端并行维护连接：同进程走 INTRA，其他�
 只启用一个后端，最后一个对端 Leave 才停用该后端；MC-608 再把该能力接入
 Protobuf-only Node API 和端点 Join/Leave 生命周期。
 
+### 如何在完整业务链中证明同一个 Writer 的混合扇出？
+
+MC-619 只使用唯一 `autodrive.dag`，让 `ControlComponent` 的
+`/autodrive/control_command` Writer 同时面对本进程 `ControlAuditComponent` 与独立
+`ControlSink`。验收快照只读取 Hybrid 已应用的 INTRA/SHM 后端状态，不向业务暴露选择后端的
+新 API；每个测量序列记录 Control 发布对象地址和 Audit 接收对象地址，二者 1000 次均相同，
+证明 INTRA 传递同一 `shared_ptr`。Sink 记录不同 PID 中反序列化后的对象地址，并分别导出
+Control/Audit 的 `source_sequence` 集合；两集合均严格为 1 至 1000，重复和差异均为 0。
+Audit 的二次发布只用于让 Sink 比较结果，不能冒充 Control Writer 的 SHM 证据。
+
+同一运行还用 Choreography 配置把 Perception 送入定向 Processor，其余四个 Component 回退
+Classic 公共池。该证据验证原生双区职责及按对端扇出，不是性能结论；吞吐和延迟比较仍属于
+MC-620 的 Release 采集。
+
 ### HybridTransport 如何保证跨进程数据不退化为普通对象 memcpy？
 
 Hybrid 的公开模板以 `static_assert` 限定 `google::protobuf::Message` 派生类型。

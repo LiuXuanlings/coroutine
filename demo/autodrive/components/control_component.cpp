@@ -1,6 +1,10 @@
 #include <algorithm>
 #include <memory>
 
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#include "demo/autodrive/evidence.h"
 #include "minicyber/proto/autodrive_runtime.h"
 #include "minicyber/component/component.h"
 #include "minicyber/component/component_factory.h"
@@ -20,6 +24,12 @@ class ControlComponent
   }
 
   bool Proc(const std::shared_ptr<minicyber::proto::Trajectory>& trajectory) override {
+    auto* scheduler = minicyber::scheduler::Scheduler::GetThis();
+    minicyber::autodrive::RuntimeEvidence::RecordComponent(
+        "control", trajectory->source_sequence(),
+        static_cast<pid_t>(::syscall(SYS_gettid)),
+        scheduler == nullptr ? -1 : scheduler->ProcessorTid(0),
+        scheduler == nullptr ? -1 : scheduler->ProcessorTid(1));
     auto command = minicyber::runtime::CreateAutodriveMessage<
         minicyber::proto::ControlCommand>();
     command->set_source_sequence(trajectory->source_sequence());
@@ -27,6 +37,9 @@ class ControlComponent
     command->set_throttle(std::clamp(trajectory->target_speed_mps() / 20.0, 0.0, 1.0));
     command->set_brake(trajectory->target_speed_mps() <= 0.0 ? 1.0 : 0.0);
     command->set_steering_target(trajectory->target_curvature());
+    minicyber::autodrive::RuntimeEvidence::RecordControl(
+        command->source_sequence(), reinterpret_cast<uintptr_t>(command.get()),
+        writer_->IntraBackendEnabled(), writer_->ShmBackendEnabled());
     return writer_->Write(command);
   }
 

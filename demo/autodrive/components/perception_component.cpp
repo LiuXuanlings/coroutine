@@ -1,5 +1,9 @@
 #include <memory>
 
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#include "demo/autodrive/evidence.h"
 #include "minicyber/proto/autodrive_runtime.h"
 #include "minicyber/component/component.h"
 #include "minicyber/component/component_factory.h"
@@ -19,6 +23,12 @@ class PerceptionComponent
   }
 
   bool Proc(const std::shared_ptr<minicyber::proto::CameraFrame>& frame) override {
+    auto* scheduler = minicyber::scheduler::Scheduler::GetThis();
+    minicyber::autodrive::RuntimeEvidence::RecordComponent(
+        "perception", frame->source_sequence(),
+        static_cast<pid_t>(::syscall(SYS_gettid)),
+        scheduler == nullptr ? -1 : scheduler->ProcessorTid(0),
+        scheduler == nullptr ? -1 : scheduler->ProcessorTid(1));
     auto obstacle = minicyber::runtime::CreateAutodriveMessage<
         minicyber::proto::PerceptionObstacle>();
     // MC-614 的关联键只在 Source 写入；这里和后续组件只透传，保证 Sink 能计算端到端延迟。

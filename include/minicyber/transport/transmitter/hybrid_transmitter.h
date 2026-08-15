@@ -99,6 +99,20 @@ class HybridTransmitter : public Transmitter<M> {
     return !opposite_.empty();
   }
 
+  // 这是业务验收读取的已应用后端快照，不参与路由决策。只有对应的
+  // ReconcileBackends 已完成 Enable 后才为真，用于证明同一个 Writer 同时
+  // 保留 CyberRT per-opposite 的 INTRA 与 SHM 扇出，而非把 Audit 二次发布
+  // 误当作远端数据面。
+  bool IntraBackendEnabled() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return intra_applied_;
+  }
+
+  bool ShmBackendEnabled() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return shm_applied_;
+  }
+
  private:
   static uint64_t RoleId(const RoleAttributes& attr) {
     if (attr.has_id()) return attr.id();

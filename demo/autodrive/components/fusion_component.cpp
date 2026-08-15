@@ -1,5 +1,9 @@
 #include <memory>
 
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#include "demo/autodrive/evidence.h"
 #include "minicyber/proto/autodrive_runtime.h"
 #include "minicyber/component/component.h"
 #include "minicyber/component/component_factory.h"
@@ -21,6 +25,12 @@ class FusionComponent
 
   bool Proc(const std::shared_ptr<minicyber::proto::PerceptionObstacle>& obstacle,
             const std::shared_ptr<minicyber::proto::VehicleState>& vehicle) override {
+    auto* scheduler = minicyber::scheduler::Scheduler::GetThis();
+    minicyber::autodrive::RuntimeEvidence::RecordComponent(
+        "fusion", obstacle->source_sequence(),
+        static_cast<pid_t>(::syscall(SYS_gettid)),
+        scheduler == nullptr ? -1 : scheduler->ProcessorTid(0),
+        scheduler == nullptr ? -1 : scheduler->ProcessorTid(1));
     auto fused = minicyber::runtime::CreateAutodriveMessage<
         minicyber::proto::FusedObstacle>();
     // AllLatest 的次通道只参与本次融合值；链路身份始终来自首通道的 CameraFrame。

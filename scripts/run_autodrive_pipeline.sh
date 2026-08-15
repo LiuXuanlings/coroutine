@@ -63,6 +63,8 @@ sink_pid=""
 mainboard_pid=""
 source_pid=""
 ready_file="${output_dir}/control_sink.ready"
+mainboard_evidence="${output_dir}/mainboard_evidence.txt"
+sink_evidence="${output_dir}/control_sink_evidence.txt"
 cleanup() {
   local status=$?
   trap - EXIT INT TERM
@@ -90,14 +92,15 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 rm -f "$ready_file" "${output_dir}/metrics.txt"
-sink_args=(--messages "$messages" --timeout-ms "$timeout_ms" --ready-file "$ready_file")
+sink_args=(--messages "$messages" --timeout-ms "$timeout_ms" --ready-file "$ready_file" --evidence-file "$sink_evidence")
 if (( metrics_enabled != 0 )); then
   sink_args+=(--metrics --output "${output_dir}/metrics.txt")
 fi
 "$control_sink" "${sink_args[@]}" >"${output_dir}/control_sink.log" 2>&1 &
 sink_pid=$!
 
-"$mainboard" -d "$dag_path" -s "$scheduler_path" \
+MINICYBER_AUTODRIVE_EVIDENCE_FILE="$mainboard_evidence" \
+  "$mainboard" -d "$dag_path" -s "$scheduler_path" \
   >"${output_dir}/mainboard.log" 2>&1 &
 mainboard_pid=$!
 

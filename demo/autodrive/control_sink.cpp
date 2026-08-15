@@ -39,6 +39,7 @@ struct ProgramArgs {
   bool check_shm_clean = false;
   std::string output_path;
   std::string ready_path;
+  std::string evidence_path;
   bool show_help = false;
   bool valid = true;
 };
@@ -49,6 +50,7 @@ void PrintUsage(const char* program) {
   std::cerr << "Usage: " << program
             << " [--messages <count>] [--timeout-ms <ms>] [--metrics]"
                " [--output <metrics_path>] [--ready-file <path>]"
+               " [--evidence-file <path>]"
                " [--cleanup-shm] [--check-shm-clean]\n";
 }
 
@@ -86,7 +88,8 @@ ProgramArgs ParseArgs(int argc, char** argv) {
       continue;
     }
     if ((argument != "--messages" && argument != "--timeout-ms" &&
-         argument != "--output" && argument != "--ready-file") ||
+         argument != "--output" && argument != "--ready-file" &&
+         argument != "--evidence-file") ||
         index + 1 >= argc) {
       args.valid = false;
       return args;
@@ -99,6 +102,7 @@ ProgramArgs ParseArgs(int argc, char** argv) {
     }
     if (argument == "--output") args.output_path = value;
     if (argument == "--ready-file") args.ready_path = value;
+    if (argument == "--evidence-file") args.evidence_path = value;
   }
   if (!args.output_path.empty() && !args.metrics) args.valid = false;
   return args;
@@ -153,6 +157,35 @@ bool WriteReadyFile(const std::string& path) {
   std::ofstream output(path);
   if (!output.is_open()) return false;
   output << "ready\n";
+  return output.good();
+}
+
+template <typename SequenceSet>
+std::string JoinSequences(const SequenceSet& sequences) {
+  std::vector<uint64_t> ordered_sequences(sequences.begin(), sequences.end());
+  std::sort(ordered_sequences.begin(), ordered_sequences.end());
+  std::ostringstream output;
+  bool first = true;
+  for (const uint64_t sequence : ordered_sequences) {
+    if (!first) output << ',';
+    output << sequence;
+    first = false;
+  }
+  return output.str();
+}
+
+bool WriteEvidenceFile(const std::string& path, const Metrics& metrics,
+                       uintptr_t control_pointer, uintptr_t audit_pointer) {
+  if (path.empty()) return true;
+  std::ofstream output(path);
+  if (!output.is_open()) return false;
+  // Sink 只观察跨进程 SHM 反序列化后的对象。进程号与地址同主板内的
+  // Control/Audit 证据一起证明它不是同进程 INTRA shared_ptr 的别名。
+  output << "sink_pid=" << ::getpid() << '\n';
+  output << "control_sequences=" << JoinSequences(metrics.sequences) << '\n';
+  output << "audit_sequences=" << JoinSequences(metrics.audit_sequences) << '\n';
+  output << "control_first_pointer=" << control_pointer << '\n';
+  output << "audit_first_pointer=" << audit_pointer << '\n';
   return output.good();
 }
 
@@ -248,15 +281,21 @@ int main(int argc, char** argv) {
   std::mutex mutex;
   std::condition_variable received_cv;
   Metrics metrics;
+  uintptr_t control_pointer = 0;
+  uintptr_t audit_pointer = 0;
   minicyber::node::Node sink("autodrive_control_sink");
   auto reader = sink.CreateReader<minicyber::proto::ControlCommand>(
       "/autodrive/control_command",
-      [&mutex, &received_cv, &metrics, collect_metrics = args.metrics](
+      [&mutex, &received_cv, &metrics, &control_pointer,
+       collect_metrics = args.metrics](
           const std::shared_ptr<minicyber::proto::ControlCommand>& command) {
         if (command->source_sequence() == 0) return;
         const uint64_t receive_time =
             minicyber::time::Time::MonoTime().ToNanosecond();
         std::lock_guard<std::mutex> lock(mutex);
+        if (control_pointer == 0) {
+          control_pointer = reinterpret_cast<uintptr_t>(command.get());
+        }
         const uint64_t sequence = command->source_sequence();
         metrics.RecordMeasurement(sequence, command->source_monotonic_ns(),
                                   receive_time, collect_metrics);
@@ -264,10 +303,13 @@ int main(int argc, char** argv) {
       });
   auto audit_reader = sink.CreateReader<minicyber::proto::ControlCommand>(
       "/autodrive/control_audit",
-      [&mutex, &received_cv, &metrics](
+      [&mutex, &received_cv, &metrics, &audit_pointer](
           const std::shared_ptr<minicyber::proto::ControlCommand>& command) {
         if (command->source_sequence() == 0) return;
         std::lock_guard<std::mutex> lock(mutex);
+        if (audit_pointer == 0) {
+          audit_pointer = reinterpret_cast<uintptr_t>(command.get());
+        }
         metrics.RecordAudit(command->source_sequence());
         received_cv.notify_all();
       });
@@ -308,6 +350,8 @@ int main(int argc, char** argv) {
     received_cv.wait_until(lock, wake_deadline);
   }
   Metrics result = metrics;
+  const uintptr_t result_control_pointer = control_pointer;
+  const uintptr_t result_audit_pointer = audit_pointer;
   const uint64_t lost = args.messages > result.sequences.size()
                             ? args.messages - result.sequences.size()
                             : 0;
@@ -332,6 +376,14 @@ int main(int argc, char** argv) {
       }
       PrintMetrics(result, args.messages, &output);
     }
+  }
+
+  if (!WriteEvidenceFile(args.evidence_path, result, result_control_pointer,
+                         result_audit_pointer)) {
+    std::cerr << "ControlSink cannot write evidence: " << args.evidence_path
+              << ".\n";
+    ShutdownRuntime(&sink);
+    return 4;
   }
 
   ShutdownRuntime(&sink);

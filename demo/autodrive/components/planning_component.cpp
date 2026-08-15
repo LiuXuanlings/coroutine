@@ -1,6 +1,10 @@
 #include <algorithm>
 #include <memory>
 
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#include "demo/autodrive/evidence.h"
 #include "minicyber/proto/autodrive_runtime.h"
 #include "minicyber/component/component.h"
 #include "minicyber/component/component_factory.h"
@@ -19,6 +23,12 @@ class PlanningComponent
   }
 
   bool Proc(const std::shared_ptr<minicyber::proto::FusedObstacle>& fused) override {
+    auto* scheduler = minicyber::scheduler::Scheduler::GetThis();
+    minicyber::autodrive::RuntimeEvidence::RecordComponent(
+        "planning", fused->source_sequence(),
+        static_cast<pid_t>(::syscall(SYS_gettid)),
+        scheduler == nullptr ? -1 : scheduler->ProcessorTid(0),
+        scheduler == nullptr ? -1 : scheduler->ProcessorTid(1));
     auto trajectory = minicyber::runtime::CreateAutodriveMessage<
         minicyber::proto::Trajectory>();
     trajectory->set_source_sequence(fused->source_sequence());

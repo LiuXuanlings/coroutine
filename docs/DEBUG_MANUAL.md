@@ -3,6 +3,48 @@
 > 本文由 MC-602 从首轮实施资料迁移而来。它只记录对后续重构仍有约束力的历史
 > 事实；当前架构边界以 `docs/refactor/02_架构取舍矩阵.md` 为准。
 
+## MC-619 Choreography 验收取证的构建与触达误判
+
+### 触发环境与最小复现
+
+Linux x86_64、GNU 11.4、Debug 构建。执行：
+
+```bash
+ctest --test-dir build/debug --output-on-failure \
+  -R '^test_autodrive_choreography_pipeline$'
+```
+
+首次执行退出码 8，失败率 1/1，启动脚本报 `ControlSink did not observe
+ControlCommand writer readiness.`。随后单独构建 `control_sink` 的命令退出码 2，编译器
+指出 `Metrics` 的 `unordered_set` 不能绑定到取证代码要求的 `set` 引用。修复该编译错误后，
+同一 CTest 又以退出码 8 失败 1/1，但主干已完成 1000 条收发；报告的失败行为是
+`Untouched production file: include/minicyber/base/atomic_hash_map.h`。
+
+coverage 配置首次执行：
+
+```bash
+cmake -S . -B build/coverage -DCMAKE_BUILD_TYPE=Debug \
+  -DMINICYBER_ENABLE_COVERAGE=ON
+```
+
+退出码 1。外部 `https://kkgithub.com/google/googletest.git` 在三次 clone 中分别出现 TLS
+握手终止和仓库不存在，未进入业务测试。
+
+### 根因、修复边界与回归
+
+第一个失败不是发现或 SHM 语义回归，而是新增 `--evidence-file` 尚未编入旧 Sink 二进制；
+因此旧程序按用法退出，脚本等待不到 ready 文件。取证写出时将无序集合复制、排序后再导出，
+不修改 `Metrics` 的集合语义。第二个失败证明“文本直接 include”不足以代表静态调用链：审计改读
+`minicyber_core`、业务 Runtime/组件和三个业务进程目标的编译 `.d` 依赖，测试专用包含不计入。
+据此删除五个只被旧测试引用、没有生产依赖的遗留头文件及三个对应测试，不能用测试伪造业务触达。
+
+coverage 改为显式使用已验证的本地 GoogleTest 源目录
+`/tmp/minicyber-googletest2`，不更改 CMake 的系统依赖边界。最终回归为 Debug Choreography
+连续 3/3 通过；coverage Choreography 通过，`file_touch_report.txt` 记录
+`gcov_data_files=38` 与 `gcov_scheduler=passed`。每轮均确认四个自动驾驶频道自然回收，命令
+`find /dev/shm -maxdepth 1 -name 'minicyber_*' -print` 无输出。跨进程验收失败必须先确认实际
+二进制已重新链接，再从运行时日志判断发现、调度或 SHM 根因。
+
 ## MC-615 业务 DSO 重复注册 Protobuf 描述符
 
 ### 触发环境与最小复现

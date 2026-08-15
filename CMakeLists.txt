@@ -13,6 +13,14 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# MC-619 的文件级触达验收在独立 coverage 构建中启用。默认构建保持正常
+# Debug 语义，避免把 gcov 运行时和计数文件混入日常业务运行。
+option(MINICYBER_ENABLE_COVERAGE "Enable gcov instrumentation for integration evidence" OFF)
+if(MINICYBER_ENABLE_COVERAGE AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    add_compile_options(--coverage -O0)
+    add_link_options(--coverage)
+endif()
+
 # ---------------------------------------------------------
 # 编译选项配置 (包含 Sanitizers)
 # ---------------------------------------------------------
@@ -163,11 +171,14 @@ target_link_options(minicyber_core PRIVATE
 # 插件加载、后于插件卸载的常驻所有者。它属于 Demo 运行时，不能让
 # 通用 minicyber_core 依赖 CameraFrame/ControlCommand 等具体业务类型。
 add_library(minicyber_autodrive_runtime SHARED
-    ${CMAKE_CURRENT_SOURCE_DIR}/demo/autodrive/autodrive_runtime.cpp)
+    ${CMAKE_CURRENT_SOURCE_DIR}/demo/autodrive/autodrive_runtime.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/demo/autodrive/evidence.cpp)
 target_link_libraries(minicyber_autodrive_runtime
     PRIVATE minicyber_core
     PUBLIC minicyber_autodrive_proto
 )
+target_include_directories(minicyber_autodrive_runtime
+    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 # 业务 Runtime 是自动驾驶描述符和模板实例的常驻所有者；可卸载组件只引用它。
 target_link_options(minicyber_autodrive_runtime PRIVATE
     "-Wl,--whole-archive,$<TARGET_FILE:minicyber_autodrive_proto>,--no-whole-archive"

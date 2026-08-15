@@ -77,6 +77,18 @@ class Writer {
     return init_ && topology::TopologyManager::Instance()->HasReader(
                         role_attr_.channel_name());
   }
+
+  // 仅导出 Hybrid 已应用后端的验收快照；Writer 仍只通过 Write 交给
+  // Transport 路由，不能由业务组件直接选择或绕过 INTRA/SHM。
+  bool IntraBackendEnabled() const {
+    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+    return init_ && transmitter_ != nullptr &&
+           transmitter_->IntraBackendEnabled();
+  }
+  bool ShmBackendEnabled() const {
+    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+    return init_ && transmitter_ != nullptr && transmitter_->ShmBackendEnabled();
+  }
   const std::string& channel() const { return role_attr_.channel_name(); }
   const proto::RoleAttributes& role_attr() const { return role_attr_; }
 
