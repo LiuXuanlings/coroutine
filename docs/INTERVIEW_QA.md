@@ -12,6 +12,16 @@ MiniCyber 是 Linux x86_64、C++17 和 POSIX SHM 上的 CyberRT 精简实践。�
 SHM、发现控制面、动态组件和优雅退出如何协作，而不是实现完整 Apollo 或通用自动驾驶
 平台。
 
+### 业务消息为什么统一携带源序列和单调时间？
+
+MC-614 在 CameraFrame、VehicleState、PerceptionObstacle、FusedObstacle、Trajectory 和
+ControlCommand 的字段 1、2 固定为 `source_sequence` 和
+`source_monotonic_ns`。这沿用 CyberRT 示例 Header 将序列与时间作为消息关联键的职责，
+但不增加可被组件遗漏的嵌套 Header。传感器为测量样本生成从 1 开始的连续序列和
+`CLOCK_MONOTONIC` 时间；各组件只透传它们，ControlSink 才能用同一时钟域计算完整链路
+延迟、按期望集合判定丢包并识别重复。序列 0 仅供 VehicleState 预热使用，不进入测量
+集合。这不是严格时间同步或可靠传输承诺，AllLatest 仍按主通道到达时取次通道最新值。
+
 ### 为什么只保留一条业务主干？
 
 多套 talker、listener、ping-pong 和独立 benchmark 容易绕过真实生命周期。唯一主干

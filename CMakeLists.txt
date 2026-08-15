@@ -60,6 +60,7 @@ set(PROTO_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/proto_gen)
 
 # MC-603 留存清单中的 Proto 源文件，禁止递归 GLOB 将黑名单重新编入。
 set(PROTO_FILES
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/minicyber/proto/autodrive.proto
     ${CMAKE_CURRENT_SOURCE_DIR}/include/minicyber/proto/component_conf.proto
     ${CMAKE_CURRENT_SOURCE_DIR}/include/minicyber/proto/dag_conf.proto
     ${CMAKE_CURRENT_SOURCE_DIR}/include/minicyber/proto/qos_profile.proto

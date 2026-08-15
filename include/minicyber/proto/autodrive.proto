@@ -1,0 +1,59 @@
+syntax = "proto2";
+
+package minicyber.proto;
+
+// MC-614 业务消息契约：字段 1、2 是唯一主干的端到端关联键。它们对齐
+// CyberRT examples/proto/header.proto 的序列/时间职责，但不引入通用 Header，避免
+// 后续组件遗漏透传。测量样本的 source_sequence 从 1 单调递增；0 只允许
+// VehicleState 预热使用且不计入丢包。source_monotonic_ns 来自 CLOCK_MONOTONIC，
+// 各组件必须原样复制，不能写入本阶段的处理时间。
+
+message CameraFrame {
+  optional uint64 source_sequence = 1;
+  optional uint64 source_monotonic_ns = 2;
+  optional bytes image_data = 3;
+  optional uint32 width = 4;
+  optional uint32 height = 5;
+}
+
+message VehicleState {
+  optional uint64 source_sequence = 1;
+  optional uint64 source_monotonic_ns = 2;
+  optional double speed_mps = 3;
+  optional double yaw_rate_rad_s = 4;
+  optional double steering_angle_rad = 5;
+}
+
+message PerceptionObstacle {
+  optional uint64 source_sequence = 1;
+  optional uint64 source_monotonic_ns = 2;
+  optional uint64 obstacle_id = 3;
+  optional double distance_m = 4;
+  optional double lateral_offset_m = 5;
+  optional double confidence = 6;
+}
+
+message FusedObstacle {
+  optional uint64 source_sequence = 1;
+  optional uint64 source_monotonic_ns = 2;
+  optional uint64 obstacle_id = 3;
+  optional double distance_m = 4;
+  optional double lateral_offset_m = 5;
+  optional double relative_speed_mps = 6;
+}
+
+message Trajectory {
+  optional uint64 source_sequence = 1;
+  optional uint64 source_monotonic_ns = 2;
+  optional double target_speed_mps = 3;
+  optional double target_curvature = 4;
+  optional double target_distance_m = 5;
+}
+
+message ControlCommand {
+  optional uint64 source_sequence = 1;
+  optional uint64 source_monotonic_ns = 2;
+  optional double throttle = 3;
+  optional double brake = 4;
+  optional double steering_target = 5;
+}

@@ -2,6 +2,7 @@
 
 # MC-603 留存清单中的测试源文件，禁止通过 GLOB 隐式扩大测试边界。
 set(TEST_FILES
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_autodrive_proto.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_atomic_hash_map.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_atomic_rw_lock.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_base_macros.cpp
