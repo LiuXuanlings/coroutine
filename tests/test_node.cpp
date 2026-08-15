@@ -129,3 +129,69 @@ TEST(NodeTest, MultipleWritersIsolated) {
   EXPECT_TRUE(w1->Write(std::make_shared<std::string>("w1-msg")));
   EXPECT_TRUE(w2->Write(std::make_shared<std::string>("w2-msg")));
 }
+
+// Node Shutdown 应关闭已创建端点，即使调用方仍持有对应 shared_ptr。
+TEST(NodeTest, ShutdownDisablesRetainedEndpoints) {
+  Node node("test_node_shutdown");
+  auto writer = node.CreateWriter<std::string>("/ch/node_shutdown");
+  auto reader = node.CreateReader<std::string>(
+      "/ch/node_shutdown_reader", [](const std::shared_ptr<std::string>&) {});
+  ASSERT_NE(writer, nullptr);
+  ASSERT_NE(reader, nullptr);
+
+  node.Shutdown();
+
+  EXPECT_TRUE(node.IsShutdown());
+  EXPECT_FALSE(writer->Write(std::make_shared<std::string>("after-shutdown")));
+  EXPECT_FALSE(reader->IsInit());
+  EXPECT_EQ(node.CreateWriter<std::string>("/ch/after_shutdown"), nullptr);
+  EXPECT_EQ(node.CreateReader<std::string>(
+                "/ch/after_shutdown_reader",
+                [](const std::shared_ptr<std::string>&) {}),
+            nullptr);
+  node.Shutdown();
+}
+
+// NodeChannelImpl 必须拒绝空 channel，避免向拓扑注册无效端点。
+TEST(NodeTest, EmptyChannelIsRejected) {
+  Node node("test_node_empty_channel");
+  EXPECT_EQ(node.CreateWriter<std::string>(""), nullptr);
+  EXPECT_EQ(node.CreateReader<std::string>(
+                "", [](const std::shared_ptr<std::string>&) {}),
+            nullptr);
+}
+
+TEST(NodeTest, ReaderKeepsBoundedHistoryAndInvokesCallback) {
+  const std::string channel = "/ch/node_reader_history";
+  Node subscriber("test_node_history_subscriber");
+  std::atomic<int> callbacks{0};
+  auto reader = subscriber.CreateReader<std::string>(
+      channel, [&](const std::shared_ptr<std::string>&) { ++callbacks; }, 2);
+  Node publisher("test_node_history_publisher");
+  auto writer = publisher.CreateWriter<std::string>(channel);
+  ASSERT_NE(reader, nullptr);
+  ASSERT_NE(writer, nullptr);
+
+  ASSERT_TRUE(writer->Write("first"));
+  ASSERT_TRUE(writer->Write("second"));
+  ASSERT_TRUE(writer->Write("third"));
+  EXPECT_EQ(callbacks.load(), 3);
+  EXPECT_TRUE(reader->HasReceived());
+  EXPECT_EQ(reader->PendingQueueSize(), 2u);
+
+  reader->Observe();
+  EXPECT_FALSE(reader->Empty());
+  ASSERT_NE(reader->GetOldestObserved(), nullptr);
+  ASSERT_NE(reader->GetLatestObserved(), nullptr);
+  EXPECT_EQ(*reader->GetOldestObserved(), "second");
+  EXPECT_EQ(*reader->GetLatestObserved(), "third");
+  reader->ClearData();
+  EXPECT_TRUE(reader->Empty());
+}
+
+TEST(NodeTest, WriterRejectsNullMessage) {
+  Node node("test_node_null_message");
+  auto writer = node.CreateWriter<std::string>("/ch/null_message");
+  ASSERT_NE(writer, nullptr);
+  EXPECT_FALSE(writer->Write(std::shared_ptr<std::string>()));
+}

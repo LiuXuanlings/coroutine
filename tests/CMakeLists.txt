@@ -1,6 +1,6 @@
 # 针对 tests 目录的 CMake 配置
 
-# 查找 tests 目录下所有的 GTest 测试文件 (约定以 test_ 开头，比如 test_fiber.cpp)
+# 查找 tests 目录下所有的 GTest 测试文件（约定以 test_ 开头）。
 file(GLOB TEST_FILES "test_*.cpp")
 
 # 如果没有测试文件，则跳过
@@ -22,13 +22,31 @@ if(TEST_FILES)
         
         # 注册到 ctest
         add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
+        set(TEST_LABELS "unit")
+        if(TEST_NAME MATCHES "^test_scheduler_")
+            list(APPEND TEST_LABELS "scheduler" "stability" "sanitizer")
+        endif()
+        if(TEST_NAME MATCHES "^test_(atomic_hash_map|atomic_rw_lock|bounded_queue|shm_block|shm_state)$")
+            list(APPEND TEST_LABELS "stress")
+        endif()
+        if(TEST_NAME MATCHES "^test_(condition_notifier|posix_segment|posix_segment_signal|shm_dispatcher|shm_transmitter)$")
+            list(APPEND TEST_LABELS "cross_process")
+        endif()
+        set_tests_properties(${TEST_NAME} PROPERTIES LABELS "${TEST_LABELS}")
     endforeach()
 endif()
 
-# 单独处理独立的测试/演示文件 (不依赖 gtest)
-# 为什么前面的 file(GLOB "*.cpp") 用相对路径没问题，而这里的 if(EXISTS) 却不行？
-# 因为 CMake 对相对路径的解析基准是"分裂"的：构建声明 (add_executable) 和源码搜索 (file(GLOB)) 默认基于当前源码目录；而底层文件系统操作 (if(EXISTS), file(READ)) 默认基于当前的执行目录 (即 build 目录)。因此，为了避免去 build 目录找源码导致误判，在使用 if(EXISTS) 时必须强制拼接 ${CMAKE_CURRENT_SOURCE_DIR} 转换为绝对路径。
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/example.cpp")
-    add_executable(example example.cpp)
-    target_link_libraries(example minicyber_core pthread dl)
-endif()
+add_custom_target(check_scheduler_tsan
+    COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L sanitizer
+    DEPENDS test_scheduler_classic test_scheduler_choreography
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_custom_target(check_stress
+    COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L stress
+    DEPENDS test_atomic_hash_map test_atomic_rw_lock test_bounded_queue test_shm_block test_shm_state
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+
+add_custom_target(check_cross_process
+    COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L cross_process
+    DEPENDS test_condition_notifier test_posix_segment test_posix_segment_signal test_shm_dispatcher test_shm_transmitter
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})

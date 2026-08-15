@@ -2,7 +2,9 @@
 #define MINICYBER_TRANSPORT_SHM_CONDITION_NOTIFIER_H_
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
+#include <mutex>
 #include <sys/ipc.h>
 #include <sys/types.h>
 
@@ -44,10 +46,19 @@ struct ReadableInfo {
 };
 
 class ConditionNotifier {
+  static constexpr uint64_t kUnpublishedSeq = UINT64_MAX;
+
   struct Indicator {
     std::atomic<uint64_t> next_seq{0};
+    std::atomic_flag writer_lock = ATOMIC_FLAG_INIT;
     ReadableInfo infos[kBufLength];
-    uint64_t seqs[kBufLength] = {0};
+    std::atomic<uint64_t> seqs[kBufLength];
+
+    Indicator() {
+      for (auto& seq : seqs) {
+        seq.store(kUnpublishedSeq, std::memory_order_relaxed);
+      }
+    }
   };
 
  public:
@@ -86,6 +97,8 @@ class ConditionNotifier {
   bool OpenOnly();
   bool Remove();
   void Reset();
+  bool BeginOperation();
+  void EndOperation();
 
   key_t key_ = 0;
   void* managed_shm_ = nullptr;
@@ -93,6 +106,9 @@ class ConditionNotifier {
   Indicator* indicator_ = nullptr;
   uint64_t next_seq_ = 0;
   std::atomic<bool> shutdown_{false};
+  std::mutex lifecycle_mutex_;
+  std::condition_variable operations_finished_;
+  size_t active_operations_ = 0;
 };
 
 }  // namespace transport

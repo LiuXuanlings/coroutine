@@ -8,7 +8,40 @@
 namespace {
 // 测试辅助：记录协程走过的状态轨迹
 static std::vector<minicyber::RoutineState> g_trace;
+
+minicyber::croutine::RoutineContext g_context;
+char* g_main_sp = nullptr;
+int g_context_phase = 0;
+
+void ContextEntry() {
+  g_context_phase = 1;
+  minicyber::croutine::SwapContext(&g_context.sp, &g_main_sp);
+  g_context_phase = 2;
+  minicyber::croutine::SwapContext(&g_context.sp, &g_main_sp);
+}
 }  // namespace
+
+TEST(RoutineContextTest, SwitchesBothDirectionsWithAbiAlignedEntry) {
+  g_context = {};
+  g_main_sp = nullptr;
+  g_context_phase = 0;
+  minicyber::croutine::MakeContext(&g_context, ContextEntry);
+
+#if defined(__x86_64__)
+  // After restoring rdi plus six callee-saved registers, ret enters the
+  // function with rsp at stack_end - sizeof(void*), as required by SysV ABI.
+  const uintptr_t expected_sp =
+      reinterpret_cast<uintptr_t>(g_context.stack) +
+      minicyber::croutine::STACK_SIZE - sizeof(void*);
+  EXPECT_EQ(expected_sp % 16, 8u);
+#endif
+
+  minicyber::croutine::SwapContext(&g_main_sp, &g_context.sp);
+  EXPECT_EQ(g_context_phase, 1);
+
+  minicyber::croutine::SwapContext(&g_main_sp, &g_context.sp);
+  EXPECT_EQ(g_context_phase, 2);
+}
 
 // ----------------------------------------------------------------------
 // 测试 1：基础状态流转 READY -> DATA_WAIT -> READY -> FINISHED
@@ -197,9 +230,26 @@ TEST(CRoutineTest, StopSetsFinished) {
   minicyber::CRoutine::GetThis();
   auto cr = std::make_shared<minicyber::CRoutine>([]() {});
 
-  EXPECT_NE(cr->State(), minicyber::RoutineState::FINISHED);
+  EXPECT_EQ(cr->State(), minicyber::RoutineState::READY);
   cr->Stop();
+  EXPECT_EQ(cr->State(), minicyber::RoutineState::READY);
+  EXPECT_EQ(cr->Resume(), minicyber::RoutineState::FINISHED);
   EXPECT_EQ(cr->State(), minicyber::RoutineState::FINISHED);
+}
+
+TEST(CRoutineTest, ResumeRejectsNonReadyState) {
+  minicyber::CRoutine::GetThis();
+  int runs = 0;
+  auto cr = std::make_shared<minicyber::CRoutine>([&]() { ++runs; });
+
+  cr->SetState(minicyber::RoutineState::DATA_WAIT);
+  EXPECT_EQ(cr->Resume(), minicyber::RoutineState::DATA_WAIT);
+  EXPECT_EQ(runs, 0);
+
+  cr->Wake();
+  EXPECT_EQ(cr->Resume(), minicyber::RoutineState::FINISHED);
+  EXPECT_EQ(runs, 1);
+  EXPECT_EQ(cr->Resume(), minicyber::RoutineState::FINISHED);
 }
 
 // 测试：元数据 getter/setter
@@ -219,19 +269,17 @@ TEST(CRoutineTest, MetadataGettersSetters) {
 }
 
 // 测试：processor_id 默认值与 set/get
-// 默认 UINT32_MAX 表示"未绑定"，set 后 get 返回 set 的值。
+// 默认 -1 表示"未绑定"，set 后 get 返回 set 的值。
 TEST(CRoutineTest, ProcessorIdDefaultAndSet) {
   minicyber::CRoutine::GetThis();
   auto cr = std::make_shared<minicyber::CRoutine>([]() {});
 
-  // 默认值应为 UINT32_MAX（未绑定）
-  EXPECT_EQ(cr->processor_id(),
-            std::numeric_limits<uint32_t>::max());
+  EXPECT_EQ(cr->processor_id(), -1);
 
   // set 后 get 返回 set 的值
   cr->set_processor_id(0);
-  EXPECT_EQ(cr->processor_id(), 0u);
+  EXPECT_EQ(cr->processor_id(), 0);
 
   cr->set_processor_id(7);
-  EXPECT_EQ(cr->processor_id(), 7u);
+  EXPECT_EQ(cr->processor_id(), 7);
 }

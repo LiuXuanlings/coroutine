@@ -55,7 +55,7 @@ template <typename M0 = NullType, typename M1 = NullType,
 class Component : public ComponentBase {
  public:
   Component() = default;
-  ~Component() override = default;
+  ~Component() override { Shutdown(); }
 
   /**
    * @brief 初始化组件（主模板默认实现 — 始终返回 false）
@@ -96,7 +96,7 @@ class Component : public ComponentBase {
 // 偏特化：Component<NullType, NullType, NullType, NullType>（无输入组件）
 // =============================================================================
 // 这种变体不订阅任何 Channel，仅执行 Init()。
-// 适用场景：纯 Timer 组件（配合 TimerComponent）或仅用作启动器。
+// 适用场景：仅用作启动器的无输入组件。
 //
 // 与 CyberRT 的差异：
 //   CyberRT 将这个变体用于 "Component 基类" 语义（所有 Component 变体
@@ -107,7 +107,7 @@ template <>
 class Component<NullType, NullType, NullType, NullType> : public ComponentBase {
  public:
   Component() = default;
-  ~Component() override = default;
+  ~Component() override { Shutdown(); }
 
   /**
    * @brief 无输入组件的初始化：创建 Node + Init()
@@ -149,7 +149,7 @@ template <typename M0>
 class Component<M0, NullType, NullType, NullType> : public ComponentBase {
  public:
   Component() = default;
-  ~Component() override = default;
+  ~Component() override { Shutdown(); }
 
   /**
    * @brief 单通道组件的初始化
@@ -197,6 +197,7 @@ inline bool Component<NullType, NullType, NullType>::Initialize(
   LoadConfigFiles(config);
 
   if (cyber_unlikely(!Init())) {
+    CleanupInitializationFailure();
     return false;
   }
   return true;
@@ -214,11 +215,13 @@ bool Component<M0, NullType, NullType, NullType>::Initialize(
 
   // Step 2: 校验配置 — 单通道组件必须至少有一个 Reader 配置
   if (cyber_unlikely(config.readers_size() < 1)) {
+    CleanupInitializationFailure();
     return false;
   }
 
   // Step 3: 业务初始化（由派生类重写）
   if (cyber_unlikely(!Init())) {
+    CleanupInitializationFailure();
     return false;
   }
 
@@ -247,9 +250,11 @@ bool Component<M0, NullType, NullType, NullType>::Initialize(
   // CreateReader 内部调用 Transport::CreateReceiver<T>，自动决策
   // IntraReceiver 或 ShmReceiver（基于 TopologyManager 判断）。
   // 回调 func 在数据到达时被同步调用（见上方回调传递路径）。
-  auto reader =
-      node_->template CreateReader<M0>(config.readers(0).channel(), func);
+  auto reader = node_->template CreateReader<M0>(
+      config.readers(0).channel(), func,
+      config.readers(0).pending_queue_size());
   if (cyber_unlikely(reader == nullptr)) {
+    CleanupInitializationFailure();
     return false;
   }
 

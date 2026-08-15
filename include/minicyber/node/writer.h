@@ -47,7 +47,7 @@ class Writer {
 
   // 发布消息（shared_ptr 版本，零拷贝传递）
   bool Write(const std::shared_ptr<T>& msg) {
-    if (!init_ || transmitter_ == nullptr) return false;
+    if (!init_ || transmitter_ == nullptr || msg == nullptr) return false;
     return transmitter_->Transmit(msg);
   }
 

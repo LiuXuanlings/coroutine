@@ -1,12 +1,11 @@
 #ifndef MINICYBER_CROUTINE_CROUTINE_H
 #define MINICYBER_CROUTINE_CROUTINE_H
 
-#include "minicyber/context.h"
+#include "minicyber/croutine/detail/routine_context.h"
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <functional>
-#include <limits>
 #include <memory>
 #include <string>
 
@@ -27,6 +26,8 @@ enum class RoutineState {
   DATA_WAIT,
 };
 
+using Duration = std::chrono::microseconds;
+
 class CRoutine : public std::enable_shared_from_this<CRoutine> {
  public:
   using ptr = std::shared_ptr<CRoutine>;
@@ -35,7 +36,7 @@ class CRoutine : public std::enable_shared_from_this<CRoutine> {
   static thread_local ptr t_croutine;        // 当前正在运行的协程
   static thread_local ptr t_thread_croutine; // 当前线程的主协程
 
-  explicit CRoutine(const RoutineFunc& cb, int stack_size = FIBER_STACK_SIZE);
+  explicit CRoutine(const RoutineFunc& cb);
   ~CRoutine();
 
   // 获取当前协程（若不存在则创建主协程）
@@ -47,8 +48,8 @@ class CRoutine : public std::enable_shared_from_this<CRoutine> {
   // 让出执行权，并设置目标状态（如 DATA_WAIT 表示因数据未就绪而挂起）
   static void Yield(const RoutineState& state);
 
-  // 恢复执行权，从主协程切到本协程
-  void Resume();
+  // 仅在 READY 时恢复执行。返回 Yield 或完成后的状态。
+  RoutineState Resume();
 
   // ----------------------------------------------------------------------
   // 工作窃取锁（Work-Stealing Lock）
@@ -71,8 +72,12 @@ class CRoutine : public std::enable_shared_from_this<CRoutine> {
   RoutineState UpdateState();
   void SetUpdateFlag();
 
-  // 强制停止协程（设置 force_stop_ 并标记 FINISHED）
+  // 请求停止。下一次 Resume 将协程标记为 FINISHED 而不运行回调。
   void Stop();
+
+  void Wake();
+  void HangUp();
+  void Sleep(const Duration& sleep_duration);
 
   // 状态访问
   RoutineState State() const { return state_; }
@@ -98,10 +103,10 @@ class CRoutine : public std::enable_shared_from_this<CRoutine> {
   // ----------------------------------------------------------------------
   // 用于 Choreography 调度策略：Scheduler::NotifyTask 根据 processor_id
   // 决定将协程定向 Enqueue 到哪个 ChoreographyContext。
-  // 默认值 UINT32_MAX 表示"未绑定"，由 Scheduler 轮询分配（Classic 路径）。
+  // 默认值 -1 表示"未绑定"，由 Scheduler 轮询分配（Classic 路径）。
   // ----------------------------------------------------------------------
-  uint32_t processor_id() const { return processor_id_; }
-  void set_processor_id(uint32_t pid) { processor_id_ = pid; }
+  int processor_id() const { return processor_id_; }
+  void set_processor_id(int pid) { processor_id_ = pid; }
 
   // SLEEP 状态的唤醒时间点（用于 UpdateState 判断是否超时）
   std::chrono::steady_clock::time_point wake_time() const { return wake_time_; }
@@ -111,7 +116,7 @@ class CRoutine : public std::enable_shared_from_this<CRoutine> {
   CRoutine();  // 主协程构造（私有，仅 GetThis 调用）
   static void MainFunc();  // 协程入口，包装用户回调
 
-  context ctx_;
+  croutine::RoutineContext ctx_;
   RoutineFunc cb_;
   bool is_main_;
   RoutineState state_;
@@ -127,8 +132,8 @@ class CRoutine : public std::enable_shared_from_this<CRoutine> {
   std::string name_;
   uint32_t priority_ = 0;
   std::string group_name_;
-  // 绑定的 Processor 索引（Choreography 路由用），UINT32_MAX = 未绑定
-  uint32_t processor_id_ = std::numeric_limits<uint32_t>::max();
+  // 绑定的 Processor 索引（Choreography 路由用），-1 = 未绑定
+  int processor_id_ = -1;
 
   // SLEEP 唤醒时间点
   std::chrono::steady_clock::time_point wake_time_ =
@@ -138,4 +143,3 @@ class CRoutine : public std::enable_shared_from_this<CRoutine> {
 }  // namespace minicyber
 
 #endif  // MINICYBER_CROUTINE_CROUTINE_H
-

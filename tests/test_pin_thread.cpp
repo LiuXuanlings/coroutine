@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "minicyber/scheduler/common/pin_thread.h"
 
+#include <algorithm>
 #include <pthread.h>
 #include <sched.h>
 #include <sys/syscall.h>
@@ -52,7 +53,14 @@ TEST(PinThreadTest, ParseCpusetInvalidThrows) {
 // ----------------------------------------------------------------------
 
 TEST(PinThreadTest, SetSchedAffinityRange) {
-  std::vector<int> cpus = {0, 1};
+  cpu_set_t allowed;
+  CPU_ZERO(&allowed);
+  ASSERT_EQ(0, sched_getaffinity(0, sizeof(allowed), &allowed));
+  std::vector<int> cpus;
+  for (int cpu = 0; cpu < CPU_SETSIZE && cpus.size() < 2; ++cpu) {
+    if (CPU_ISSET(cpu, &allowed)) cpus.push_back(cpu);
+  }
+  ASSERT_FALSE(cpus.empty());
   std::thread t([]() {});
 
   SetSchedAffinity(&t, cpus, "range");
@@ -63,30 +71,42 @@ TEST(PinThreadTest, SetSchedAffinityRange) {
   pthread_getaffinity_np(t.native_handle(), sizeof(get_set), &get_set);
 
   // 应该只有 cpus 中的 CPU 被设置
-  EXPECT_TRUE(CPU_ISSET(0, &get_set));
-  EXPECT_TRUE(CPU_ISSET(1, &get_set));
-  // 不应该有 cpus 之外的 CPU（在 4 核机器上检查 CPU 2,3）
-  if (cpus.size() < static_cast<size_t>(CPU_SETSIZE)) {
-    EXPECT_FALSE(CPU_ISSET(2, &get_set));
+  for (const int cpu : cpus) {
+    EXPECT_TRUE(CPU_ISSET(cpu, &get_set));
+  }
+  for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
+    if (std::find(cpus.begin(), cpus.end(), cpu) == cpus.end()) {
+      EXPECT_FALSE(CPU_ISSET(cpu, &get_set));
+    }
   }
 
   if (t.joinable()) t.join();
 }
 
 TEST(PinThreadTest, SetSchedAffinity1to1) {
-  std::vector<int> cpus = {0, 1};
+  cpu_set_t allowed;
+  CPU_ZERO(&allowed);
+  ASSERT_EQ(0, sched_getaffinity(0, sizeof(allowed), &allowed));
+  std::vector<int> cpus;
+  for (int cpu = 0; cpu < CPU_SETSIZE && cpus.size() < 2; ++cpu) {
+    if (CPU_ISSET(cpu, &allowed)) cpus.push_back(cpu);
+  }
+  ASSERT_FALSE(cpus.empty());
+  const int target_index = cpus.size() > 1 ? 1 : 0;
   std::thread t([]() {});
 
-  // 1to1 模式，cpu_id=1 表示绑定到 cpus[1] = 1
-  SetSchedAffinity(&t, cpus, "1to1", 1);
+  SetSchedAffinity(&t, cpus, "1to1", target_index);
 
   cpu_set_t get_set;
   CPU_ZERO(&get_set);
   pthread_getaffinity_np(t.native_handle(), sizeof(get_set), &get_set);
 
-  // 应该只有 CPU 1 被设置
-  EXPECT_TRUE(CPU_ISSET(1, &get_set));
-  EXPECT_FALSE(CPU_ISSET(0, &get_set));
+  EXPECT_TRUE(CPU_ISSET(cpus[target_index], &get_set));
+  for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
+    if (cpu != cpus[target_index]) {
+      EXPECT_FALSE(CPU_ISSET(cpu, &get_set));
+    }
+  }
 
   if (t.joinable()) t.join();
 }

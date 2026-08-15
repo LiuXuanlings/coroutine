@@ -103,9 +103,27 @@ TEST(SchedulerTest, ShutdownStopsAllProcessors) {
     EXPECT_EQ(sched.ProcessorCount(), 4u);
 
     sched.Shutdown();
-    // 这里仅验证不崩溃
-    SUCCEED();
+    EXPECT_TRUE(sched.IsStopped());
+    EXPECT_EQ(sched.ProcessorCount(), 0u);
+    EXPECT_EQ(sched.CreateTask([]() {}, "after_shutdown"), 0u);
+    EXPECT_FALSE(sched.NotifyTask(1));
   }
+}
+
+TEST(SchedulerTest, AppliesConfiguredProcessorPolicy) {
+  SchedulerConf conf;
+  conf.thread_num = 1;
+  conf.processor_policy = "SCHED_UNKNOWN";
+  conf.processor_prio = 0;
+  Scheduler sched(conf);
+
+  std::atomic<bool> ran{false};
+  ASSERT_NE(sched.CreateTask([&]() { ran.store(true); }, "configured", 5), 0u);
+  for (int i = 0; i < 100 && !ran.load(); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  EXPECT_TRUE(ran.load());
+  sched.Shutdown();
 }
 
 // ----------------------------------------------------------------------
@@ -201,6 +219,36 @@ TEST(SchedulerTest, WorkStealingBalancesLoad) {
     SUCCEED();
 
     sched.Shutdown();
+  }
+}
+
+TEST(SchedulerStabilityTest, ConcurrentSubmissionDuringShutdown) {
+  SchedulerConf conf;
+  conf.thread_num = 2;
+
+  for (int round = 0; round < 8; ++round) {
+    Scheduler sched(conf);
+    std::atomic<bool> start{false};
+    std::vector<std::thread> submitters;
+    for (int thread = 0; thread < 4; ++thread) {
+      submitters.emplace_back([&]() {
+        while (!start.load(std::memory_order_acquire)) {
+          std::this_thread::yield();
+        }
+        for (int i = 0; i < 64; ++i) {
+          sched.CreateTask([]() {}, "concurrent", 5);
+        }
+      });
+    }
+    start.store(true, std::memory_order_release);
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    sched.Shutdown();
+    for (auto& submitter : submitters) {
+      submitter.join();
+    }
+    EXPECT_TRUE(sched.IsStopped());
+    EXPECT_EQ(sched.ProcessorCount(), 0u);
+    EXPECT_EQ(sched.CreateTask([]() {}, "after_shutdown"), 0u);
   }
 }
 

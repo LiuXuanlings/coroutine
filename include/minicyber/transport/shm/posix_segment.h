@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -13,13 +14,8 @@
 namespace minicyber {
 namespace transport {
 
-// 前置：一个待写入/待读取的块上下文
-struct ShmWritableBlock {
-  uint32_t index = 0;
-  Block* block = nullptr;
-  uint8_t* buf = nullptr;
-};
-using ShmReadableBlock = ShmWritableBlock;
+using ShmWritableBlock = WritableBlock;
+using ShmReadableBlock = ReadableBlock;
 
 // =============================================================================
 // PosixSegment：基于 shm_open + mmap 的共享内存段
@@ -59,13 +55,13 @@ class PosixSegment : public Segment {
   // 申请一个可写块：找到下一个空闲块，加写锁，填入 wb。
   // msg_size 为本次消息字节数，必须 <= block_buf_size()。
   // 成功返回 true，wb->buf 指向 payload 缓冲，写完须调用 ReleaseWrittenBlock。
-  bool AcquireBlockToWrite(size_t msg_size, ShmWritableBlock* wb);
+  bool AcquireBlockToWrite(size_t msg_size, ShmWritableBlock* wb) override;
   // 释放已写块：设置 block 的 msg_size，释放写锁，使数据对读者可见。
-  void ReleaseWrittenBlock(const ShmWritableBlock& wb);
+  void ReleaseWrittenBlock(const ShmWritableBlock& wb) override;
   // 读取指定索引的块：加读锁，填入 rb。失败（块未就绪/锁失败）返回 false。
-  bool AcquireBlockToRead(uint32_t index, ShmReadableBlock* rb);
+  bool AcquireBlockToRead(uint32_t index, ShmReadableBlock* rb) override;
   // 释放已读块：释放读锁。
-  void ReleaseReadBlock(const ShmReadableBlock& rb);
+  void ReleaseReadBlock(const ShmReadableBlock& rb) override;
 
   // 调试/测试辅助
   const std::string& shm_name() const { return shm_name_; }
@@ -95,6 +91,9 @@ class PosixSegment : public Segment {
 
   // 计算段总大小
   size_t TotalSize() const;
+  bool HasValidLayout(size_t mapped_size, uint64_t ceiling_msg_size,
+                      uint32_t* block_num) const;
+  uint32_t Detach();
   // 计算第 index 个 block 的 payload 起始地址
   uint8_t* BlockBufAddr(uint32_t index);
 
@@ -107,6 +106,7 @@ class PosixSegment : public Segment {
   State* state_ = nullptr;  // 位于 mem_ 偏移 0
   Block* blocks_ = nullptr; // 位于 mem_ + sizeof(State)
   bool opened_ = false;
+  std::mutex lifecycle_mutex_;
 };
 
 }  // namespace transport

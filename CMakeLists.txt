@@ -1,5 +1,13 @@
 cmake_minimum_required(VERSION 3.14)
+# Compile preprocessed assembly through the C compiler driver. CMake's direct
+# GNU as invocation converts shared-library export macros to invalid --defsym
+# arguments for src/swap.S.
+set(CMAKE_ASM_COMPILER /usr/bin/cc CACHE FILEPATH "ASM compiler")
 project(minicyber CXX C ASM)
+
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -8,12 +16,14 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # ---------------------------------------------------------
 # 编译选项配置 (包含 Sanitizers)
 # ---------------------------------------------------------
-# 默认开启较严格的警告
-add_compile_options(-Wall -Wextra -g -O0)
+# 默认开启较严格的警告。优化和调试信息由 CMAKE_BUILD_TYPE 决定，
+# 不再把 -O0 -g 注入 Release 或 sanitizer 构建。
+add_compile_options(-Wall -Wextra)
 
 # 允许通过 CMake 参数选择 Sanitizer类型: 
 # cmake -DUSE_SANITIZER=ASAN (内存检测) 或 TSAN (线程安全检测)
 set(USE_SANITIZER "" CACHE STRING "Compile with ASAN or TSAN")
+set_property(CACHE USE_SANITIZER PROPERTY STRINGS "" ASAN TSAN)
 
 if(USE_SANITIZER STREQUAL "ASAN")
     message(STATUS "Enable AddressSanitizer (ASan)")
@@ -23,6 +33,8 @@ elseif(USE_SANITIZER STREQUAL "TSAN")
     message(STATUS "Enable ThreadSanitizer (TSan)")
     add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
     add_link_options(-fsanitize=thread)
+elseif(NOT USE_SANITIZER STREQUAL "")
+    message(FATAL_ERROR "USE_SANITIZER must be ASAN, TSAN, or empty")
 endif()
 
 # ---------------------------------------------------------
@@ -118,16 +130,6 @@ enable_testing()
 add_subdirectory(tests)
 
 # ---------------------------------------------------------
-# 示例程序 (examples/)
-# ---------------------------------------------------------
-file(GLOB EXAMPLE_FILES "examples/*.cpp")
-foreach(EXAMPLE_SRC ${EXAMPLE_FILES})
-    get_filename_component(EXAMPLE_NAME ${EXAMPLE_SRC} NAME_WE)
-    add_executable(${EXAMPLE_NAME} ${EXAMPLE_SRC})
-    target_link_libraries(${EXAMPLE_NAME} minicyber_core pthread dl)
-endforeach()
-
-# ---------------------------------------------------------
 # mainboard 启动入口 (bin/)
 # ---------------------------------------------------------
 # mainboard 是 MiniCyber 的标准化启动程序，读取 DAG 配置并通过 dlopen 加载
@@ -140,4 +142,3 @@ target_link_libraries(mainboard minicyber_core minicyber_proto
                       ${Protobuf_LIBRARIES} pthread dl)
 set_target_properties(mainboard PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-

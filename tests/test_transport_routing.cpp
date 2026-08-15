@@ -65,17 +65,16 @@ TEST(TransportRoutingTest, SameProcReturnsIntraTransmitter) {
   EXPECT_TRUE(tx->enabled());
 }
 
-// 跨进程拓扑 -> CreateTransmitter<string> 返回 ShmTransmitter
-TEST(TransportRoutingTest, DiffProcReturnsShmTransmitter) {
+// 自动路由不依赖静态拓扑，跨进程角色不会让本地 Writer 落到 SHM。
+TEST(TransportRoutingTest, DiffProcTopologyStillReturnsIntraTransmitter) {
   const std::string CH = "/tr/shm_tx";
-  UnlinkShm("minicyber_" + std::to_string(Transport::ChannelNameToId(CH)));
   auto* topo = TopologyManager::Instance();
   topo->AddChannelWriter(CH, "w", kPidA);
   topo->AddChannelReader(CH, "r", kPidB);
 
   auto tx = Transport::CreateTransmitter<std::string>(CH);
   ASSERT_NE(tx, nullptr);
-  EXPECT_EQ(typeid(*tx).name(), typeid(ShmTransmitter).name());
+  EXPECT_EQ(typeid(*tx).name(), typeid(IntraTransmitter<std::string>).name());
   EXPECT_TRUE(tx->enabled());
 }
 
@@ -93,10 +92,9 @@ TEST(TransportRoutingTest, SameProcReturnsIntraReceiver) {
   EXPECT_TRUE(rx->enabled());
 }
 
-// 跨进程拓扑 -> CreateReceiver<string> 返回 ShmReceiver
-TEST(TransportRoutingTest, DiffProcReturnsShmReceiver) {
+// 自动路由不依赖静态拓扑，跨进程角色不会让本地 Reader 落到 SHM。
+TEST(TransportRoutingTest, DiffProcTopologyStillReturnsIntraReceiver) {
   const std::string CH = "/tr/shm_rx";
-  UnlinkShm("minicyber_" + std::to_string(Transport::ChannelNameToId(CH)));
   auto* topo = TopologyManager::Instance();
   topo->AddChannelWriter(CH, "w", kPidA);
   topo->AddChannelReader(CH, "r", kPidB);
@@ -104,7 +102,7 @@ TEST(TransportRoutingTest, DiffProcReturnsShmReceiver) {
   auto rx = Transport::CreateReceiver<std::string>(
       CH, [](const std::shared_ptr<std::string>&) {});
   ASSERT_NE(rx, nullptr);
-  EXPECT_EQ(typeid(*rx).name(), typeid(ShmReceiver).name());
+  EXPECT_EQ(typeid(*rx).name(), typeid(IntraReceiver<std::string>).name());
   EXPECT_TRUE(rx->enabled());
 }
 
@@ -132,7 +130,7 @@ TEST(TransportRoutingTest, SameProcEndToEnd) {
   EXPECT_EQ(received, "hello-routing");
 }
 
-// 非 string 类型 -> 始终返回 Intra（SHM 暂不支持）
+// 非 string 类型也始终返回 INTRA。
 TEST(TransportRoutingTest, NonStringAlwaysIntra) {
   const std::string CH = "/tr/nonstring";
   auto* topo = TopologyManager::Instance();
@@ -144,16 +142,39 @@ TEST(TransportRoutingTest, NonStringAlwaysIntra) {
   EXPECT_EQ(typeid(*tx).name(), typeid(IntraTransmitter<int>).name());
 }
 
-// 空拓扑（无 writer/reader 注册）-> 默认走 INTRA
-// 注意：旧版行为是走 SHM（IsSameProc 因 writer/reader 不全返回 false），
-// 但新版用 GetRelation 后，无 Reader 时 NO_RELATION → 走 INTRA。
-// 这个新行为对 Phase 6 Component 框架更友好（Writer 先于 Reader 创建）。
+// 空拓扑（无 writer/reader 注册）也走 INTRA。
 TEST(TransportRoutingTest, EmptyTopologyDefaultsToIntra) {
   const std::string CH = "/tr/empty";
 
   auto tx = Transport::CreateTransmitter<std::string>(CH);
   ASSERT_NE(tx, nullptr);
   EXPECT_EQ(typeid(*tx).name(), typeid(IntraTransmitter<std::string>).name());
+}
+
+// 端点创建后即使静态拓扑出现远端角色，也不会把本地两端分流到不同后端。
+TEST(TransportRoutingTest, TopologyChangesDoNotSplitLocalEndpoints) {
+  const std::string CH = "/tr/stable_local_route";
+  auto* topo = TopologyManager::Instance();
+  auto tx = Transport::CreateTransmitter<std::string>(CH);
+  topo->AddChannelWriter(CH, "local_writer", kPidA);
+  topo->AddChannelReader(CH, "remote_reader", kPidB);
+  auto rx = Transport::CreateReceiver<std::string>(
+      CH, [](const std::shared_ptr<std::string>&) {});
+
+  ASSERT_NE(tx, nullptr);
+  ASSERT_NE(rx, nullptr);
+  EXPECT_EQ(typeid(*tx).name(), typeid(IntraTransmitter<std::string>).name());
+  EXPECT_EQ(typeid(*rx).name(), typeid(IntraReceiver<std::string>).name());
+}
+
+// SHM 保留为显式接口，自动 INTRA 工厂不再隐式创建它。
+TEST(TransportRoutingTest, ExplicitShmTransmitterRemainsAvailable) {
+  const std::string CH = "/tr/explicit_shm";
+  UnlinkShm("minicyber_" + std::to_string(Transport::ChannelNameToId(CH)));
+  auto tx = std::make_shared<ShmTransmitter>(Transport::ChannelNameToId(CH));
+  tx->Enable();
+  EXPECT_TRUE(tx->enabled());
+  tx->Disable();
 }
 
 // ChannelNameToId 对相同字符串产生相同 id

@@ -234,3 +234,25 @@ TEST(ComponentFactoryTest, SingletonStability) {
   auto* f2 = ComponentFactory::Instance();
   EXPECT_EQ(f1, f2);
 }
+
+TEST(ComponentFactoryTest, RejectsInvalidRegistration) {
+  auto* factory = ComponentFactory::Instance();
+  EXPECT_FALSE(factory->Register("", []() { return new FactoryTestComponent(); }));
+  EXPECT_FALSE(factory->Register("null_creator", ComponentFactory::CreatorFunc{}));
+  EXPECT_EQ(factory->Create(""), nullptr);
+  EXPECT_EQ(factory->Create("null_creator"), nullptr);
+}
+
+TEST(ComponentFactoryTest, CreatorMayQueryFactory) {
+  auto* factory = ComponentFactory::Instance();
+  ASSERT_TRUE(factory->Register("reentrant_creator", [factory]() {
+    return factory->Has("FactoryTestComponent")
+               ? static_cast<minicyber::component::ComponentBase*>(
+                     new FactoryTestComponent())
+               : nullptr;
+  }));
+
+  std::unique_ptr<minicyber::component::ComponentBase> instance(
+      factory->Create("reentrant_creator"));
+  EXPECT_NE(instance, nullptr);
+}

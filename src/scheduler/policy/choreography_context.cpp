@@ -11,7 +11,7 @@ namespace minicyber {
 namespace scheduler {
 
 // ----------------------------------------------------------------------
-// NextRoutine：O(1) 取最高优先级就绪协程
+// NextRoutine：取最高优先级的就绪协程
 // ----------------------------------------------------------------------
 // 1. stop_ 为 true 直接返回 nullptr
 // 2. 读锁保护 cr_queue_（多 Processor 可同时读，但 ChoreographyContext

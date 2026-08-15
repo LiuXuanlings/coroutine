@@ -3,6 +3,7 @@
 
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <string>
 
 #include "minicyber/transport/shm/condition_notifier.h"
@@ -53,6 +54,7 @@ class ShmTransmitter : public Transmitter<std::string> {
   ~ShmTransmitter() override { Disable(); }
 
   void Enable() override {
+    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
     if (enabled_) return;
     segment_ = std::make_shared<PosixSegment>(channel_id_, ceiling_msg_size_,
                                               block_num_);
@@ -71,6 +73,7 @@ class ShmTransmitter : public Transmitter<std::string> {
   }
 
   void Disable() override {
+    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
     if (!enabled_) return;
     enabled_ = false;
     if (notifier_) {
@@ -84,7 +87,10 @@ class ShmTransmitter : public Transmitter<std::string> {
   }
 
   bool Transmit(const std::shared_ptr<std::string>& msg) override {
-    if (!enabled_ || segment_ == nullptr || notifier_ == nullptr) return false;
+    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+    if (!enabled_ || msg == nullptr || segment_ == nullptr || notifier_ == nullptr) {
+      return false;
+    }
 
     ShmWritableBlock wb;
     if (!segment_->AcquireBlockToWrite(msg->size(), &wb)) return false;
@@ -96,7 +102,7 @@ class ShmTransmitter : public Transmitter<std::string> {
     segment_->ReleaseWrittenBlock(wb);
 
     ReadableInfo info{0, block_index, channel_id_};
-    notifier_->Notify(info);
+    if (!notifier_->Notify(info)) return false;
     NextSeqNum();
     return true;
   }
@@ -109,6 +115,7 @@ class ShmTransmitter : public Transmitter<std::string> {
   uint32_t block_num_;
   std::shared_ptr<PosixSegment> segment_;
   std::unique_ptr<ConditionNotifier> notifier_;
+  std::mutex lifecycle_mutex_;
 };
 
 }  // namespace transport

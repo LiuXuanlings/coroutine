@@ -89,7 +89,7 @@ TEST(IntraDispatcherTest, DispatchFiresDataNotifier) {
   Sub sub(CH);
   std::atomic<int> fired{0};
   auto notifier = std::make_shared<Notifier>();
-  notifier->callback = [&]() { ++fired; };
+  notifier->SetCallback([&]() { ++fired; });
   DataNotifier::Instance()->AddNotifier(CH, notifier);
 
   auto* intra = IntraDispatcher<std::string>::Instance();

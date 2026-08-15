@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 
 #include "minicyber/scheduler/processor_context.h"
@@ -20,6 +21,7 @@ class Scheduler;  // 前置声明，避免与 processor.h 的循环依赖
 struct Snapshot {
   std::atomic<uint64_t> execute_start_time{0};  // 当前协程开始执行的时间戳(ns)
   std::atomic<pid_t> processor_id{0};           // Processor 线程的 Linux TID
+  std::string routine_name;
 };
 
 // ----------------------------------------------------------------------
@@ -49,8 +51,7 @@ class Processor {
   // 绑定上下文并延迟启动线程（call_once 保证只启动一次）
   void BindContext(const std::shared_ptr<ProcessorContext>& context);
 
-  // 设置本 Processor 线程可见的 Scheduler 指针（用于 Scheduler::GetThis()
-  // 在工作线程中能被回调用到，如 RPC Client::HandleResponse -> NotifyTask）
+  // 设置本 Processor 线程可见的 Scheduler 指针。
   void SetScheduler(Scheduler* sched) { scheduler_ = sched; }
 
   // 获取底层线程句柄（供 SetSchedAffinity/SetSchedPolicy 使用）

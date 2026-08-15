@@ -45,6 +45,10 @@ class MockSegment : public Segment {
 
   void* GetMemPtr() override { return mem_; }
   size_t GetSize() override { return size_; }
+  bool AcquireBlockToWrite(size_t, WritableBlock*) override { return false; }
+  void ReleaseWrittenBlock(const WritableBlock&) override {}
+  bool AcquireBlockToRead(uint32_t, ReadableBlock*) override { return false; }
+  void ReleaseReadBlock(const ReadableBlock&) override {}
 
  private:
   size_t size_;
@@ -116,12 +120,14 @@ TEST(ShmSegmentTest, CloseIsIdempotent) {
 TEST(ShmSegmentTest, ReopenAfterClose) {
   MockSegment seg(1, 256);
   ASSERT_TRUE(seg.Open());
-  void* first = seg.GetMemPtr();
-  ASSERT_NE(first, nullptr);
+  ASSERT_NE(seg.GetMemPtr(), nullptr);
   seg.Close();
   ASSERT_TRUE(seg.Open());
   EXPECT_NE(seg.GetMemPtr(), nullptr);
-  EXPECT_NE(seg.GetMemPtr(), first);
+  // Allocators may legally reuse the same virtual address after Close().
+  // Reopen guarantees a valid, freshly zeroed mapping, not a new address.
+  auto* reopened = static_cast<uint8_t*>(seg.GetMemPtr());
+  EXPECT_EQ(reopened[0], 0);
 }
 
 // Destroy 等价于 Close

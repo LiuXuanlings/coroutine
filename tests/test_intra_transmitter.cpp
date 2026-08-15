@@ -119,7 +119,7 @@ TEST(IntraTransmitterTest, TransmitFiresDataNotifier) {
   Sub sub(CH);
   std::atomic<int> fired{0};
   auto notifier = std::make_shared<Notifier>();
-  notifier->callback = [&]() { ++fired; };
+  notifier->SetCallback([&]() { ++fired; });
   DataNotifier::Instance()->AddNotifier(CH, notifier);
 
   IntraTransmitter<std::string> tx(CH);
@@ -144,4 +144,14 @@ TEST(IntraTransmitterTest, ChannelIsolation) {
   ASSERT_TRUE(sb.cb.Fetch(&ib, gb));
   EXPECT_EQ(*ga, "A");
   EXPECT_EQ(*gb, "B");
+}
+
+TEST(IntraTransmitterTest, DisableBlocksSubsequentTransmitWithoutSequenceAdvance) {
+  const uint64_t CH = 87011;
+  IntraTransmitter<std::string> tx(CH);
+  tx.Enable();
+  ASSERT_TRUE(tx.Transmit(std::make_shared<std::string>("before-disable")));
+  tx.Disable();
+  EXPECT_FALSE(tx.Transmit(std::make_shared<std::string>("after-disable")));
+  EXPECT_EQ(tx.seq_num(), 1u);
 }

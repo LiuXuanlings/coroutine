@@ -53,6 +53,40 @@ TEST(DataVisitorFusionTest, OnlySecondaryDispatchedReturnsFalse) {
   EXPECT_FALSE(dv.TryFetch(m0, m1));
 }
 
+TEST(DataVisitorFusionTest, ThreeInputsRequireBothSecondaryValues) {
+  DataVisitor<int, int, int> dv(VisitorConfig{9230, 4},
+                                VisitorConfig{9231, 4},
+                                VisitorConfig{9232, 4});
+  std::shared_ptr<int> m0, m1, m2;
+  DataDispatcher<int>::Instance()->Dispatch(9231, std::make_shared<int>(20));
+  DataDispatcher<int>::Instance()->Dispatch(9230, std::make_shared<int>(10));
+  EXPECT_FALSE(dv.TryFetch(m0, m1, m2));
+
+  DataDispatcher<int>::Instance()->Dispatch(9232, std::make_shared<int>(30));
+  DataDispatcher<int>::Instance()->Dispatch(9230, std::make_shared<int>(11));
+  ASSERT_TRUE(dv.TryFetch(m0, m1, m2));
+  EXPECT_EQ(*m0, 11);
+  EXPECT_EQ(*m1, 20);
+  EXPECT_EQ(*m2, 30);
+}
+
+TEST(DataVisitorFusionTest, FourInputsUseLatestSecondaryValues) {
+  DataVisitor<int, int, int, int> dv(VisitorConfig{9233, 4},
+                                     VisitorConfig{9234, 4},
+                                     VisitorConfig{9235, 4},
+                                     VisitorConfig{9236, 4});
+  std::shared_ptr<int> m0, m1, m2, m3;
+  DataDispatcher<int>::Instance()->Dispatch(9234, std::make_shared<int>(2));
+  DataDispatcher<int>::Instance()->Dispatch(9235, std::make_shared<int>(3));
+  DataDispatcher<int>::Instance()->Dispatch(9236, std::make_shared<int>(4));
+  DataDispatcher<int>::Instance()->Dispatch(9233, std::make_shared<int>(1));
+  ASSERT_TRUE(dv.TryFetch(m0, m1, m2, m3));
+  EXPECT_EQ(*m0, 1);
+  EXPECT_EQ(*m1, 2);
+  EXPECT_EQ(*m2, 3);
+  EXPECT_EQ(*m3, 4);
+}
+
 TEST(DataVisitorFusionTest, SecondaryThenPrimaryTriggersFusion) {
   // Dispatch M1 first, then M0. AllLatest's M0 notifier fires, finds M1's
   // latest, packs the pair into the fusion buffer.

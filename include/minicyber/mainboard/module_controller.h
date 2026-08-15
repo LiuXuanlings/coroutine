@@ -73,7 +73,6 @@ class ModuleController {
    * 遍历 dag_config.module_config() 列表：
    *   1. 解析 module_library 路径 → dlopen
    *   2. 遍历 components → ComponentFactory::Create → Initialize
-   *   3. 遍历 timer_components → ComponentFactory::Create → Initialize
    *
    * @param dag_config 已解析的计算图配置
    * @return true  全部加载成功
@@ -117,6 +116,9 @@ class ModuleController {
    * @return false 解析或加载失败
    */
   bool LoadModuleFromFile(const std::string& path);
+
+  // 回滚一次 LoadAll/LoadModule 尝试中新创建的组件和动态库。
+  void RollbackTo(size_t component_count, size_t library_count);
 
   /**
    * @brief 解析 .dag 文本格式的配置文件

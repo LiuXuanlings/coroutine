@@ -63,7 +63,7 @@ class NoReaderComponent
 // NullComponent — 验证 NullType 特化的初始化
 // =============================================================================
 // Component<NullType> 全特化没有 Proc()，只有 Init()。
-// 这个特化用于 TimerComponent 等不依赖数据通道的组件。
+// 这个特化用于不依赖数据通道的启动器组件。
 // =============================================================================
 class NullComponent
     : public minicyber::component::Component<minicyber::NullType> {
@@ -265,7 +265,7 @@ TEST(ComponentTest, ShutdownStopsProcessing) {
   
 //   | 时间线 | 发生了什么                                                                       |
 //   | --- | --------------------------------------------------------------------------- |
-//   | T1  | `comp->Shutdown()` → `Reader::Shutdown()` → `notifier_->callback = nullptr` |
+//   | T1  | `comp->Shutdown()` → `Reader::Shutdown()` → `RemoveNotifier()` |
 //   | T2  | `ShmDispatcher` 后台线程仍在运行（它不知道你 Shutdown 了）                                  |
 //   | T3  | `writer->Write("after_shutdown")` → 消息写入 SHM                                |
 //   | T4  | `ShmDispatcher::ThreadFunc` 被 `ConditionNotifier` 唤醒                        |
@@ -279,7 +279,7 @@ TEST(ComponentTest, ShutdownStopsProcessing) {
 // NullType 特化：无输入组件的 Initialize 成功
 // ---------------------------------------------------------------------------
 // Component<NullType> 特化不创建 Reader，仅创建 Node + Init()。
-// 用于 TimerComponent 或纯启动器类的基类。
+// 用于纯启动器类的基类。
 // ===========================================================================
 TEST(ComponentTest, NullTypeInitialization) {
   auto comp = std::make_shared<NullComponent>();
@@ -310,4 +310,15 @@ TEST(ComponentTest, RaaICleanupOnDestruction) {
   }
   // 如果 Shutdown 有 bug（如未释放锁、double-free），ASan 会在此处报告
   SUCCEED();
+}
+
+TEST(ComponentTest, FailedInitializationCanBeRetried) {
+  auto comp = std::make_shared<SingleChannelComponent>(nullptr);
+  minicyber::proto::ComponentConfig config;
+  config.set_name("retry_component");
+  EXPECT_FALSE(comp->Initialize(config));
+
+  config.add_readers()->set_channel("/retry_component");
+  EXPECT_TRUE(comp->Initialize(config));
+  comp->Shutdown();
 }

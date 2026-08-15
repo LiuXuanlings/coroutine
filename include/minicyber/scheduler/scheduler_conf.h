@@ -15,6 +15,8 @@ namespace scheduler {
 //   policy:         调度策略，如 "classic"
 //   affinity:       CPU 亲和性模式，"range" 或 "1to1"，空表示不绑核
 //   cpuset:         可用的 CPU 编号列表
+//   processor_policy / processor_prio: Linux Processor 调度策略和优先级
+//   choreography_processor_num: choreography 策略的定向 Processor 数；0 使用 thread_num
 //   prio_threshold: 优先级阈值（保留，当前未使用）
 // ----------------------------------------------------------------------
 struct SchedulerConf {
@@ -22,6 +24,9 @@ struct SchedulerConf {
   std::string policy = "classic";
   std::string affinity;  // "range" | "1to1" | ""
   std::vector<int> cpuset;
+  std::string processor_policy = "SCHED_OTHER";
+  int processor_prio = 0;
+  uint32_t choreography_processor_num = 0;
   std::vector<uint32_t> prio_threshold;
 };
 

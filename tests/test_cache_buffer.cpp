@@ -50,6 +50,32 @@ TEST(CacheBufferTest, OverwriteAdvancesHeadAndTail) {
   EXPECT_EQ(buf.at(buf.Tail()), 4);
 }
 
+TEST(CacheBufferTest, MinimumCapacityAlwaysRetainsNewestValue) {
+  CacheBuffer<int> buf(1);
+  buf.Fill(10);
+  buf.Fill(20);
+  buf.Fill(30);
+
+  EXPECT_TRUE(buf.Full());
+  EXPECT_EQ(buf.Size(), 1u);
+  EXPECT_EQ(buf.Head(), buf.Tail());
+  EXPECT_EQ(buf.Front(), 30);
+  EXPECT_EQ(buf.Back(), 30);
+}
+
+TEST(CacheBufferTest, FusionCallbackConsumesPrimaryFill) {
+  CacheBuffer<int> buf(2);
+  int fused = 0;
+  buf.SetFusionCallback([&](const int& value) { fused = value; });
+  buf.Fill(42);
+
+  EXPECT_EQ(fused, 42);
+  EXPECT_TRUE(buf.Empty());
+  buf.SetFusionCallback({});
+  buf.Fill(7);
+  EXPECT_EQ(buf.Back(), 7);
+}
+
 TEST(CacheBufferTest, RandomAccessByAbsoluteIndex) {
   CacheBuffer<int> buf(4);
   for (int i = 0; i < 6; ++i) buf.Fill(i);  // 2 overwrites

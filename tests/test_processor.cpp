@@ -146,8 +146,33 @@ TEST(ProcessorTest, SnapshotProcessorIdMatchesTid) {
   proc.BindContext(ctx);
 
   pid_t tid = proc.Tid().load();
+  for (int i = 0; i < 100 && proc.ProcSnapshot()->processor_id.load() != tid;
+       ++i) {
+    std::this_thread::yield();
+  }
   EXPECT_EQ(proc.ProcSnapshot()->processor_id.load(), tid);
 
+  proc.Stop();
+}
+
+TEST(ProcessorTest, ReleasesRoutineAfterExecution) {
+  auto ctx = std::make_shared<MockContext>();
+  Processor proc;
+  proc.BindContext(ctx);
+
+  std::atomic<bool> ran{false};
+  auto cr = std::make_shared<CRoutine>([&]() { ran.store(true); });
+  cr->set_name("release-check");
+  ASSERT_TRUE(cr->Acquire());  // Model the ownership acquired by NextRoutine.
+  ctx->Enqueue(cr);
+
+  while (!ran.load()) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+
+  EXPECT_EQ(proc.ProcSnapshot()->routine_name, "release-check");
+  EXPECT_TRUE(cr->Acquire());
+  cr->Release();
   proc.Stop();
 }
 
@@ -186,7 +211,6 @@ TEST(ProcessorTest, WithClassicContextPriorityOrder) {
   std::string grp = "test_proc_classic_prio";
   auto ctx = std::make_shared<ClassicContext>(grp);
   Processor proc;
-  proc.BindContext(ctx);
 
   // 记录执行顺序
   std::vector<uint64_t> exec_order;
@@ -210,6 +234,9 @@ TEST(ProcessorTest, WithClassicContextPriorityOrder) {
   auto cr_high = make_cr(200, 10);
   ClassicContext::Enqueue(cr_low);
   ClassicContext::Enqueue(cr_high);
+  // 两个候选均进入共享队列后再启动 Processor，测试的是 NextRoutine 的
+  // 优先级选择，而不是生产者入队与消费线程启动之间的偶然时序。
+  proc.BindContext(ctx);
 
   // 等待两个协程都执行完
   while (true) {

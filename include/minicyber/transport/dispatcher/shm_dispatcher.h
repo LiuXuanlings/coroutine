@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -77,6 +78,7 @@ class ShmDispatcher {
   std::atomic<bool> running_{false};
   std::thread thread_;
   std::unique_ptr<ConditionNotifier> notifier_;
+  std::mutex segments_mutex_;
   SegmentContainer segments_;
 };
 

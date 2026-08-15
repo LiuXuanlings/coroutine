@@ -32,7 +32,6 @@ using minicyber::component::ComponentFactory;
 using minicyber::component::ComponentBase;
 using minicyber::proto::ComponentConfig;
 using minicyber::proto::DagConfig;
-using minicyber::proto::TimerComponentConfig;
 
 // =============================================================================
 // 构造 / 析构
@@ -49,11 +48,14 @@ ModuleController::~ModuleController() { Clear(); }
 
 bool ModuleController::LoadAll() {
   MINFO << "Loading " << dag_paths_.size() << " DAG file(s)..." << std::endl;
+  const size_t component_count = component_list_.size();
+  const size_t library_count = lib_handles_.size();
 
   for (const auto& path : dag_paths_) {
     MINFO << "Loading DAG: " << path << std::endl;
     if (!LoadModuleFromFile(path)) {
       MERROR << "Failed to load DAG: " << path << std::endl;
+      RollbackTo(component_count, library_count);
       return false;
     }
   }
@@ -165,11 +167,7 @@ bool ModuleController::LoadModuleFromFile(const std::string& path) {
 //       b. component->Initialize(config) → 配置+初始化
 //       c. component_list_.push_back → 生命周期管理
 //
-//   Step 3: 创建定时组件
-//     遍历 ModuleConfig::timer_components：
-//       a. 同上，但调 Initialize(TimerComponentConfig)
-//
-//   Step 4: 错误处理
+//   Step 3: 错误处理
 //     任何一步失败 → 返回 false，由上层 Clear() 统一清理
 //
 // dlopen 的关键机制（面试核心考点）：
@@ -184,6 +182,13 @@ bool ModuleController::LoadModuleFromFile(const std::string& path) {
 // ---------------------------------------------------------------------------
 
 bool ModuleController::LoadModule(const DagConfig& dag_config) {
+  const size_t component_count = component_list_.size();
+  const size_t library_count = lib_handles_.size();
+  const auto fail = [this, component_count, library_count]() {
+    RollbackTo(component_count, library_count);
+    return false;
+  };
+
   for (const auto& module_config : dag_config.module_config()) {
     // ======================================================================
     // Step 1: dlopen 加载动态库
@@ -202,7 +207,7 @@ bool ModuleController::LoadModule(const DagConfig& dag_config) {
       if (handle == nullptr) {
         MERROR << "dlopen failed for: " << load_path << std::endl
                << "  dlerror: " << ::dlerror() << std::endl;
-        return false;
+        return fail();
       }
       lib_handles_.push_back(handle);
 
@@ -215,6 +220,14 @@ bool ModuleController::LoadModule(const DagConfig& dag_config) {
     // Step 2: 创建事件驱动组件（Component<T>）
     // ======================================================================
     for (const auto& component_info : module_config.components()) {
+      if (component_info.class_name().empty() || !component_info.has_config() ||
+          component_info.config().name().empty() ||
+          component_info.config().readers_size() == 0 ||
+          component_info.config().readers(0).channel().empty()) {
+        MERROR << "Invalid component DAG entry: class_name, config.name, and "
+               << "the first reader channel are required." << std::endl;
+        return fail();
+      }
       const std::string& class_name = component_info.class_name();
       const ComponentConfig& config = component_info.config();
 
@@ -223,7 +236,7 @@ bool ModuleController::LoadModule(const DagConfig& dag_config) {
       if (raw == nullptr) {
         MERROR << "ComponentFactory::Create failed for class: " << class_name
                << std::endl;
-        return false;
+        return fail();
       }
 
       // 包装为 shared_ptr（ComponentBase 继承 enable_shared_from_this）
@@ -233,7 +246,7 @@ bool ModuleController::LoadModule(const DagConfig& dag_config) {
       if (!comp->Initialize(config)) {
         MERROR << "Component::Initialize failed for: " << class_name
                << " (node: " << config.name() << ")" << std::endl;
-        return false;
+        return fail();
       }
 
       MINFO << "Component loaded: " << class_name
@@ -241,33 +254,6 @@ bool ModuleController::LoadModule(const DagConfig& dag_config) {
       component_list_.emplace_back(std::move(comp));
     }
 
-    // ======================================================================
-    // Step 3: 创建定时组件（TimerComponent）
-    // ======================================================================
-    for (const auto& timer_info : module_config.timer_components()) {
-      const std::string& class_name = timer_info.class_name();
-      const TimerComponentConfig& config = timer_info.config();
-
-      ComponentBase* raw = ComponentFactory::Instance()->Create(class_name);
-      if (raw == nullptr) {
-        MERROR << "ComponentFactory::Create failed for timer class: "
-               << class_name << std::endl;
-        return false;
-      }
-
-      std::shared_ptr<ComponentBase> comp(raw);
-
-      // 注意：TimerComponent 重写了 Initialize(const TimerComponentConfig&)
-      if (!comp->Initialize(config)) {
-        MERROR << "TimerComponent::Initialize failed for: " << class_name
-               << " (node: " << config.name() << ")" << std::endl;
-        return false;
-      }
-
-      MINFO << "TimerComponent loaded: " << class_name
-            << " (node: " << config.name() << ")" << std::endl;
-      component_list_.emplace_back(std::move(comp));
-    }
   }
 
   return true;
@@ -289,24 +275,29 @@ bool ModuleController::LoadModule(const DagConfig& dag_config) {
 // =============================================================================
 
 void ModuleController::Clear() {
-  // Step 1: 逆序 Shutdown 所有组件
-  for (auto it = component_list_.rbegin(); it != component_list_.rend(); ++it) {
-    if (*it) {
-      (*it)->Shutdown();
+  RollbackTo(0, 0);
+
+  MINFO << "ModuleController cleared. Components: 0, Libraries: 0"
+        << std::endl;
+}
+
+void ModuleController::RollbackTo(size_t component_count, size_t library_count) {
+  // 逆序关闭本次加载新增的组件，再卸载对应动态库。
+  while (component_list_.size() > component_count) {
+    auto component = std::move(component_list_.back());
+    component_list_.pop_back();
+    if (component) {
+      component->Shutdown();
     }
   }
-  component_list_.clear();
 
-  // Step 2: dlclose 所有动态库句柄
-  for (auto* handle : lib_handles_) {
+  while (lib_handles_.size() > library_count) {
+    void* handle = lib_handles_.back();
+    lib_handles_.pop_back();
     if (handle != nullptr) {
       ::dlclose(handle);
     }
   }
-  lib_handles_.clear();
-
-  MINFO << "ModuleController cleared. Components: 0, Libraries: 0"
-        << std::endl;
 }
 
 }  // namespace mainboard

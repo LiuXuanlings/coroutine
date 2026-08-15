@@ -93,6 +93,17 @@ TEST(ShmTransmitterTest, DisableBlocksTransmit) {
   UnlinkShm("minicyber_" + std::to_string(CH));
 }
 
+TEST(ShmTransmitterTest, RejectsNullMessageWithoutSequenceAdvance) {
+  const uint64_t CH = 88008;
+  UnlinkShm("minicyber_" + std::to_string(CH));
+  ShmTransmitter tx(CH);
+  tx.Enable();
+  EXPECT_FALSE(tx.Transmit(nullptr));
+  EXPECT_EQ(tx.seq_num(), 0u);
+  tx.Disable();
+  UnlinkShm("minicyber_" + std::to_string(CH));
+}
+
 // Transmit 写入 payload 到 SHM block，直接读 PosixSegment 验证内容
 TEST(ShmTransmitterTest, TransmitWritesPayloadToBlock) {
   const uint64_t CH = 88004;
@@ -144,7 +155,7 @@ TEST(ShmTransmitterTest, EndToEndSameProcess) {
 
   std::atomic<int> fired{0};
   auto notifier = std::make_shared<Notifier>();
-  notifier->callback = [&]() { ++fired; };
+  notifier->SetCallback([&]() { ++fired; });
   DataNotifier::Instance()->AddNotifier(CH, notifier);
 
   ShmDispatcher::Instance()->AddSegment(CH);

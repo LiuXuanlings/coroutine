@@ -116,7 +116,7 @@ TEST(ShmDispatcherTest, WriteNotifyThenReceive) {
 
   std::atomic<int> fired{0};
   auto notifier = std::make_shared<Notifier>();
-  notifier->callback = [&]() { ++fired; };
+  notifier->SetCallback([&]() { ++fired; });
   DataNotifier::Instance()->AddNotifier(CH, notifier);
 
   auto* d = ShmDispatcher::Instance();
@@ -186,6 +186,20 @@ TEST(ShmDispatcherTest, AddSegmentIdempotent) {
   d->AddSegment(CH);
   ASSERT_TRUE(ShmFileExists("minicyber_" + std::to_string(CH)));
   d->AddSegment(CH);
+  EXPECT_TRUE(ShmFileExists("minicyber_" + std::to_string(CH)));
+}
+
+TEST(ShmDispatcherTest, ConcurrentAddSegmentIsIdempotent) {
+  const uint64_t CH = 86006;
+  UnlinkShm("minicyber_" + std::to_string(CH));
+  auto* dispatcher = ShmDispatcher::Instance();
+  std::vector<std::thread> registrars;
+  for (int i = 0; i < 8; ++i) {
+    registrars.emplace_back([dispatcher]() { dispatcher->AddSegment(CH); });
+  }
+  for (auto& registrar : registrars) {
+    registrar.join();
+  }
   EXPECT_TRUE(ShmFileExists("minicyber_" + std::to_string(CH)));
 }
 

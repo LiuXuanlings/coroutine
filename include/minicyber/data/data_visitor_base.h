@@ -20,7 +20,7 @@ class DataVisitorBase {
   // Bind the wake-up callback. Invoked by DataNotifier::Notify(channel_id)
   // when a writer publishes data on a channel this visitor subscribes to.
   void RegisterNotifyCallback(std::function<void()>&& callback) {
-    notifier_->callback = std::move(callback);
+    notifier_->SetCallback(std::move(callback));
   }
 
  protected:

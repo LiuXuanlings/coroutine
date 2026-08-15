@@ -71,18 +71,6 @@ TEST(ComponentBaseTest, BaseInitializeReturnsFalse) {
 }
 
 // ---------------------------------------------------------------------------
-// 基类 TimerInitialize 默认返回 false
-// ---------------------------------------------------------------------------
-// 验证 TimerComponentConfig 版本的 Initialize 同样默认返回 false。
-// ---------------------------------------------------------------------------
-TEST(ComponentBaseTest, BaseTimerInitializeReturnsFalse) {
-  MinimalComponent comp;
-  minicyber::proto::TimerComponentConfig config;
-  config.set_name("minimal_timer");
-  EXPECT_FALSE(comp.Initialize(config));
-}
-
-// ---------------------------------------------------------------------------
 // Shutdown 完整生命周期：Init → Clear → is_shutdown
 // ---------------------------------------------------------------------------
 // 验证 Shutdown 的正确执行顺序：
