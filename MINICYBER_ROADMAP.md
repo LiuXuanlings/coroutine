@@ -6,14 +6,14 @@
 
 - 当前分支：`development`
 - 当前阶段：第二次重构已完成，进入维护模式
-- 当前任务：MNT-001 动态插件加载学习文档
-- 当前状态：维护文档整理中；MC-601 至 MC-623 已全部完成并发布至 `development`
+- 当前任务：无；MC-601 至 MC-623 与 MNT-001 已全部完成
+- 当前状态：已发布至 `development`
 - 唯一状态事实源：[`docs/refactor/00_进度记录.md`](docs/refactor/00_进度记录.md)
 - 唯一任务执行方案：[`docs/refactor/01_实施方案.md`](docs/refactor/01_实施方案.md)
 
 收到执行指定任务的指令时，Agent 不需要重新向用户确认已经在基线中定稿的需求；应按本文阅读顺序取得上下文，核对进度后独立推进。第二次重构任务不得重开或复用编号；新增需求必须先在 00 和实施方案中建立新的任务卡。只有源码事实与基线互相冲突、外部依赖缺失或任务会越过白名单时，才允许标记阻塞并提问。
 
-MNT-001 只新增 `docs/PLUGIN_LOADING_STUDY.md`，用于按当前源码学习 Protobuf TextFormat、
+MNT-001 已新增 `docs/PLUGIN_LOADING_STUDY.md`，用于按当前源码学习 Protobuf TextFormat、
 `.dag`、`.so`、`dlopen`、ComponentFactory 和 `dlclose` 边界；不改变既有架构或验收决策。
 
 ### 1.1 MC-601 至 MC-606 已交付基线
