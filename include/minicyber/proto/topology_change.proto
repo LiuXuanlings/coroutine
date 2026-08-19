@@ -1,0 +1,29 @@
+syntax = "proto2";
+
+package minicyber.proto;
+
+import "minicyber/proto/role_attributes.proto";
+
+enum ChangeType {
+  // 编号沿用原生协议；1、3、4 对应本项目裁剪掉的 Node、Service、Participant。
+  CHANGE_CHANNEL = 2;
+}
+
+enum OperateType {
+  OPT_JOIN = 1;
+  OPT_LEAVE = 2;
+}
+
+enum RoleType {
+  // 编号沿用原生协议；不得因裁剪其他角色而压缩枚举值。
+  ROLE_WRITER = 2;
+  ROLE_READER = 3;
+}
+
+message ChangeMsg {
+  optional uint64 timestamp = 1;
+  optional ChangeType change_type = 2;
+  optional OperateType operate_type = 3;
+  optional RoleType role_type = 4;
+  optional RoleAttributes role_attr = 5;
+}

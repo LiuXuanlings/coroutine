@@ -30,8 +30,8 @@ Processor::~Processor() {
 //       - 无任务: 清零时间戳，Wait() 阻塞等待新任务
 //    b. context_ 未绑定 -> 在 cv_ctx_ 上等 10ms（避免空转）
 //
-// 注意：croutine->Release() 在 CyberRT 中用于释放 work-stealing 锁，
-// 我们的 CRoutine 尚未引入该锁，暂跳过（Step 10 实现 Work-Stealing 时补上）。
+// NextRoutine 成功取得协程执行所有权后，本循环必须在 Resume 返回时释放；
+// 该所有权只防止同一个协程被同组 Processor 并发执行。
 // ----------------------------------------------------------------------
 void Processor::Run() {
   tid_.store(static_cast<int>(syscall(SYS_gettid)));
@@ -56,9 +56,8 @@ void Processor::Run() {
             std::chrono::steady_clock::now().time_since_epoch().count());
         snap_shot_->routine_name = croutine->name();
         croutine->Resume();
-        // 释放工作窃取锁：NextRoutine() 中 Acquire 获取，Resume() 返回后
-        // （协程 Yield 或执行完毕）必须 Release，否则下次 NextRoutine 无法
-        // 再次 Acquire 该协程，导致 DATA_WAIT 协程被永久卡住。
+        // Resume 返回表示协程已经 Yield 或完成，必须归还执行所有权；否则
+        // 后续唤醒无法再次 Acquire，该 DATA_WAIT 协程会永久卡住。
         croutine->Release();
       } else {
         snap_shot_->execute_start_time.store(0);

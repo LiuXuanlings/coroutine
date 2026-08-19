@@ -1,7 +1,11 @@
 #include <gtest/gtest.h>
 #include <unistd.h>
 
+#include <atomic>
+#include <chrono>
+#include <functional>
 #include <string>
+#include <thread>
 
 #include "minicyber/topology/topology_manager.h"
 
@@ -10,6 +14,22 @@ using minicyber::topology::TopologyManager;
 namespace {
 const pid_t kPidA = 1000;
 const pid_t kPidB = 2000;
+
+minicyber::proto::RoleAttributes MakeRole(const std::string& node_name,
+                                          const std::string& channel_name,
+                                          uint64_t id) {
+  char host_name[256] = {};
+  EXPECT_EQ(gethostname(host_name, sizeof(host_name) - 1), 0);
+
+  minicyber::proto::RoleAttributes attr;
+  attr.set_host_name(host_name);
+  attr.set_process_id(getpid());
+  attr.set_node_name(node_name);
+  attr.set_channel_name(channel_name);
+  attr.set_channel_id(std::hash<std::string>{}(channel_name));
+  attr.set_id(id);
+  return attr;
+}
 }  // namespace
 
 // AddNode 注册节点，HasNode 可查到
@@ -108,6 +128,49 @@ TEST(TopologyManagerTest, DumpGraphContainsChannelAndNodes) {
   EXPECT_NE(graph.find("/ch/dot"), std::string::npos);
   EXPECT_NE(graph.find("writer_n"), std::string::npos);
   EXPECT_NE(graph.find("reader_n"), std::string::npos);
+}
+
+TEST(TopologyManagerTest, JoinLeaveTracksReadersSnapshotsAndChangeListeners) {
+  auto* topo = TopologyManager::Instance();
+  topo->Shutdown();
+
+  std::atomic<int> joins{0};
+  std::atomic<int> leaves{0};
+  const auto connection = topo->AddChangeListener(
+      [&joins, &leaves](const minicyber::proto::ChangeMsg& msg) {
+        if (msg.operate_type() == minicyber::proto::OPT_JOIN) {
+          ++joins;
+        } else if (msg.operate_type() == minicyber::proto::OPT_LEAVE) {
+          ++leaves;
+        }
+      });
+
+  const std::string channel = "/ch/lifecycle";
+  const auto writer = MakeRole("writer", channel, 0x6061);
+  const auto reader = MakeRole("reader", channel, 0x6062);
+  ASSERT_TRUE(topo->Join(minicyber::proto::ROLE_WRITER, writer));
+  ASSERT_TRUE(topo->Join(minicyber::proto::ROLE_READER, reader));
+  EXPECT_TRUE(topo->HasReader(channel));
+  EXPECT_TRUE(topo->HasWriter(channel));
+  EXPECT_EQ(topo->GetReaders(channel).size(), 1U);
+  EXPECT_EQ(topo->GetWriters(channel).size(), 1U);
+  EXPECT_EQ(topo->GetRelation(channel, getpid()), minicyber::SAME_PROC);
+  EXPECT_EQ(joins.load(), 2);
+
+  ASSERT_TRUE(topo->Leave(minicyber::proto::ROLE_READER, reader));
+  EXPECT_FALSE(topo->HasReader(channel));
+  ASSERT_TRUE(topo->Leave(minicyber::proto::ROLE_WRITER, writer));
+  EXPECT_FALSE(topo->HasWriter(channel));
+  EXPECT_EQ(leaves.load(), 2);
+
+  topo->RemoveChangeListener(connection);
+  const int callback_count = joins.load() + leaves.load();
+  const auto replacement_writer = MakeRole("replacement", channel, 0x6063);
+  ASSERT_TRUE(topo->Join(minicyber::proto::ROLE_WRITER, replacement_writer));
+  ASSERT_TRUE(topo->Leave(minicyber::proto::ROLE_WRITER, replacement_writer));
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  EXPECT_EQ(joins.load() + leaves.load(), callback_count);
+  topo->Shutdown();
 }
 
 // Shutdown 清空所有拓扑

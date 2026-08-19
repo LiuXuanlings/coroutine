@@ -146,10 +146,6 @@ TEST(ProcessorTest, SnapshotProcessorIdMatchesTid) {
   proc.BindContext(ctx);
 
   pid_t tid = proc.Tid().load();
-  for (int i = 0; i < 100 && proc.ProcSnapshot()->processor_id.load() != tid;
-       ++i) {
-    std::this_thread::yield();
-  }
   EXPECT_EQ(proc.ProcSnapshot()->processor_id.load(), tid);
 
   proc.Stop();
@@ -211,6 +207,7 @@ TEST(ProcessorTest, WithClassicContextPriorityOrder) {
   std::string grp = "test_proc_classic_prio";
   auto ctx = std::make_shared<ClassicContext>(grp);
   Processor proc;
+  proc.BindContext(ctx);
 
   // 记录执行顺序
   std::vector<uint64_t> exec_order;
@@ -234,9 +231,6 @@ TEST(ProcessorTest, WithClassicContextPriorityOrder) {
   auto cr_high = make_cr(200, 10);
   ClassicContext::Enqueue(cr_low);
   ClassicContext::Enqueue(cr_high);
-  // 两个候选均进入共享队列后再启动 Processor，测试的是 NextRoutine 的
-  // 优先级选择，而不是生产者入队与消费线程启动之间的偶然时序。
-  proc.BindContext(ctx);
 
   // 等待两个协程都执行完
   while (true) {

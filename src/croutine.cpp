@@ -108,11 +108,10 @@ void CRoutine::Yield(const RoutineState& state) {
 }
 
 // ----------------------------------------------------------------------
-// 工作窃取锁
+// 协程执行所有权
 // ----------------------------------------------------------------------
-// Acquire: test_and_set 返回 true 表示锁已被占用（返回 false），
-//          返回 false 表示锁原本空闲，我们成功占用（返回 true）。
-// Release: clear 释放锁。
+// 同一调度组的多个 Processor 共享就绪队列，Acquire/Release 只保证同一个
+// CRoutine 不会被并发 Resume；它不表示跨队列窃取任务。
 // ----------------------------------------------------------------------
 bool CRoutine::Acquire() {
   return !lock_.test_and_set(std::memory_order_acquire);
