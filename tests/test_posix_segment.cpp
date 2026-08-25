@@ -167,6 +167,17 @@ TEST(PosixSegmentTest, TwoSegmentsSameChannelOpenOnly) {
   seg1.Destroy();
 }
 
+TEST(PosixSegmentTest, OpenRejectsSmallerExistingLayout) {
+  const uint64_t CH = 91018;
+  UnlinkShm("minicyber_" + std::to_string(CH));
+  PosixSegment small(CH, 1024, 4);
+  ASSERT_TRUE(small.Open());
+
+  PosixSegment larger_request(CH, 64 * 1024, 4);
+  EXPECT_FALSE(larger_request.Open());
+  small.Destroy();
+}
+
 // fork：父进程写，子进程读，验证跨进程可见
 TEST(PosixSegmentTest, ForkCrossProcessRead) {
   const uint64_t CH = 91009;

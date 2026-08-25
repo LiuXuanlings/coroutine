@@ -7,6 +7,16 @@
 #include "minicyber/component/component_factory.h"
 #include "minicyber/node/node.h"
 
+namespace {
+using TestMessage = minicyber::proto::RoleAttributes;
+
+TestMessage MakeMessage(const std::string& value) {
+  TestMessage message;
+  message.set_node_name(value);
+  return message;
+}
+}  // namespace
+
 // =============================================================================
 // FactoryTestComponent — 通过工厂注册的测试组件
 //
@@ -24,7 +34,7 @@ static std::string g_factory_received;
 static std::atomic<int> g_factory_proc_count{0};
 
 class FactoryTestComponent
-    : public minicyber::component::Component<std::string> {
+    : public minicyber::component::Component<TestMessage> {
  public:
   static void ResetStats() {
     g_factory_received.clear();
@@ -37,8 +47,8 @@ class FactoryTestComponent
     return true;
   }
 
-  bool Proc(const std::shared_ptr<std::string>& msg) override {
-    g_factory_received = *msg;
+  bool Proc(const std::shared_ptr<TestMessage>& msg) override {
+    g_factory_received = msg->node_name();
     g_factory_proc_count.fetch_add(1, std::memory_order_relaxed);
     return true;
   }
@@ -57,10 +67,10 @@ class FactoryTestComponent
 // =============================================================================
 
 class SecondTestComponent
-    : public minicyber::component::Component<std::string> {
+    : public minicyber::component::Component<TestMessage> {
  protected:
   bool Init() override { return true; }
-  bool Proc(const std::shared_ptr<std::string>& msg) override {
+  bool Proc(const std::shared_ptr<TestMessage>& msg) override {
     (void)msg;
     return true;
   }
@@ -155,18 +165,18 @@ TEST(ComponentFactoryTest, CreateInitializeAndDeliver) {
 
   // Step 3: 通过 Writer 发布消息（模拟真实数据流）
   minicyber::node::Node pub_node("factory_publisher");
-  auto writer = pub_node.CreateWriter<std::string>("/factory_channel");
+  auto writer = pub_node.CreateWriter<TestMessage>("/factory_channel");
   ASSERT_NE(writer, nullptr);
 
   std::string test_msg("delivered via factory");
-  EXPECT_TRUE(writer->Write(test_msg));
+  EXPECT_TRUE(writer->Write(MakeMessage(test_msg)));
 
   // Step 4: 验证 Proc 被调用（同步路径，Writer 线程中直接触发）
   EXPECT_EQ(g_factory_proc_count.load(std::memory_order_relaxed), 1);
   EXPECT_EQ(g_factory_received, test_msg);
 
   // Step 5: 第二次写入验证组件仍活跃
-  EXPECT_TRUE(writer->Write("second factory message"));
+  EXPECT_TRUE(writer->Write(MakeMessage("second factory message")));
   EXPECT_EQ(g_factory_proc_count.load(std::memory_order_relaxed), 2);
   EXPECT_EQ(g_factory_received, "second factory message");
 
@@ -197,17 +207,17 @@ TEST(ComponentFactoryTest, FactoryComponentShutdownGraceful) {
 
   // 先正常收发
   minicyber::node::Node pub_node("pub");
-  auto writer = pub_node.CreateWriter<std::string>("/factory_shutdown");
+  auto writer = pub_node.CreateWriter<TestMessage>("/factory_shutdown");
   ASSERT_NE(writer, nullptr);
 
-  EXPECT_TRUE(writer->Write("before"));
+  EXPECT_TRUE(writer->Write(MakeMessage("before")));
   EXPECT_EQ(g_factory_proc_count.load(std::memory_order_relaxed), 1);
 
   // Shutdown
   comp->Shutdown();
 
   // 再写消息 — 不保证计数不变（可能有残留回调），但保证不 crash
-  EXPECT_TRUE(writer->Write("after"));
+  EXPECT_TRUE(writer->Write(MakeMessage("after")));
   SUCCEED();
 }
 

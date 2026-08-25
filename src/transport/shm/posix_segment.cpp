@@ -253,6 +253,15 @@ bool PosixSegment::OpenOnly() {
     state_ = nullptr;
     return false;
   }
+  // 原生 Segment 在消息超出当前档位时会重建共享段。MiniCyber 不恢复完整
+  // ShmConf 分级机制，但也不能静默采用比调用方请求更小的既存布局。
+  if (mapped_ceiling_msg_size < ceiling_msg_size_ ||
+      mapped_block_num < block_num_) {
+    munmap(mem_, mapped_size);
+    mem_ = nullptr;
+    state_ = nullptr;
+    return false;
+  }
 
   // 复用已有 Block 数组
   blocks_ = reinterpret_cast<Block*>(static_cast<char*>(mem_) + sizeof(State));

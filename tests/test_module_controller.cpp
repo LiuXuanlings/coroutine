@@ -39,10 +39,17 @@ using minicyber::proto::DagConfig;
 using minicyber::proto::ModuleConfig;
 
 namespace {
+using TestMessage = minicyber::proto::RoleAttributes;
+
+TestMessage MakeMessage(const std::string& value) {
+  TestMessage message;
+  message.set_node_name(value);
+  return message;
+}
 
 // 测试用事件驱动组件
 class McTestComponent
-    : public minicyber::component::Component<std::string> {
+    : public minicyber::component::Component<TestMessage> {
  public:
   static void ResetStats() {
     init_count_.store(0, std::memory_order_relaxed);
@@ -58,8 +65,8 @@ class McTestComponent
     init_count_.fetch_add(1, std::memory_order_relaxed);
     return true;
   }
-  bool Proc(const std::shared_ptr<std::string>& msg) override {
-    last_msg_ = *msg;
+  bool Proc(const std::shared_ptr<TestMessage>& msg) override {
+    last_msg_ = msg->node_name();
     proc_count_.fetch_add(1, std::memory_order_relaxed);
     return true;
   }
@@ -76,10 +83,10 @@ std::string McTestComponent::last_msg_;
 
 // 第二个测试组件（验证多类共存）
 class McSecondComponent
-    : public minicyber::component::Component<std::string> {
+    : public minicyber::component::Component<TestMessage> {
  protected:
   bool Init() override { return true; }
-  bool Proc(const std::shared_ptr<std::string>& msg) override {
+  bool Proc(const std::shared_ptr<TestMessage>& msg) override {
     (void)msg;
     return true;
   }
@@ -355,11 +362,11 @@ TEST(ModuleControllerTest, EndToEndDataDelivery) {
 
   // 创建 Writer 发布消息
   minicyber::node::Node pub_node("e2e_publisher");
-  auto writer = pub_node.CreateWriter<std::string>("/e2e_channel");
+  auto writer = pub_node.CreateWriter<TestMessage>("/e2e_channel");
   ASSERT_NE(writer, nullptr);
 
   std::string msg("hello from mainboard test");
-  EXPECT_TRUE(writer->Write(msg));
+  EXPECT_TRUE(writer->Write(MakeMessage(msg)));
   // 同步回调路径，Write 返回时 Proc 应已执行
   EXPECT_EQ(McTestComponent::proc_count(), 1);
   EXPECT_EQ(McTestComponent::last_msg(), msg);

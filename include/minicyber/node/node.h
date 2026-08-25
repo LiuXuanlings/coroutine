@@ -25,13 +25,13 @@ namespace node {
 //
 // 用法：
 //   Node node("talker");
-//   auto w = node.CreateWriter<std::string>("/chatter");
-//   auto r = node.CreateReader<std::string>("/chatter", [](msg) { ... });
+//   auto w = node.CreateWriter<MyProto>("/chatter");
+//   auto r = node.CreateReader<MyProto>("/chatter", [](msg) { ... });
 //
 // 与 CyberRT 的简化：
-//   - 保留精简 NodeChannelImpl；去掉 RoleAttributes、QoS 和动态拓扑监听
-//   - 去掉 CreateTask / Observe / ClearData（Reader 不再创建协程）
-//   - 拓扑注册在 Writer/Reader::Init 时完成，Node 只负责注册自身节点名
+//   - 保留 NodeChannelImpl 填充 RoleAttributes 和端点 Join/Leave；不恢复 RTPS 数据面
+//   - Reader 保留有界 Observe 队列，不在接收回调中同步执行业务 Proc
+//   - DataVisitor/RoutineFactory 的异步调度职责留给 /
 // =============================================================================
 
 // ReaderBase 前置声明（用于 map 存储异构 Reader）

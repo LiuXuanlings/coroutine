@@ -42,6 +42,10 @@ class CRoutine : public std::enable_shared_from_this<CRoutine> {
   // 获取当前协程（若不存在则创建主协程）
   static ptr GetThis();
 
+  // RoutineFactory 已在协程上下文中调用此接口；返回裸指针避免在 Yield 冻结的
+  // 协程栈上创建临时 shared_ptr。CyberRT 的 GetCurrentRoutine 同样只暴露当前对象。
+  static CRoutine* GetCurrentRoutine() { return t_croutine.get(); }
+
   // 让出执行权，切回主协程（保留当前状态）
   static void Yield();
 

@@ -21,6 +21,7 @@ set(TEST_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/test_data_notifier.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_data_visitor.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_fusion_all_latest.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_hybrid_transport.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_intra_dispatcher.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_intra_receiver.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_intra_transmitter.cpp
@@ -31,6 +32,7 @@ set(TEST_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/test_posix_segment_signal.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_processor.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_processor_context.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_routine_factory.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_scheduler_choreography.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_scheduler_classic.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_shm_block.cpp
@@ -43,7 +45,6 @@ set(TEST_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/test_time.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_topology.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_topology_discovery.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_transport_routing.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_wait_strategy.cpp
 )
 
@@ -82,6 +83,15 @@ if(TEST_FILES)
         if(TEST_NAME MATCHES "^test_topology_discovery$")
             list(APPEND TEST_LABELS "high_risk" "cross_process")
         endif()
+        if(TEST_NAME MATCHES "^test_hybrid_transport$")
+            list(APPEND TEST_LABELS "high_risk" "cross_process")
+        endif()
+        if(TEST_NAME MATCHES "^test_node$")
+            list(APPEND TEST_LABELS "high_risk")
+        endif()
+        if(TEST_NAME MATCHES "^test_(croutine|data_dispatcher|data_notifier|data_visitor|data_fusion|fusion_all_latest|routine_factory|processor)$")
+            list(APPEND TEST_LABELS "high_risk")
+        endif()
         set_tests_properties(${TEST_NAME} PROPERTIES LABELS "${TEST_LABELS}")
     endforeach()
 endif()
@@ -98,5 +108,5 @@ add_custom_target(check_stress
 
 add_custom_target(check_cross_process
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -L cross_process
-    DEPENDS test_condition_notifier test_posix_segment test_posix_segment_signal test_shm_dispatcher test_shm_transmitter test_topology_discovery
+    DEPENDS test_condition_notifier test_posix_segment test_posix_segment_signal test_shm_dispatcher test_shm_transmitter test_topology_discovery test_hybrid_transport
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
