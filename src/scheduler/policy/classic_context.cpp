@@ -37,22 +37,21 @@ void ClassicContext::InitGroup(const std::string& group_name) {
 }
 
 // ----------------------------------------------------------------------
-// NextRoutine: 从高优先级到低优先级扫描本地队列，返回首个就绪协程
+// NextRoutine: 从高优先级到低优先级扫描所属共享组队列，返回首个就绪协程
 // ----------------------------------------------------------------------
 // 1. 若 stop_ 为 true，直接返回 nullptr
-// 2. 从 MAX_PRIO-1 到 0 扫描本地每级队列：
+// 2. 从 MAX_PRIO-1 到 0 扫描所属组的每级队列：
 //    a. 加锁访问该级队列
 //    b. 遍历协程，尝试 Acquire（防止多 Processor 同时执行同一协程）
 //    c. Acquire 成功后 UpdateState，若为 READY 则返回该协程
 //    d. 若非 READY，Release 锁继续找下一个
-// 3. 本地全空时，遍历其他 group 尝试 Steal（Work-Stealing）
 // ----------------------------------------------------------------------
 std::shared_ptr<CRoutine> ClassicContext::NextRoutine() {
   if (cyber_unlikely(stop_.load())) {
     return nullptr;
   }
 
-  // 1. 扫描本地队列
+  // 同组 Processor 竞争同一组静态队列；Acquire 只防止同一协程并发执行。
   for (int i = MAX_PRIO - 1; i >= 0; --i) {
     std::lock_guard<std::mutex> lk(lq_->at(i));
     for (auto& cr : multi_pri_rq_->at(i)) {
@@ -152,11 +151,17 @@ bool ClassicContext::RemoveCRoutine(const std::shared_ptr<CRoutine>& cr) {
   }
   auto target = *it;
   target->Stop();
-  while (!target->Acquire()) {
-    std::this_thread::sleep_for(std::chrono::microseconds(1));
+  const bool removing_current =
+      CRoutine::GetCurrentRoutine() == target.get();
+  if (!removing_current) {
+    while (!target->Acquire()) {
+      std::this_thread::sleep_for(std::chrono::microseconds(1));
+    }
   }
   queue.erase(it);
-  target->Release();
+  if (!removing_current) {
+    target->Release();
+  }
   return true;
 }
 

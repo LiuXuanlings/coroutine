@@ -28,23 +28,30 @@ template <typename T>
 class DataDispatcher {
  public:
   using BufferType = CacheBuffer<std::shared_ptr<T>>;
-  using BufferVector = std::vector<std::weak_ptr<BufferType>>;
+  struct BufferEntry {
+    std::weak_ptr<BufferType> buffer;
+    bool receive_shm = false;
+  };
+  using BufferVector = std::vector<BufferEntry>;
 
   static DataDispatcher<T>* Instance() {
     static DataDispatcher<T> inst;
     return &inst;
   }
 
-  void AddBuffer(const ChannelBuffer<T>& channel_buffer) {
+  // 只有 DataVisitor 注册 receive_shm。SHM 已由 ShmReceiver 单独回调普通
+  // Reader；若再次唤醒 IntraReceiver 的 DataDispatcher 订阅会把同一消息
+  // 错投为 INTRA 副本并造成 Hybrid 重复投递。
+  void AddBuffer(const ChannelBuffer<T>& channel_buffer, bool receive_shm = false) {
     auto buffer = channel_buffer.Buffer();
     std::lock_guard<std::mutex> lock(buffers_mtx_);
     auto& buffers = buffers_map_[channel_buffer.channel_id()];
     buffers.erase(std::remove_if(buffers.begin(), buffers.end(),
-                                 [](const std::weak_ptr<BufferType>& item) {
-                                   return item.expired();
+                                 [](const BufferEntry& item) {
+                                   return item.buffer.expired();
                                  }),
                   buffers.end());
-    buffers.emplace_back(std::move(buffer));
+    buffers.push_back({std::move(buffer), receive_shm});
   }
 
   bool RemoveBuffer(const ChannelBuffer<T>& channel_buffer) {
@@ -57,8 +64,8 @@ class DataDispatcher {
     auto& buffers = channel->second;
     bool removed = false;
     buffers.erase(std::remove_if(buffers.begin(), buffers.end(),
-                                 [&buffer, &removed](const std::weak_ptr<BufferType>& item) {
-                                   auto registered = item.lock();
+                                 [&buffer, &removed](const BufferEntry& item) {
+                                   auto registered = item.buffer.lock();
                                    if (registered == buffer) {
                                      removed = true;
                                      return true;
@@ -73,6 +80,18 @@ class DataDispatcher {
   }
 
   bool Dispatch(uint64_t channel_id, const std::shared_ptr<T>& msg) {
+    return DispatchImpl(channel_id, msg, false);
+  }
+
+  // SHM 解码后的消息仅交给 Component 的 DataVisitor。常规 Reader 仍由
+  // ShmReceiver::OnNewMessage 收到一次回调，不能经 Intra 数据总线回流。
+  bool DispatchFromShm(uint64_t channel_id, const std::shared_ptr<T>& msg) {
+    return DispatchImpl(channel_id, msg, true);
+  }
+
+ private:
+  bool DispatchImpl(uint64_t channel_id, const std::shared_ptr<T>& msg,
+                    bool shm_only) {
     BufferVector snapshot;
     {
       std::lock_guard<std::mutex> lock(buffers_mtx_);
@@ -83,16 +102,24 @@ class DataDispatcher {
       snapshot = channel->second;
     }
 
-    for (auto& buffer_wptr : snapshot) {
-      if (auto buffer = buffer_wptr.lock()) {
+    bool dispatched = false;
+    for (auto& entry : snapshot) {
+      if (shm_only && !entry.receive_shm) {
+        continue;
+      }
+      if (auto buffer = entry.buffer.lock()) {
         std::lock_guard<std::mutex> lg(buffer->Mutex());
         buffer->Fill(msg);
+        dispatched = true;
       }
     }
-    return notifier_->Notify(channel_id);
+    if (!dispatched) {
+      return false;
+    }
+    return shm_only ? notifier_->NotifyFromShm(channel_id)
+                    : notifier_->Notify(channel_id);
   }
 
- private:
   DataDispatcher() = default;
   ~DataDispatcher() = default;
   DataDispatcher(const DataDispatcher&) = delete;

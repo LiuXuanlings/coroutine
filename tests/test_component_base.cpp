@@ -1,5 +1,9 @@
 #include <gtest/gtest.h>
 
+#include <fstream>
+#include <string>
+#include <unistd.h>
+
 #include "minicyber/component/component_base.h"
 #include "minicyber/proto/component_conf.pb.h"
 
@@ -26,6 +30,7 @@ class DummyComponent : public minicyber::component::ComponentBase {
   // 真正的 Component<T> 还会创建 Reader，此处简化为仅测试生命周期
   bool Initialize(const minicyber::proto::ComponentConfig& config) override {
     node_.reset(new minicyber::node::Node(config.name()));
+    LoadConfigFiles(config);
     if (!Init()) return false;
     return true;
   }
@@ -116,15 +121,32 @@ TEST(ComponentBaseTest, ShutdownIsIdempotent) {
 }
 
 // ---------------------------------------------------------------------------
-// GetProtoConfig 当前为 Stub
+// GetProtoConfig 按 TextFormat 加载组件配置
 // ---------------------------------------------------------------------------
-// 在没有设置 config_file_path 时，GetProtoConfig 应该返回 false。
-// 完整功能需接入 google::protobuf::TextFormat 解析。
+// 空路径返回 false；真实文件必须解析出原始 Protobuf 字段。
 // ---------------------------------------------------------------------------
-TEST(ComponentBaseTest, GetProtoConfigStub) {
+TEST(ComponentBaseTest, GetProtoConfigLoadsTextProto) {
   DummyComponent comp;
+  minicyber::proto::ComponentConfig empty;
+  EXPECT_FALSE(comp.GetProtoConfig(&empty));
+
+  char path[] = "/tmp/minicyber_component_config_XXXXXX";
+  const int fd = ::mkstemp(path);
+  ASSERT_NE(fd, -1);
+  ::close(fd);
+  {
+    std::ofstream output(path);
+    output << "name: \"loaded_component\"\n";
+  }
+
+  minicyber::proto::ComponentConfig init_config;
+  init_config.set_name("loader");
+  init_config.set_config_file_path(path);
+  ASSERT_TRUE(comp.Initialize(init_config));
   minicyber::proto::ComponentConfig config;
-  EXPECT_FALSE(comp.GetProtoConfig(&config));
+  ASSERT_TRUE(comp.GetProtoConfig(&config));
+  EXPECT_EQ(config.name(), "loaded_component");
+  ::unlink(path);
 }
 
 // ---------------------------------------------------------------------------

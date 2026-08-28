@@ -82,7 +82,7 @@ bool ModuleController::LoadAll() {
 
 bool ModuleController::ParseDagFile(const std::string& path,
                                     DagConfig* dag_config) {
-  // Step 1: 读取文件到 string
+  // 步骤 1：读取文件到 string
   std::ifstream ifs(path, std::ios::in);
   if (!ifs.is_open()) {
     MERROR << "Cannot open DAG file: " << path << " - "
@@ -95,7 +95,7 @@ bool ModuleController::ParseDagFile(const std::string& path,
   ifs.close();
   const std::string content = buf.str();
 
-  // Step 2: 解析 TextFormat proto
+  // 步骤 2：解析 TextFormat proto
   // TextFormat 是 protobuf 提供的文本序列化格式解析器。
   // 与二进制格式（ParseFromString）不同，文本格式允许人类直接编辑。
   if (!google::protobuf::TextFormat::ParseFromString(content, dag_config)) {
@@ -156,18 +156,17 @@ bool ModuleController::LoadModuleFromFile(const std::string& path) {
 // ---------------------------------------------------------------------------
 // 遍历 DagConfig 中的每个 ModuleConfig：
 //
-//   Step 1: 解析 .so 路径
+//   步骤 1：解析 .so 路径
 //     调用 ResolveLibraryPath 获取完整路径。
-//     如果路径非空，dlopen 加载。
-//     如果路径为空（测试场景或组件在主二进制中），跳过 dlopen。
+//     module_library 必须非空，且只能通过 dlopen 加载。
 //
-//   Step 2: 创建事件驱动组件
+//   步骤 2：创建事件驱动组件
 //     遍历 ModuleConfig::components：
 //       a. ComponentFactory::Create(class_name) → 反射创建
 //       b. component->Initialize(config) → 配置+初始化
 //       c. component_list_.push_back → 生命周期管理
 //
-//   Step 3: 错误处理
+//   步骤 3：错误处理
 //     任何一步失败 → 返回 false，由上层 Clear() 统一清理
 //
 // dlopen 的关键机制（面试核心考点）：
@@ -191,33 +190,30 @@ bool ModuleController::LoadModule(const DagConfig& dag_config) {
 
   for (const auto& module_config : dag_config.module_config()) {
     // ======================================================================
-    // Step 1: dlopen 加载动态库
-    // ======================================================================
-    // 如果 module_library 为空（测试场景），跳过 dlopen。
-    // 组件类必须已经通过静态链接或之前加载的 .so 注册到工厂。
+    // 步骤 1：dlopen 加载动态库
     // ======================================================================
     const std::string& lib_path_str = module_config.module_library();
-    if (!lib_path_str.empty()) {
-      std::string load_path = ResolveLibraryPath(lib_path_str);
-      MINFO << "Loading library: " << load_path << std::endl;
-
-      // RTLD_NOW  : 立即解析所有符号，未解析符号导致 dlopen 失败
-      // RTLD_GLOBAL: .so 导出的符号对其他 .so 可见（后续 dlopen 可引用）
-      void* handle = ::dlopen(load_path.c_str(), RTLD_NOW | RTLD_GLOBAL);
-      if (handle == nullptr) {
-        MERROR << "dlopen failed for: " << load_path << std::endl
-               << "  dlerror: " << ::dlerror() << std::endl;
-        return fail();
-      }
-      lib_handles_.push_back(handle);
-
-      // dlopen 成功后，.so 内的静态注册已执行完毕。
-      // 此时 ComponentFactory 已包含 .so 中所有 MINICYBER_REGISTER_COMPONENT
-      // 注册的组件类。通过 Create(class_name) 即可实例化。
+    if (lib_path_str.empty()) {
+      MERROR << "module_library is required; static registration is not a "
+             << "mainboard loading path." << std::endl;
+      return fail();
     }
+    std::string load_path = ResolveLibraryPath(lib_path_str);
+    MINFO << "Loading library: " << load_path << std::endl;
+
+    // RTLD_NOW 立即暴露 ABI/未解析符号错误；RTLD_GLOBAL 让插件静态注册器
+    // 解析到 minicyber_core 中唯一的 ComponentFactory。两者共同构成对齐
+    // cyber_ref ModuleController/ClassLoader 的真实 `.so` 边界。
+    void* handle = ::dlopen(load_path.c_str(), RTLD_NOW | RTLD_GLOBAL);
+    if (handle == nullptr) {
+      MERROR << "dlopen failed for: " << load_path << std::endl
+             << "  dlerror: " << ::dlerror() << std::endl;
+      return fail();
+    }
+    lib_handles_.push_back(handle);
 
     // ======================================================================
-    // Step 2: 创建事件驱动组件（Component<T>）
+    // 步骤 2：创建事件驱动组件（Component<T>）
     // ======================================================================
     for (const auto& component_info : module_config.components()) {
       if (component_info.class_name().empty() || !component_info.has_config() ||
@@ -240,18 +236,24 @@ bool ModuleController::LoadModule(const DagConfig& dag_config) {
       }
 
       // 包装为 shared_ptr（ComponentBase 继承 enable_shared_from_this）
-      std::shared_ptr<ComponentBase> comp(raw);
-
-      // Initialize
-      if (!comp->Initialize(config)) {
+      bool initialized = false;
+      {
+        std::shared_ptr<ComponentBase> comp(raw);
+        initialized = comp->Initialize(config);
+        if (initialized) {
+          MINFO << "Component loaded: " << class_name
+                << " (node: " << config.name() << ")" << std::endl;
+          component_list_.emplace_back(std::move(comp));
+        } else {
+          // 初始化失败的对象尚未进入列表，也必须在库仍加载时关闭并销毁。
+          comp->Shutdown();
+        }
+      }
+      if (!initialized) {
         MERROR << "Component::Initialize failed for: " << class_name
                << " (node: " << config.name() << ")" << std::endl;
         return fail();
       }
-
-      MINFO << "Component loaded: " << class_name
-            << " (node: " << config.name() << ")" << std::endl;
-      component_list_.emplace_back(std::move(comp));
     }
 
   }
@@ -263,15 +265,15 @@ bool ModuleController::LoadModule(const DagConfig& dag_config) {
 // Clear：关闭所有组件并卸载动态库
 // =============================================================================
 // 执行顺序严格遵守以下依赖关系：
-//   1. 先 Shutdown 所有组件（确保线程停止、资源释放）
-//   2. 清空组件列表（shared_ptr 析构触发组件析构）
-//   3. 再 dlclose 卸载 .so（此时已没有组件持有 .so 中的代码引用）
+//   1. 先 Shutdown 本水位之后所有组件（停止组件对 Transport/Discovery 的访问）
+//   2. 再销毁这些组件（析构代码仍位于已加载 `.so`）
+//   3. 最后逆序 dlclose 本水位之后的库
 //
 // 为什么逆序 Shutdown：
 //   如果组件 B 依赖组件 A（B 使用 A 的输出），先 Shutdown A 可能导致
 //   B 的 Proc 在 Shutdown 过程中调用时访问已释放的资源。逆序 Shutdown
-//   虽然不能完全解决这个问题（组件间依赖是图而非链），但历史上减少了
-//   很多竞态。完整方案需要 DAG 拓扑排序（留待 Phase 7）。
+//   不代替 DAG 拓扑依赖分析；MiniCyber 的裁剪边界只保证本次加载
+//   水位内的逆序关闭、销毁与卸载。
 // =============================================================================
 
 void ModuleController::Clear() {
@@ -282,13 +284,15 @@ void ModuleController::Clear() {
 }
 
 void ModuleController::RollbackTo(size_t component_count, size_t library_count) {
-  // 逆序关闭本次加载新增的组件，再卸载对应动态库。
-  while (component_list_.size() > component_count) {
-    auto component = std::move(component_list_.back());
-    component_list_.pop_back();
-    if (component) {
-      component->Shutdown();
+  // 回滚水位只覆盖本次 LoadAll/LoadModule 新增资源，不能误伤调用前已运行
+  // 的模块。三个阶段分离，保证任何虚析构均发生在 dlclose 之前。
+  for (size_t index = component_list_.size(); index > component_count; --index) {
+    if (component_list_[index - 1]) {
+      component_list_[index - 1]->Shutdown();
     }
+  }
+  while (component_list_.size() > component_count) {
+    component_list_.pop_back();
   }
 
   while (lib_handles_.size() > library_count) {

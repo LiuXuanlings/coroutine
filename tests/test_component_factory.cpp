@@ -1,11 +1,14 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <chrono>
 #include <string>
+#include <thread>
 
 #include "minicyber/component/component.h"
 #include "minicyber/component/component_factory.h"
 #include "minicyber/node/node.h"
+#include "minicyber/scheduler/scheduler.h"
 
 namespace {
 using TestMessage = minicyber::proto::RoleAttributes;
@@ -33,6 +36,26 @@ static std::string g_factory_received;
 /// 记录 Proc 被调用的总次数
 static std::atomic<int> g_factory_proc_count{0};
 
+minicyber::scheduler::Scheduler& TestScheduler() {
+  static minicyber::scheduler::SchedulerConf conf = [] {
+    minicyber::scheduler::SchedulerConf value;
+    value.thread_num = 1;
+    return value;
+  }();
+  static minicyber::scheduler::Scheduler scheduler(conf);
+  return scheduler;
+}
+
+bool WaitForProcCount(int expected) {
+  for (int i = 0; i < 200; ++i) {
+    if (g_factory_proc_count.load(std::memory_order_acquire) >= expected) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  return false;
+}
+
 class FactoryTestComponent
     : public minicyber::component::Component<TestMessage> {
  public:
@@ -43,6 +66,7 @@ class FactoryTestComponent
 
  protected:
   bool Init() override {
+    TestScheduler();
     init_called_.store(true, std::memory_order_relaxed);
     return true;
   }
@@ -69,7 +93,10 @@ class FactoryTestComponent
 class SecondTestComponent
     : public minicyber::component::Component<TestMessage> {
  protected:
-  bool Init() override { return true; }
+  bool Init() override {
+    TestScheduler();
+    return true;
+  }
   bool Proc(const std::shared_ptr<TestMessage>& msg) override {
     (void)msg;
     return true;
@@ -129,7 +156,7 @@ TEST(ComponentFactoryTest, HasRegisteredClass) {
 }
 
 // ---------------------------------------------------------------------------
-// 端到端验证：工厂创建 → Initialize → Write → Proc 被调用
+// 端到端验证：工厂创建 → Initialize → Write → Processor CRoutine 执行 Proc。
 // ---------------------------------------------------------------------------
 // 这是最接近真实场景的测试：模拟 mainboard 的流程
 //   Create → Initialize → (Writer 写数据) → Proc 收到消息
@@ -138,14 +165,14 @@ TEST(ComponentFactoryTest, HasRegisteredClass) {
 //   1. Factory::Create 成功返回
 //   2. Initialize 成功（创建 Node + Reader + Init）
 //   3. 同进程 Writer 写入消息
-//   4. Proc 被同步调用（MiniCyber 当前路径是同步回调）
+//   4. Proc 只能由 Scheduler 的协程调用
 //   5. 消息内容正确
 //   6. Shutdown 后清理
 // ---------------------------------------------------------------------------
 TEST(ComponentFactoryTest, CreateInitializeAndDeliver) {
   FactoryTestComponent::ResetStats();
 
-  // Step 1: 通过工厂创建组件（模拟 mainboard 的 Create("ClassName"))
+  // 步骤 1：通过工厂创建组件（模拟 mainboard 的 Create("ClassName"))
   auto* raw = ComponentFactory::Instance()->Create("FactoryTestComponent");
   ASSERT_NE(raw, nullptr);
 
@@ -155,7 +182,7 @@ TEST(ComponentFactoryTest, CreateInitializeAndDeliver) {
   std::shared_ptr<FactoryTestComponent> comp(
       static_cast<FactoryTestComponent*>(raw));
 
-  // Step 2: 创建配置并 Initialize（模拟 mainboard 从 proto dag 读取配置）
+  // 步骤 2：创建配置并 Initialize（模拟 mainboard 从 proto dag 读取配置）
   minicyber::proto::ComponentConfig config;
   config.set_name("factory_comp");
   config.add_readers()->set_channel("/factory_channel");
@@ -163,7 +190,7 @@ TEST(ComponentFactoryTest, CreateInitializeAndDeliver) {
   ASSERT_TRUE(comp->Initialize(config));
   EXPECT_TRUE(comp->init_called());
 
-  // Step 3: 通过 Writer 发布消息（模拟真实数据流）
+  // 步骤 3：通过 Writer 发布消息（模拟真实数据流）
   minicyber::node::Node pub_node("factory_publisher");
   auto writer = pub_node.CreateWriter<TestMessage>("/factory_channel");
   ASSERT_NE(writer, nullptr);
@@ -171,16 +198,16 @@ TEST(ComponentFactoryTest, CreateInitializeAndDeliver) {
   std::string test_msg("delivered via factory");
   EXPECT_TRUE(writer->Write(MakeMessage(test_msg)));
 
-  // Step 4: 验证 Proc 被调用（同步路径，Writer 线程中直接触发）
-  EXPECT_EQ(g_factory_proc_count.load(std::memory_order_relaxed), 1);
+  // 步骤 4：验证 Proc 经 DATA_WAIT 唤醒后异步执行。
+  ASSERT_TRUE(WaitForProcCount(1));
   EXPECT_EQ(g_factory_received, test_msg);
 
-  // Step 5: 第二次写入验证组件仍活跃
+  // 步骤 5：第二次写入验证组件仍活跃
   EXPECT_TRUE(writer->Write(MakeMessage("second factory message")));
-  EXPECT_EQ(g_factory_proc_count.load(std::memory_order_relaxed), 2);
+  ASSERT_TRUE(WaitForProcCount(2));
   EXPECT_EQ(g_factory_received, "second factory message");
 
-  // Step 6: 清理
+  // 步骤 6：清理
   comp->Shutdown();
   EXPECT_TRUE(comp->IsShutdown());
 
@@ -211,7 +238,7 @@ TEST(ComponentFactoryTest, FactoryComponentShutdownGraceful) {
   ASSERT_NE(writer, nullptr);
 
   EXPECT_TRUE(writer->Write(MakeMessage("before")));
-  EXPECT_EQ(g_factory_proc_count.load(std::memory_order_relaxed), 1);
+  ASSERT_TRUE(WaitForProcCount(1));
 
   // Shutdown
   comp->Shutdown();

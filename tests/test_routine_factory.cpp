@@ -56,17 +56,8 @@ TEST(RoutineFactoryTest, SingleInputRunsProcAfterNotifierWake) {
       visitor);
   ASSERT_EQ(factory.GetDataVisitor().get(), visitor.get());
 
-  std::atomic<uint64_t> task_id{0};
-  factory.GetDataVisitor()->RegisterNotifyCallback([&] {
-    const uint64_t id = task_id.load(std::memory_order_acquire);
-    if (id != 0) {
-      scheduler.NotifyTask(id);
-    }
-  });
-  const uint64_t id = scheduler.CreateTask(factory.CreateRoutine(),
-                                           "factory_single", 5);
+  const uint64_t id = scheduler.CreateTask(factory, "factory_single", 5);
   ASSERT_NE(id, 0u);
-  task_id.store(id, std::memory_order_release);
 
   ASSERT_TRUE(DataDispatcher<int>::Instance()->Dispatch(
       9301, std::make_shared<int>(7)));
@@ -108,17 +99,8 @@ TEST(RoutineFactoryTest, DualInputUsesPrimaryDrivenAllLatest) {
       },
       visitor);
 
-  std::atomic<uint64_t> task_id{0};
-  factory.GetDataVisitor()->RegisterNotifyCallback([&] {
-    const uint64_t id = task_id.load(std::memory_order_acquire);
-    if (id != 0) {
-      scheduler.NotifyTask(id);
-    }
-  });
-  const uint64_t id = scheduler.CreateTask(factory.CreateRoutine(),
-                                           "factory_dual", 5);
+  const uint64_t id = scheduler.CreateTask(factory, "factory_dual", 5);
   ASSERT_NE(id, 0u);
-  task_id.store(id, std::memory_order_release);
 
   // 副通道 Buffer 会被填充，但没有 Visitor notifier，因此 Dispatch 返回 false
   // 表示没有协程唤醒；随后主通道到达必须仍能读取这一条最新值。

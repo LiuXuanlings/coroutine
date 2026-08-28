@@ -16,7 +16,7 @@
 //   利用 ComponentFactory 反射创建组件实例，构建运行时计算图。
 //
 // 启动流程（mainboard 主流程）：
-//   1. main() 解析参数 → 获取 DAG 文件路径列表
+//   1. main() 解析唯一 DAG 路径和独立 Scheduler 配置
 //   2. ModuleController 构造 → 存储 DAG 路径
 //   3. LoadAll() → 遍历 DAG 路径，逐个解析并加载
 //      a. ParseDagFile(path) → protobuf TextFormat 解析为 DagConfig
@@ -25,8 +25,8 @@
 //         ii.  ComponentFactory::Create(class_name) → 反射创建
 //         iii. component->Initialize(config) → 初始化组件
 //      c. 存储到 component_list_ 进行生命周期管理
-//   4. WaitForShutdown() → 阻塞等待 SIGINT
-//   5. Clear() → Shutdown 所有组件 + dlclose 所有 .so 句柄
+//   4. WaitForShutdown() → 阻塞等待 SIGINT/SIGTERM
+//   5. Clear() → Shutdown、销毁所有组件后才 dlclose 所有 .so 句柄
 //
 // 与 CyberRT 的差异：
 //   - 去掉 ModuleArgument 类（参数解析在 main() 中完成）
@@ -145,13 +145,13 @@ class ModuleController {
    */
   static std::string ResolveLibraryPath(const std::string& module_library);
 
-  /// DAG 配置文件路径列表（从命令行 -d 参数传入）
+  /// mainboard 的唯一 DAG 配置路径；vector 保留是为了复用 LoadAll 接口测试。
   std::vector<std::string> dag_paths_;
 
   /// 已加载的组件列表（管理生命周期）
   std::vector<std::shared_ptr<ComponentBase>> component_list_;
 
-  /// 已加载的动态库句柄列表（供 dlclose 使用）
+  /// 已加载的动态库句柄列表；所有关联组件销毁后才允许 dlclose。
   std::vector<void*> lib_handles_;
 };
 

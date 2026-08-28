@@ -78,7 +78,11 @@ inline thread_local const Notifier* Notifier::active_notifier_ = nullptr;
 // has left the map, and waits for in-flight callbacks before returning.
 class DataNotifier {
  public:
-  using NotifyVector = std::vector<std::shared_ptr<Notifier>>;
+  struct NotifierEntry {
+    std::shared_ptr<Notifier> notifier;
+    bool receive_shm = false;
+  };
+  using NotifyVector = std::vector<NotifierEntry>;
 
   static DataNotifier* Instance() {
     static DataNotifier inst;
@@ -86,9 +90,10 @@ class DataNotifier {
   }
 
   void AddNotifier(uint64_t channel_id,
-                   const std::shared_ptr<Notifier>& notifier) {
+                   const std::shared_ptr<Notifier>& notifier,
+                   bool receive_shm = false) {
     std::lock_guard<std::mutex> lock(notifiers_mtx_);
-    notifiers_[channel_id].emplace_back(notifier);
+    notifiers_[channel_id].push_back({notifier, receive_shm});
   }
 
   bool RemoveNotifier(uint64_t channel_id,
@@ -103,8 +108,8 @@ class DataNotifier {
       auto& callbacks = channel->second;
       callbacks.erase(std::remove_if(callbacks.begin(), callbacks.end(),
                                      [&notifier, &removed](
-                                         const std::shared_ptr<Notifier>& item) {
-                                       if (item == notifier) {
+                                         const NotifierEntry& item) {
+                                       if (item.notifier == notifier) {
                                          removed = true;
                                          return true;
                                        }
@@ -122,6 +127,17 @@ class DataNotifier {
   }
 
   bool Notify(uint64_t channel_id) {
+    return NotifyImpl(channel_id, false);
+  }
+
+  // SHM 解码后的消息不能激活 IntraReceiver 的 notifier，否则一个跨进程
+  // 副本会反向进入同进程 Hybrid 分支。只有 DataVisitor 注册此类别。
+  bool NotifyFromShm(uint64_t channel_id) {
+    return NotifyImpl(channel_id, true);
+  }
+
+ private:
+  bool NotifyImpl(uint64_t channel_id, bool shm_only) {
     NotifyVector snapshot;
     {
       std::lock_guard<std::mutex> lock(notifiers_mtx_);
@@ -131,15 +147,19 @@ class DataNotifier {
       }
       snapshot = channel->second;
     }
-    for (auto& notifier : snapshot) {
-      if (notifier) {
-        notifier->Invoke();
+    bool notified = false;
+    for (auto& entry : snapshot) {
+      if (shm_only && !entry.receive_shm) {
+        continue;
+      }
+      if (entry.notifier) {
+        entry.notifier->Invoke();
+        notified = true;
       }
     }
-    return true;
+    return notified;
   }
 
- private:
   DataNotifier() = default;
   ~DataNotifier() = default;
   DataNotifier(const DataNotifier&) = delete;
